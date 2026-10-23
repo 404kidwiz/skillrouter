@@ -1,5 +1,10 @@
 {
   "mcpServers": {
-    "skillrouter": { "type": "stdio", "command": "npx", "args": ["-y", "skillrouter", "mcp"] }
+    "skillrouter": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js", "mcp"],
+      "env": { "SKILLROUTER_AGENT": "claude" }
+    }
   }
 }

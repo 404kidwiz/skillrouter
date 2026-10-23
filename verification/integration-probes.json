@@ -1,0 +1,75 @@
+{
+  "checked_at": "2026-10-23T04:58:42.184Z",
+  "results": [
+    {
+      "agent": "claude",
+      "source": "direct configured hook/plugin + MCP SDK probe (not native-host prompt)",
+      "hook": "passed",
+      "mcp": "connected",
+      "tools": [
+        "search_skills",
+        "read_skill"
+      ],
+      "search": "passed",
+      "load": "passed",
+      "hint_id": "a60cbca9-483b-4d4a-8433-513755cdaa6c",
+      "skill": "python-testing"
+    },
+    {
+      "agent": "codex",
+      "source": "direct configured hook/plugin + MCP SDK probe (not native-host prompt)",
+      "hook": "passed",
+      "mcp": "connected",
+      "tools": [
+        "search_skills",
+        "read_skill"
+      ],
+      "search": "passed",
+      "load": "passed",
+      "hint_id": "57d22851-dbc4-4f53-a7df-3e2ddff842bd",
+      "skill": "python-testing"
+    },
+    {
+      "agent": "cursor",
+      "source": "direct configured hook/plugin + MCP SDK probe (not native-host prompt)",
+      "hook": "passed",
+      "mcp": "connected",
+      "tools": [
+        "search_skills",
+        "read_skill"
+      ],
+      "search": "passed",
+      "load": "passed",
+      "hint_id": "8e3879d9-1754-4941-ade9-6ae24924a8da",
+      "skill": "python-testing"
+    },
+    {
+      "agent": "gemini",
+      "source": "direct configured hook/plugin + MCP SDK probe (not native-host prompt)",
+      "hook": "passed",
+      "mcp": "connected",
+      "tools": [
+        "search_skills",
+        "read_skill"
+      ],
+      "search": "passed",
+      "load": "passed",
+      "hint_id": "921024b5-9ea7-4c4c-87d4-06218259e8aa",
+      "skill": "python-testing"
+    },
+    {
+      "agent": "opencode",
+      "source": "direct configured hook/plugin + MCP SDK probe (not native-host prompt)",
+      "hook": "passed",
+      "mcp": "connected",
+      "tools": [
+        "search_skills",
+        "read_skill"
+      ],
+      "search": "passed",
+      "load": "passed",
+      "hint_id": "f9572894-f70b-40b1-8806-a3a2d2b9c5cc",
+      "skill": "python-testing"
+    }
+  ]
+}

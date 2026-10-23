@@ -1,0 +1,9 @@
+{
+  "host": "gemini",
+  "checked_at": "2026-10-23T05:00:52.147007+00:00",
+  "mode": "fresh native CLI with existing user configuration; restricted verification prompt",
+  "exit": 1,
+  "diagnostic_categories": [],
+  "output_events": [],
+  "note": "Native prompt authentication stopped with IneligibleTierError / UNSUPPORTED_CLIENT for the configured Gemini Code Assist account. Native MCP list separately reported skillrouter Connected."
+}

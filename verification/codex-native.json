@@ -1,0 +1,28 @@
+{
+  "host": "codex",
+  "checked_at": "2026-10-23T05:01:46.719676+00:00",
+  "mode": "fresh native CLI; only skillrouter MCP enabled for this invocation",
+  "timed_out": true,
+  "events": [
+    {
+      "type": "item.started",
+      "tool": "search_skills",
+      "status": "in_progress"
+    },
+    {
+      "type": "item.completed",
+      "tool": "search_skills",
+      "status": "failed"
+    },
+    {
+      "type": "item.started",
+      "tool": "read_skill",
+      "status": "in_progress"
+    },
+    {
+      "type": "item.completed",
+      "tool": "read_skill",
+      "status": "failed"
+    }
+  ]
+}

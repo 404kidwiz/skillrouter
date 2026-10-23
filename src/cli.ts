@@ -1,12 +1,11 @@
 #!/usr/bin/env node
-import fs from "node:fs";
 import { buildIndex, loadIndex, saveIndex } from "./index.js";
 import { search, embed, getIndex } from "./search.js";
-import { hint } from "./hint.js";
+import { hint, runHint, readHintInput, formatHint } from "./hint.js";
 import { serveMcp } from "./mcp.js";
 import { readCore, writeCore, syncCore, suggestCore } from "./core.js";
 import { trim } from "./trim.js";
-import { install } from "./install.js";
+import { install, NODE } from "./install.js";
 import { doctor, report, readCounts } from "./report.js";
 import { AGENTS, SR_DIR, type AgentId } from "./paths.js";
 
@@ -20,7 +19,7 @@ const USAGE = `skillrouter — a big skill library without the context bloat
                                           the small set every agent preloads (sync relinks agent folders)
   skillrouter trim [agents] [--apply] [--keep NAME]...
                                           move everything except core out of agent folders (dry run by default)
-  skillrouter install <agent>... [--local] wire MCP + prompt hook: claude codex cursor gemini opencode (--local = this checkout, no npm)
+  skillrouter install <agent>... [--local] wire MCP + prompt hook: claude codex cursor gemini opencode (pins this installation; --local remains accepted)
   skillrouter report [days]              who searched, what got read, did hints help
   skillrouter mcp                        stdio MCP server (search_skills, read_skill)
   skillrouter hint <agent>               prompt hook: reads hook JSON on stdin
@@ -73,14 +72,21 @@ async function main(argv: string[]): Promise<void> {
       else console.log("Nothing changed. Re-run with --apply.");
       break;
     }
-    case "install": for (const a of agentsFrom(args)) for (const line of install(a)) console.log(line); break;
+    case "install":
+      console.log(`Node pinned for hooks and MCP: ${NODE} (override with SKILLROUTER_NODE=/path/to/node)`);
+      for (const a of agentsFrom(args)) for (const line of install(a)) console.log(line);
+      break;
     case "report": console.log(report(Number(args[0] ?? 7))); break;
     case "mcp": await serveMcp(); break;
-    case "hint": {
+    case "hint":
+    case "hint-worker": {
       const agent = args[0] as AgentId;
       if (!AGENTS.includes(agent)) { process.stdout.write(""); return; }
-      const input = fs.readFileSync(0, "utf8");
-      const out = await hint(agent, input);
+      const input = await readHintInput(agent);
+      if (input === null) { process.stdout.write(formatHint(agent, "")); return; }
+      const out = cmd === "hint"
+        ? await runHint(agent, input, process.argv[1])
+        : await hint(agent, input);
       if (out) process.stdout.write(out + "\n");
       break;
     }

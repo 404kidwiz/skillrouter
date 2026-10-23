@@ -1,0 +1,25 @@
+claude+opencode /Users/dawizkidmal/.claude/skills: 28 skills (~2387 tokens of names+descriptions per prompt)
+codex+cursor+gemini+opencode /Users/dawizkidmal/.agents/skills -> /Users/dawizkidmal/.skill-core: 79 skills (~4874 tokens of names+descriptions per prompt)
+codex     /Users/dawizkidmal/.codex/skills: 0 skills (~0 tokens of names+descriptions per prompt)
+cursor    /Users/dawizkidmal/.cursor/skills -> /Users/dawizkidmal/.skill-core: 79 skills (~4874 tokens of names+descriptions per prompt)
+gemini    /Users/dawizkidmal/.gemini/skills: 0 skills (~0 tokens of names+descriptions per prompt)
+opencode  /Users/dawizkidmal/.config/opencode/skills: 2 skills (~251 tokens of names+descriptions per prompt)
+
+Index: 4497 skills; 0.5 hours old
+Per-agent health (observations from last 7 days):
+  claude: hook configured (activation unverified); MCP configured (connection unverified)
+    last hook: 2026-10-23T04:59:29.231Z; last MCP activity: 2026-10-23T04:58:39.728Z; failures: 0
+    hook outcomes: shown=2, legacy/unknown=1
+  codex: hook configured (activation unverified); MCP configured (connection unverified)
+    last hook: 2026-10-23T04:58:40.095Z; last MCP activity: 2026-10-23T04:58:40.337Z; failures: 0
+    hook outcomes: shown=1
+  cursor: hook configured (activation unverified); MCP configured (connection unverified)
+    last hook: 2026-10-23T04:58:40.714Z; last MCP activity: 2026-10-23T04:58:40.949Z; failures: 0
+    hook outcomes: shown=1
+  gemini: hook configured (activation unverified); MCP configured (connection unverified)
+    last hook: 2026-10-23T04:58:41.322Z; last MCP activity: 2026-10-23T04:58:41.559Z; failures: 0
+    hook outcomes: shown=1
+  opencode: hook plugin present (activation unverified); MCP configured (connection unverified)
+    last hook: 2026-10-23T05:00:23.066Z; last MCP activity: 2026-10-23T04:58:42.168Z; failures: 0
+    hook outcomes: shown=2
+Configuration presence does not prove hook trust/activation or MCP connectivity. Plugin/project configs and legacy MCP clients without agent identity may be unobserved.

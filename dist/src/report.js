@@ -1,0 +1,105 @@
+import fs from "node:fs";
+import path from "node:path";
+import { AGENT_SKILL_DIRS, AGENTS, USAGE_LOG } from "./paths.js";
+import { health } from "./health.js";
+import { parseFrontmatter } from "./index.js";
+export function validRow(value) {
+    if (!value || typeof value !== "object")
+        return false;
+    const r = value;
+    return typeof r.ts === "string" && Number.isFinite(Date.parse(r.ts)) && typeof r.client === "string" && typeof r.tool === "string" &&
+        (r.found === undefined || typeof r.found === "boolean") &&
+        [r.skill, r.agent, r.session, r.hint_id, r.reason].every((v) => v === undefined || typeof v === "string") &&
+        (r.hits === undefined || (Array.isArray(r.hits) && r.hits.every((h) => Array.isArray(h) && typeof h[0] === "string" && typeof h[1] === "number")));
+}
+/** Explicit prompt correlation, or a shared host session; never infer from skill identity alone. */
+export function followsHint(hint, read) {
+    const elapsed = Date.parse(read.ts) - Date.parse(hint.ts);
+    if (read.tool !== "read_skill" || !read.found || elapsed < 0 || elapsed > 30 * 60e3 ||
+        !hint.hits?.some(([id]) => id === read.skill))
+        return false;
+    if (hint.agent && read.agent && hint.agent !== read.agent)
+        return false;
+    if (hint.session && read.session && hint.session !== read.session)
+        return false;
+    if (read.hint_id)
+        return !!hint.hint_id && read.hint_id === hint.hint_id;
+    return !!hint.session && hint.session === read.session && !!hint.agent && hint.agent === read.agent;
+}
+export function readLog(days) {
+    const since = Date.now() - days * 86400e3;
+    try {
+        return fs.readFileSync(USAGE_LOG, "utf8").split("\n").filter(Boolean)
+            .map((l) => { try {
+            return JSON.parse(l);
+        }
+        catch {
+            return null;
+        } })
+            .filter((r) => validRow(r) && Date.parse(r.ts) >= since && Date.parse(r.ts) <= Date.now());
+    }
+    catch {
+        return [];
+    }
+}
+export function readCounts(days) {
+    const m = new Map();
+    for (const r of readLog(days))
+        if (r.tool === "read_skill" && r.found && r.skill)
+            m.set(r.skill, (m.get(r.skill) ?? 0) + 1);
+    return m;
+}
+export function report(days = 7, rows = readLog(days)) {
+    const searches = rows.filter((r) => r.tool === "search_skills");
+    const reads = rows.filter((r) => r.tool === "read_skill" && r.found);
+    const hints = rows.filter((r) => r.tool === "hint");
+    const out = [`Last ${days} days: ${searches.length} searches, ${reads.length} successful MCP skill loads, ${hints.length} hook invocations`, "", "By agent (searches / reads):"];
+    for (const c of [...new Set([...searches, ...reads].map((r) => r.client))].sort())
+        out.push(`  ${c}: ${searches.filter((r) => r.client === c).length} / ${reads.filter((r) => r.client === c).length}`);
+    out.push("", "Most-read skills (candidates for core):");
+    for (const [id, n] of [...reads.reduce((counts, r) => { if (r.skill)
+            counts.set(r.skill, (counts.get(r.skill) ?? 0) + 1); return counts; }, new Map()).entries()].sort((a, b) => b[1] - a[1]).slice(0, 25))
+        out.push(`  ${String(n).padStart(4)}  ${id}`);
+    if (hints.length) {
+        const shown = hints.filter((h) => h.hits?.length);
+        const followed = shown.filter((h) => reads.some((r) => followsHint(h, r)));
+        const uncorrelated = shown.filter((h) => !h.hint_id && !(h.session && h.agent));
+        out.push("", `Hints: ${shown.length}/${hints.length} hook invocations showed hints; ${followed.length}/${shown.length} shown hints have a correlated successful load within 30 minutes.`, `Unattributable legacy hints: ${uncorrelated.length}.`);
+    }
+    out.push("", "Loads do not establish skill use; direct/native reads are not tracked.");
+    return out.join("\n");
+}
+/** What each agent loads at startup right now, and roughly what it costs. */
+export function doctor() {
+    const out = [];
+    const byDir = new Map();
+    for (const agent of AGENTS)
+        for (const dir of AGENT_SKILL_DIRS[agent])
+            byDir.set(dir, [...(byDir.get(dir) ?? []), agent]);
+    for (const [dir, agents] of byDir) {
+        if (!fs.existsSync(dir))
+            continue;
+        {
+            let n = 0, chars = 0, broken = 0;
+            for (const e of fs.readdirSync(dir)) {
+                if (e.startsWith("."))
+                    continue;
+                const p = path.join(dir, e);
+                try {
+                    const text = fs.readFileSync(path.join(p, "SKILL.md"), "utf8").slice(0, 4000);
+                    const fm = parseFrontmatter(text);
+                    n++;
+                    chars += e.length + (fm.description ?? "").length + 12;
+                }
+                catch {
+                    if (!fs.existsSync(p))
+                        broken++;
+                }
+            }
+            const real = fs.lstatSync(dir).isSymbolicLink() ? ` -> ${fs.readlinkSync(dir)}` : "";
+            out.push(`${agents.join("+").padEnd(9)} ${dir}${real}: ${n} skills (~${Math.round(chars / 4)} tokens of names+descriptions per prompt)${broken ? `, ${broken} broken links` : ""}`);
+        }
+    }
+    out.push(...health());
+    return out.join("\n");
+}

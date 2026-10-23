@@ -17,14 +17,14 @@ export function getIndex(): { index: Index; bm25: BM25 } {
 }
 
 /** BM25 by default. With an embeddings index (skillrouter index --embeddings) and the model installed, blends both. */
-export async function search(query: string, k = 5): Promise<Hit[]> {
+export async function search(query: string, k = 5, options: { lexicalOnly?: boolean } = {}): Promise<Hit[]> {
   const { index, bm25 } = getIndex();
   const byId = new Map(index.skills.map((s) => [s.id, s]));
   const lexical = bm25.search(query, k * 3);
   const scores = new Map(lexical.map((h) => [h.id, h.score]));
   const raws = new Map(lexical.map((h) => [h.id, h.raw]));
   const matched = new Map(lexical.map((h) => [h.id, h.matched]));
-  if (index.embeddings) {
+  if (index.embeddings && !options.lexicalOnly) {
     const q = await embed([query]).catch(() => null);
     if (q) {
       const sem = cosineTop(q[0], index.embeddings, k * 2);

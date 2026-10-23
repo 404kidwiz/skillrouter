@@ -1,16 +1,38 @@
 import fs from "node:fs";
 import path from "node:path";
 import { AGENT_SKILL_DIRS, AGENTS, USAGE_LOG } from "./paths.js";
+import { health } from "./health.js";
 import { parseFrontmatter } from "./index.js";
 
-interface Row { ts: string; client: string; tool: string; skill?: string; found?: boolean; hits?: [string, number][] }
+export interface Row { ts: string; client: string; tool: string; skill?: string; found?: boolean;
+  hits?: [string, number][]; agent?: string; session?: string; hint_id?: string; reason?: string }
+
+export function validRow(value: unknown): value is Row {
+  if (!value || typeof value !== "object") return false;
+  const r = value as Row;
+  return typeof r.ts === "string" && Number.isFinite(Date.parse(r.ts)) && typeof r.client === "string" && typeof r.tool === "string" &&
+    (r.found === undefined || typeof r.found === "boolean") &&
+    [r.skill, r.agent, r.session, r.hint_id, r.reason].every((v) => v === undefined || typeof v === "string") &&
+    (r.hits === undefined || (Array.isArray(r.hits) && r.hits.every((h) => Array.isArray(h) && typeof h[0] === "string" && typeof h[1] === "number")));
+}
+
+/** Explicit prompt correlation, or a shared host session; never infer from skill identity alone. */
+export function followsHint(hint: Row, read: Row): boolean {
+  const elapsed = Date.parse(read.ts) - Date.parse(hint.ts);
+  if (read.tool !== "read_skill" || !read.found || elapsed < 0 || elapsed > 30 * 60e3 ||
+    !hint.hits?.some(([id]) => id === read.skill)) return false;
+  if (hint.agent && read.agent && hint.agent !== read.agent) return false;
+  if (hint.session && read.session && hint.session !== read.session) return false;
+  if (read.hint_id) return !!hint.hint_id && read.hint_id === hint.hint_id;
+  return !!hint.session && hint.session === read.session && !!hint.agent && hint.agent === read.agent;
+}
 
 export function readLog(days: number): Row[] {
   const since = Date.now() - days * 86400e3;
   try {
     return fs.readFileSync(USAGE_LOG, "utf8").split("\n").filter(Boolean)
       .map((l) => { try { return JSON.parse(l) as Row; } catch { return null; } })
-      .filter((r): r is Row => !!r && Date.parse(r.ts) >= since);
+      .filter((r): r is Row => validRow(r) && Date.parse(r.ts) >= since && Date.parse(r.ts) <= Date.now());
   } catch { return []; }
 }
 
@@ -20,22 +42,23 @@ export function readCounts(days: number): Map<string, number> {
   return m;
 }
 
-export function report(days = 7): string {
-  const rows = readLog(days);
+export function report(days = 7, rows = readLog(days)): string {
   const searches = rows.filter((r) => r.tool === "search_skills");
   const reads = rows.filter((r) => r.tool === "read_skill" && r.found);
   const hints = rows.filter((r) => r.tool === "hint");
-  const out = [`Last ${days} days: ${searches.length} searches, ${reads.length} skill reads, ${hints.length} prompts checked for hints`, "", "By agent (searches / reads):"];
+  const out = [`Last ${days} days: ${searches.length} searches, ${reads.length} successful MCP skill loads, ${hints.length} hook invocations`, "", "By agent (searches / reads):"];
   for (const c of [...new Set([...searches, ...reads].map((r) => r.client))].sort())
     out.push(`  ${c}: ${searches.filter((r) => r.client === c).length} / ${reads.filter((r) => r.client === c).length}`);
   out.push("", "Most-read skills (candidates for core):");
-  for (const [id, n] of [...readCounts(days).entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)) out.push(`  ${String(n).padStart(4)}  ${id}`);
+  for (const [id, n] of [...reads.reduce((counts, r) => { if (r.skill) counts.set(r.skill, (counts.get(r.skill) ?? 0) + 1); return counts; }, new Map<string, number>()).entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)) out.push(`  ${String(n).padStart(4)}  ${id}`);
   if (hints.length) {
     const shown = hints.filter((h) => h.hits?.length);
-    const hinted = new Set(shown.flatMap((h) => h.hits!.map((x) => x[0])));
-    const followed = [...hinted].filter((id) => reads.some((r) => r.skill === id));
-    out.push("", `Hints: ${shown.length}/${hints.length} prompts got hints; ${followed.length} of ${hinted.size} hinted skills were later read`);
+    const followed = shown.filter((h) => reads.some((r) => followsHint(h, r)));
+    const uncorrelated = shown.filter((h) => !h.hint_id && !(h.session && h.agent));
+    out.push("", `Hints: ${shown.length}/${hints.length} hook invocations showed hints; ${followed.length}/${shown.length} shown hints have a correlated successful load within 30 minutes.`,
+      `Unattributable legacy hints: ${uncorrelated.length}.`);
   }
+  out.push("", "Loads do not establish skill use; direct/native reads are not tracked.");
   return out.join("\n");
 }
 
@@ -61,6 +84,6 @@ export function doctor(): string {
       out.push(`${agents.join("+").padEnd(9)} ${dir}${real}: ${n} skills (~${Math.round(chars / 4)} tokens of names+descriptions per prompt)${broken ? `, ${broken} broken links` : ""}`);
     }
   }
-  out.push("", "Claude Code caps this list at ~1% of the context window and silently drops descriptions past that; other agents send all of it.");
+  out.push(...health());
   return out.join("\n");
 }

@@ -1,0 +1,18 @@
+{
+  "host": "claude",
+  "checked_at": "2026-10-23T04:59:23.237137+00:00",
+  "tools": [],
+  "exit": 1,
+  "result_type": "success",
+  "is_error": true,
+  "cost_usd": 0,
+  "confirmation": "Failed to authenticate: OAuth session expired and could not be refreshed",
+  "native_mcp_status": "claude mcp get skillrouter: Connected",
+  "native_hook_events": [
+    {
+      "ts": "2026-10-23T04:59:29.231Z",
+      "reason": "shown",
+      "hint_id": "7917f787-335f-45b1-8fa8-39b7e2802015"
+    }
+  ]
+}

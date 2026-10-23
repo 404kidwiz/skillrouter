@@ -13,7 +13,7 @@ skillrouter splits the library into two tiers and adds the plumbing that makes t
 
 Plus:
 
-- **Prompt hints:** a hook runs on every prompt, searches the library (BM25, ~0.1 s, no model download) and attaches up to 3 matching skill names. The agent no longer has to remember to look.
+- **Prompt hints:** a hook runs on every prompt, searches the library (lexical BM25 only, no model download) and attaches up to 3 matching skill names. The agent no longer has to remember to look.
 - **Usage log:** every search, read and hint is logged per agent, so you can see which skills get used and move them in or out of core.
 - **Safe trim:** moves the long tail out of agent auto-load folders with tar backups, a restore file, and a dry run by default. Nothing is deleted except broken symlinks.
 
@@ -60,6 +60,16 @@ claude plugin install skillrouter
 3. If still unsure, the agent calls `search_skills` with the task intent as a short phrase, then `read_skill(id)` for the best hit.
 
 Search is BM25 over name + description (weighted) + the start of the body. On a 4,500-skill library it gets the obvious cases right (pytest → `python-testing`, landing page audit → `landing-page-design`, postgres index → `postgres-optimization`) and misses on vague or oddly worded prompts. Optional embeddings (`pnpm add @huggingface/transformers`, then `skillrouter index --embeddings`) blend a MiniLM vector score into the ranking.
+
+## Reporting, diagnostics, and hook reliability
+
+`report 7` counts successful MCP loads separately from skill use. A shown hint gets credit only for a matching skill loaded within 30 minutes with its `hint_id`, or with matching agent/session identity. Earlier reads, other agents, mismatched sessions, and failed loads do not count. Legacy hints without correlation metadata are labeled unattributable. Direct filesystem reads and native skill invocations remain outside these metrics.
+
+`doctor` shows user-scope hook/MCP configuration for each agent, index age (flagged stale after 7 days), last observed hook and MCP activity, hook outcome counts, and failures over the last 7 days. Configuration presence does not verify trust, activation, or connectivity; project/plugin configuration may be outside its view. Newly installed MCP integrations set `SKILLROUTER_AGENT` for attribution. Hook session IDs are hashed; an optional `SKILLROUTER_SESSION_ID` on the MCP process supports matching sessions where a host can supply one. Hint IDs work without shared host session support.
+
+The installer pins hooks and MCP to the current package's absolute CLI path and to a Node binary no other tool manages (not one under `~/.hermes` or `node_modules`; override with `SKILLROUTER_NODE=/path/to/node`). `dist/` is committed so the Claude Code plugin works straight from the repo. Keep that installation available and rerun `install` after moving/upgrading it; `--local` remains accepted for compatibility. Hooks never run npm or embeddings. Input is limited to 256 KiB with a 1.5-second stdin deadline; matching runs in a killable worker with a separate 1.5-second deadline. Failures return the host's empty/continue response and record an outcome. OpenCode additionally caps the subprocess wait at 2 seconds. These budgets exclude host and initial Node startup time.
+
+Repeated installation replaces existing router hooks while preserving unrelated hook commands. JSON config files are backed up before writes. Existing multiline TOML command/args require manual adjustment; the installer refuses to rewrite that syntax.
 
 ## Where things live
 

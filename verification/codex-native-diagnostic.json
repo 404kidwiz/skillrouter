@@ -1,0 +1,19 @@
+{
+  "host": "codex",
+  "mode": "native diagnostic, stdin closed, one MCP search",
+  "exit": 0,
+  "tool_events": [
+    {
+      "server": "skillrouter",
+      "tool": "search_skills",
+      "status": "in_progress",
+      "error": "None"
+    },
+    {
+      "server": "skillrouter",
+      "tool": "search_skills",
+      "status": "failed",
+      "error": "{'message': 'MCP tool call requires approval, but approval policy is never'}"
+    }
+  ]
+}

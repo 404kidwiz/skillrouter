@@ -11,11 +11,20 @@ v0.1.0 on GitHub (public), not yet published to npm.
 
 ## Done
 - All commands implemented and exercised on a real 4,500-skill library and in a scratch home: doctor, index, search, core (list/add/remove/suggest/sync), trim (dry run default, tar backups + RESTORE file), install (5 agents, backs up configs), report, mcp (verified with an MCP SDK client), hint (all four hook dialects).
-- 5 unit tests (`pnpm test`): tokenizer, BM25 ranking, frontmatter parsing, hint formats, index build.
+- 13 tests (`pnpm test`): original routing checks plus attribution, malformed logs, repeat installation/config preservation, lexical hook outcomes/privacy, worker/OpenCode deadlines, stdin limits, and MCP successful/failed loads.
 - Claude Code plugin files: .claude-plugin/plugin.json, marketplace.json, hooks/hooks.json, .mcp.json, skills/skillrouter/SKILL.md.
 
+## Reporting and hook improvements (2026-10-23)
+- Reports correlate hinted loads by explicit hint ID or matching agent/session, require subsequent successful loads within 30 minutes, and label legacy hints unattributable. Native/direct reads and actual skill use are outside these metrics.
+- Doctor adds index age and per-agent user-scope config presence, observed hook/MCP activity, outcome counts, and failures. Configuration presence does not verify activation/connectivity.
+- Hooks use lexical search, bounded stdin and killable worker deadlines; generated integrations use absolute installed CLI/Node paths, with repeat installation preserving unrelated hooks. OpenCode also bounds its subprocess wait. MCP success is logged after the file loads.
+- README and routing skill document correlation and limits. Validation: `pnpm test` (13/13), read-only `doctor` and `report 7`, and `git diff --check`.
+- Integrations subsequently reinstalled for all five hosts; private timestamped pre-install backup retained. Config parsing/preservation and all five configured hook/plugin + MCP SDK probes passed. Fresh native CLI/server and desktop launch evidence, host-specific acceptance limits, and synthetic metrics caveats are recorded in `verification/README.md`. Claude/Codex active desktop sessions preserved. Unrelated native-startup Ponytail/Graft scaffolding was quarantined into the private backup and its ignore rules removed. Independent review prompt: `CLAUDE_CODE_HANDOFF.md`. No publish/push.
+
+- 2026-10-23 review fixes: stray `graft` server removed from `.mcp.json`; `dist/` un-ignored so plugin installs have the CLI; installer resolves a Node outside managed trees (`resolveNode`, `SKILLROUTER_NODE` override) and prints the pin; five agents reinstalled.
+
 ## Next
-- `npm publish` (README and hook configs use `npx -y skillrouter`; until then `npx -y github:404kidwiz/skillrouter` or `install --local` work).
+- npm publication remains a separate owner-authorized action. Installer now pins the installed absolute CLI/Node paths; a stable local checkout supports `install --local`.
 - Dogfooding since 2026-10-23 on the author's machine via `install --local` (8 agents). Review `report 7` after a few days.
 - `core sync` should skip skills an agent already gets from a plugin (Claude: plugin-provided skills get linked twice).
 - Search quality: BM25 misfires on vague prompts ("docker build slow on M1" -> llama-cpp). Candidates: boost name matches, synonym list, or the optional embeddings path by default once the model download is acceptable.
