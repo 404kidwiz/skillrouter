@@ -26,7 +26,7 @@ v0.1.0 on GitHub (public), not yet published to npm.
 ## Next
 - npm publication remains a separate owner-authorized action. Installer now pins the installed absolute CLI/Node paths; a stable local checkout supports `install --local`.
 - Dogfooding since 2026-10-23 on the author's machine via `install --local` (8 agents). Review `report 7` after a few days.
-- `core sync` should skip skills an agent already gets from a plugin (Claude: plugin-provided skills get linked twice).
+- Done 2026-10-23: `core skip/unskip <id> <agent>` (`!agent` markers in core.txt; shared folders drop a skill only when all readers skip it); `report` excludes synthetic probe clients and shows them separately.
 - Search quality: BM25 misfires on vague prompts ("docker build slow on M1" -> llama-cpp). Candidates: boost name matches, synonym list, or the optional embeddings path by default once the model download is acceptable.
 
 ## Blockers

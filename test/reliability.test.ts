@@ -29,7 +29,7 @@ test("attribution excludes prior/cross-agent/cross-session/uncorrelated/late/fai
   for (const change of [{ ts: new Date(Date.parse(h.ts) - 1).toISOString() }, { agent: "claude" }, { session: "other" }, { hint_id: "other" }, { skill: "other" }, { found: false }, { ts: new Date(Date.parse(h.ts) + 1800001).toISOString() }])
     assert.equal(followsHint(h, { ...r, ...change }), false);
   assert.equal(followsHint({ ...h, hint_id: undefined, session: undefined }, { ...r, hint_id: undefined, session: undefined }), false);
-  assert.match(report(7, [h, r]), /1\/1 shown hints have a correlated successful load/);
+  assert.match(report(7, [h, r]), /1\/1 shown hints have a correlated organic successful load/);
   assert.match(report(7, [h, { ...r, ts: new Date(Date.parse(h.ts) - 1).toISOString() }]), /0\/1 shown hints/);
 });
 

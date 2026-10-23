@@ -26,6 +26,10 @@ export function followsHint(hint, read) {
         return !!hint.hint_id && read.hint_id === hint.hint_id;
     return !!hint.session && hint.session === read.session && !!hint.agent && hint.agent === read.agent;
 }
+/** Traffic from probes, self-tests and regression clients: real wiring, not real use. Keep it out of adoption numbers. */
+export function isSynthetic(row) {
+    return /(^|[/\-_])(probe|selftest|self-test|regression|smoke)([/\-_]|$)/i.test(row.client);
+}
 export function readLog(days) {
     const since = Date.now() - days * 86400e3;
     try {
@@ -50,10 +54,15 @@ export function readCounts(days) {
     return m;
 }
 export function report(days = 7, rows = readLog(days)) {
-    const searches = rows.filter((r) => r.tool === "search_skills");
-    const reads = rows.filter((r) => r.tool === "read_skill" && r.found);
-    const hints = rows.filter((r) => r.tool === "hint");
-    const out = [`Last ${days} days: ${searches.length} searches, ${reads.length} successful MCP skill loads, ${hints.length} hook invocations`, "", "By agent (searches / reads):"];
+    const synthetic = rows.filter(isSynthetic);
+    const organic = rows.filter((r) => !isSynthetic(r));
+    const searches = organic.filter((r) => r.tool === "search_skills");
+    const reads = organic.filter((r) => r.tool === "read_skill" && r.found);
+    const hints = rows.filter((r) => r.tool === "hint"); // hook rows carry no client identity beyond the agent
+    const out = [`Last ${days} days: ${searches.length} searches, ${reads.length} successful MCP skill loads, ${hints.length} hook invocations`];
+    if (synthetic.length)
+        out.push(`Excluded as synthetic (probe/self-test clients): ${synthetic.filter((r) => r.tool === "search_skills").length} searches, ${synthetic.filter((r) => r.tool === "read_skill" && r.found).length} loads from ${[...new Set(synthetic.map((r) => r.client))].join(", ")}`);
+    out.push("", "By agent (searches / reads):");
     for (const c of [...new Set([...searches, ...reads].map((r) => r.client))].sort())
         out.push(`  ${c}: ${searches.filter((r) => r.client === c).length} / ${reads.filter((r) => r.client === c).length}`);
     out.push("", "Most-read skills (candidates for core):");
@@ -63,8 +72,10 @@ export function report(days = 7, rows = readLog(days)) {
     if (hints.length) {
         const shown = hints.filter((h) => h.hits?.length);
         const followed = shown.filter((h) => reads.some((r) => followsHint(h, r)));
+        const syntheticFollowed = shown.filter((h) => !followed.includes(h) && synthetic.some((r) => followsHint(h, r)));
         const uncorrelated = shown.filter((h) => !h.hint_id && !(h.session && h.agent));
-        out.push("", `Hints: ${shown.length}/${hints.length} hook invocations showed hints; ${followed.length}/${shown.length} shown hints have a correlated successful load within 30 minutes.`, `Unattributable legacy hints: ${uncorrelated.length}.`);
+        out.push("", `Hints: ${shown.length}/${hints.length} hook invocations showed hints; ${followed.length}/${shown.length} shown hints have a correlated organic successful load within 30 minutes` +
+            (syntheticFollowed.length ? ` (${syntheticFollowed.length} more were followed only by synthetic probe loads)` : "") + ".", `Unattributable legacy hints: ${uncorrelated.length}.`);
     }
     out.push("", "Loads do not establish skill use; direct/native reads are not tracked.");
     return out.join("\n");

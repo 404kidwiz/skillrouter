@@ -1,49 +1,85 @@
 import fs from "node:fs";
 import path from "node:path";
-import { CORE_DIR, CORE_FILE, SR_DIR, AGENT_SKILL_DIRS } from "./paths.js";
+import { CORE_DIR, CORE_FILE, SR_DIR, AGENT_SKILL_DIRS, AGENTS } from "./paths.js";
 import { findSkill, getIndex } from "./search.js";
-/** core.txt: one skill id per line, '#' comments. These are the only skills agents preload. */
-export function readCore() {
+const HEADER = "# skillrouter core: skills every agent preloads. Everything else is reachable via search_skills/read_skill.\n# Line format: <skill id> [!agent ...]   e.g. `pdf !claude` = preload everywhere except Claude Code (it has pdf via a plugin).\n";
+/** core.txt: one skill id per line, optional `!agent` markers for agents that already have the skill, '#' comments. */
+export function readCoreEntries() {
+    let lines;
     try {
-        return fs.readFileSync(CORE_FILE, "utf8").split(/\r?\n/).map((l) => l.split("#")[0].trim()).filter(Boolean);
+        lines = fs.readFileSync(CORE_FILE, "utf8").split(/\r?\n/);
     }
     catch {
         return [];
     }
+    const out = [];
+    for (const raw of lines) {
+        const [id, ...marks] = raw.split("#")[0].trim().split(/\s+/);
+        if (!id)
+            continue;
+        const skip = new Set(marks.filter((m) => m.startsWith("!")).map((m) => m.slice(1)).filter((a) => AGENTS.includes(a)));
+        out.push({ id, skip });
+    }
+    return out;
+}
+export function readCore() {
+    return readCoreEntries().map((e) => e.id);
+}
+export function writeCoreEntries(entries) {
+    fs.mkdirSync(SR_DIR, { recursive: true });
+    const seen = new Set();
+    const lines = entries.filter((e) => !seen.has(e.id) && seen.add(e.id)).map((e) => [e.id, ...[...e.skip].sort().map((a) => `!${a}`)].join(" "));
+    fs.writeFileSync(CORE_FILE, HEADER + lines.join("\n") + "\n");
 }
 export function writeCore(ids) {
-    fs.mkdirSync(SR_DIR, { recursive: true });
-    fs.writeFileSync(CORE_FILE, "# skillrouter core: skills every agent preloads. Everything else is reachable via search_skills/read_skill.\n" + [...new Set(ids)].join("\n") + "\n");
+    const keep = new Map(readCoreEntries().map((e) => [e.id, e]));
+    writeCoreEntries(ids.map((id) => keep.get(id) ?? { id, skip: new Set() }));
+}
+/** Mark (or unmark) agents that must not get this core skill linked, e.g. because a plugin already provides it. */
+export function skipCore(id, agents, on = true) {
+    const entries = readCoreEntries();
+    const entry = entries.find((e) => e.id === id);
+    if (!entry)
+        return false;
+    for (const a of agents)
+        on ? entry.skip.add(a) : entry.skip.delete(a);
+    writeCoreEntries(entries);
+    return true;
 }
 /** Rebuild ~/.skillrouter/core as symlinks to the core skills, then link them into the agent folders that need them. */
 export function syncCore(agents) {
-    const ids = readCore();
+    const entries = readCoreEntries();
     fs.rmSync(CORE_DIR, { recursive: true, force: true });
     fs.mkdirSync(CORE_DIR, { recursive: true });
     const missing = [];
-    let linked = 0;
+    let linked = 0, skipped = 0;
     const targets = new Map();
-    for (const id of ids) {
+    for (const { id, skip } of entries) {
         const m = findSkill(id);
         if (m.length !== 1) {
             missing.push(id);
             continue;
         }
-        targets.set(path.basename(m[0].path).replace(/~\d+$/, ""), m[0].path);
+        targets.set(path.basename(m[0].path).replace(/~\d+$/, ""), { target: m[0].path, skip });
     }
-    for (const [name, target] of targets) {
+    for (const [name, { target }] of targets) {
         fs.symlinkSync(target, path.join(CORE_DIR, name));
         linked++;
     }
-    // Each agent gets core in its first folder; a folder shared across agents (~/.agents/skills) is linked once.
-    const done = new Set();
+    // Each agent gets core in its first folder. A folder shared by several agents (~/.agents/skills) is linked once,
+    // and a skill is left out of it only when every agent reading that folder skips it.
+    const byDir = new Map();
     for (const agent of agents) {
         const dir = AGENT_SKILL_DIRS[agent][0];
-        if (done.has(dir))
-            continue;
-        done.add(dir);
+        byDir.set(dir, [...(byDir.get(dir) ?? []), agent]);
+    }
+    for (const [dir, readers] of byDir) {
         fs.mkdirSync(dir, { recursive: true });
-        for (const [name, target] of targets) {
+        for (const [name, { target, skip }] of targets) {
+            if (readers.every((a) => skip.has(a))) {
+                skipped++;
+                continue;
+            }
             const link = path.join(dir, name);
             if (fs.existsSync(link))
                 continue; // real folder or existing link: leave it
@@ -54,7 +90,7 @@ export function syncCore(agents) {
             fs.symlinkSync(target, link);
         }
     }
-    return { linked, missing };
+    return { linked, missing, skipped };
 }
 /** Starting point: the N skills with the most reads in the usage log, or (first run) nothing. */
 export function suggestCore(reads, n = 30) {

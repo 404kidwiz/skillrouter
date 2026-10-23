@@ -3,7 +3,7 @@ import { buildIndex, loadIndex, saveIndex } from "./index.js";
 import { search, embed, getIndex } from "./search.js";
 import { hint, runHint, readHintInput, formatHint } from "./hint.js";
 import { serveMcp } from "./mcp.js";
-import { readCore, writeCore, syncCore, suggestCore } from "./core.js";
+import { readCore, writeCore, syncCore, suggestCore, skipCore } from "./core.js";
 import { trim } from "./trim.js";
 import { install, NODE } from "./install.js";
 import { doctor, report, readCounts } from "./report.js";
@@ -16,6 +16,8 @@ const USAGE = `skillrouter — a big skill library without the context bloat
   skillrouter search "<task>" [-k N]     try the router from the shell
   skillrouter core list|add <id>...|remove <id>...|suggest [N]|sync [agents]
                                           the small set every agent preloads (sync relinks agent folders)
+  skillrouter core skip|unskip <id> <agent>...
+                                          don't link a core skill for agents that already have it (e.g. via a plugin)
   skillrouter trim [agents] [--apply] [--keep NAME]...
                                           move everything except core out of agent folders (dry run by default)
   skillrouter install <agent>... [--local] wire MCP + prompt hook: claude codex cursor gemini opencode (pins this installation; --local remains accepted)
@@ -71,7 +73,13 @@ async function main(argv) {
             }
             else if (sub === "sync") {
                 const r = syncCore(agentsFrom(rest));
-                console.log(`linked ${r.linked} core skills${r.missing.length ? `; not found: ${r.missing.join(", ")}` : ""}`);
+                console.log(`linked ${r.linked} core skills${r.skipped ? `, ${r.skipped} agent-specific skips honored` : ""}${r.missing.length ? `; not found: ${r.missing.join(", ")}` : ""}`);
+            }
+            else if (sub === "skip" || sub === "unskip") {
+                const [id, ...names] = rest;
+                const agents = names.filter((x) => AGENTS.includes(x)); // never default to "all" here
+                const ok = id && agents.length === names.length && agents.length > 0 && skipCore(id, agents, sub === "skip");
+                console.log(ok ? `${id}: ${sub === "skip" ? "not linked for" : "linked again for"} ${agents.join(", ")} (run: skillrouter core sync)` : `usage: skillrouter core ${sub} <id> <agent>...  (id must already be in core; agents: ${AGENTS.join(" ")})`);
             }
             else
                 console.log(USAGE);
