@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
-import { buildIndex, saveIndex } from "./index.js";
+import { buildIndex, loadIndex, saveIndex } from "./index.js";
 import { search, embed, getIndex } from "./search.js";
 import { hint } from "./hint.js";
 import { serveMcp } from "./mcp.js";
@@ -20,7 +20,7 @@ const USAGE = `skillrouter — a big skill library without the context bloat
                                           the small set every agent preloads (sync relinks agent folders)
   skillrouter trim [agents] [--apply] [--keep NAME]...
                                           move everything except core out of agent folders (dry run by default)
-  skillrouter install <agent>...         wire MCP + prompt hook: claude codex cursor gemini opencode
+  skillrouter install <agent>... [--local] wire MCP + prompt hook: claude codex cursor gemini opencode (--local = this checkout, no npm)
   skillrouter report [days]              who searched, what got read, did hints help
   skillrouter mcp                        stdio MCP server (search_skills, read_skill)
   skillrouter hint <agent>               prompt hook: reads hook JSON on stdin
@@ -36,7 +36,9 @@ async function main(argv: string[]): Promise<void> {
     case "doctor": console.log(doctor()); break;
     case "index": {
       const withEmb = flag(args, "--embeddings");
-      const index = buildIndex(opt(args, "--root"));
+      // Extra roots stick: an index rebuilt without --root keeps the roots of the previous one.
+      const roots = opt(args, "--root");
+      const index = buildIndex(roots.length ? roots : (loadIndex()?.roots ?? []));
       if (withEmb) {
         const vecs = await embed(index.skills.map((s) => `${s.name}: ${s.description}`));
         index.embeddings = Object.fromEntries(index.skills.map((s, i) => [s.id, vecs[i].map((x) => Math.round(x * 1e4) / 1e4)]));

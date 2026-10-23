@@ -2,8 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { HOME, type AgentId } from "./paths.js";
 
-const BIN = "npx -y skillrouter";
-const MCP_CMD = { command: "npx", args: ["-y", "skillrouter", "mcp"] };
+// Published: `npx -y skillrouter …`. `install --local` (or SKILLROUTER_LOCAL=1) wires this checkout's
+// built CLI by absolute path instead, for dogfooding before an npm release.
+const LOCAL = process.argv.includes("--local") || !!process.env.SKILLROUTER_LOCAL;
+const CLI = process.argv[1] ? fs.realpathSync(process.argv[1]) : "";
+const BIN = LOCAL ? `node ${CLI}` : "npx -y skillrouter";
+const MCP_CMD = LOCAL ? { command: "node", args: [CLI, "mcp"] } : { command: "npx", args: ["-y", "skillrouter", "mcp"] };
+const TOML_MCP = LOCAL ? `command = "node"\nargs = ["${CLI}", "mcp"]` : `command = "npx"\nargs = ["-y", "skillrouter", "mcp"]`;
 
 function patchJson(file: string, fn: (d: any) => string, create: object = {}): string {
   let d: any = create;
@@ -38,7 +43,7 @@ export function install(agent: AgentId): string[] {
     case "codex":
       out.push(patchJson(path.join(HOME, ".codex", "hooks.json"), (d) =>
         addHook(d, "UserPromptSubmit", { hooks: [{ type: "command", command: `${BIN} hint codex`, timeout: 5 }] })));
-      out.push(appendToml(path.join(HOME, ".codex", "config.toml"), `\n[mcp_servers.skillrouter]\ncommand = "npx"\nargs = ["-y", "skillrouter", "mcp"]\n`, "[mcp_servers.skillrouter]"));
+      out.push(appendToml(path.join(HOME, ".codex", "config.toml"), `\n[mcp_servers.skillrouter]\n${TOML_MCP}\n`, "[mcp_servers.skillrouter]"));
       out.push("Codex asks you to trust new hooks on next start; run `codex` and approve the skillrouter hook.");
       break;
     case "cursor":
@@ -54,10 +59,10 @@ export function install(agent: AgentId): string[] {
       break;
     case "opencode": {
       const cfg = path.join(HOME, ".config", "opencode", "opencode.json");
-      out.push(patchJson(cfg, (d) => { (d.mcp ??= {}).skillrouter = { type: "local", command: ["npx", "-y", "skillrouter", "mcp"], enabled: true }; return "skillrouter MCP set"; }));
+      out.push(patchJson(cfg, (d) => { (d.mcp ??= {}).skillrouter = { type: "local", command: [MCP_CMD.command, ...MCP_CMD.args], enabled: true }; return "skillrouter MCP set"; }));
       const plugin = path.join(HOME, ".config", "opencode", "plugins", "skillrouter-hints.js");
       fs.mkdirSync(path.dirname(plugin), { recursive: true });
-      fs.writeFileSync(plugin, OPENCODE_PLUGIN);
+      fs.writeFileSync(plugin, OPENCODE_PLUGIN.replace("spawn('npx', ['-y', 'skillrouter', 'hint', 'claude']", LOCAL ? `spawn('node', ['${CLI}', 'hint', 'claude']` : "spawn('npx', ['-y', 'skillrouter', 'hint', 'claude']"));
       out.push(`${plugin}: written`);
       break;
     }
