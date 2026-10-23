@@ -73,7 +73,7 @@ test("PostToolUse: native Skill loads are logged with the session; a trigger fir
     assert.equal(ctx.hookEventName, "PostToolUse");
     assert.match(ctx.additionalContext, /you worked on tests \(test_auth\.py\)/);
     assert.match(ctx.additionalContext, /python-testing/);
-    assert.match(ctx.additionalContext, /before continuing, and include them in your `Skills:` line/);
+    assert.match(ctx.additionalContext, /before continuing, and include them in your `Skills:` line \(the one that also ends your final reply\)/);
     assert.equal(await toolEvent("claude", edit, false), "", "the same rule does not fire twice in a session");
     // A migration edit fires its own rule, but db-migrations is already loaded in this session.
     const migJob = await toolEvent("claude", JSON.stringify({ session_id: sid, tool_name: "Edit", tool_input: { file_path: "/repo/migrations/1.sql" } }), false);

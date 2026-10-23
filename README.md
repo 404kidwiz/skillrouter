@@ -59,7 +59,7 @@ Hints alone get ignored when they are often wrong. Three mechanisms work togethe
 
 | Mechanism | When it fires | What it does |
 |---|---|---|
-| Prompt check | every user prompt (system-generated turns skipped) | lists up to 4 candidates that pass the gate, each with its "when" line and exact load call, and asks for a one-line decision: `Skills: <ids>` or `Skills: none (<why>)` |
+| Prompt check | every user prompt (system-generated turns skipped) | lists up to 4 candidates that pass the gate, each with its "when" line and exact load call, and asks for a one-line decision, `Skills: <ids>` or `Skills: none (<why>)`, before the work and again at the end of the final reply (some hosts don't keep mid-turn text where the end-of-turn check can see it) |
 | Action triggers | after an edit or command that shows the kind of work: tests, Dockerfiles, migrations, CI, Kubernetes, Terraform, frontend, auth, APIs, git history, PRs, releases | once per session per rule, names the fitting skills not yet loaded. Rules are editable in `~/.skillrouter/triggers.json` |
 | Decision nudge | at the end of a turn that ran 3+ tool calls after a check, with no skill loaded and no `Skills:` line | sends the turn back once to decide; never twice in a row |
 

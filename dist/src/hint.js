@@ -111,8 +111,8 @@ export function hintText(hits, hint_id, core, agent = "claude", lead) {
         return `- ${id} — ${how}\n  when: ${(h.skill.description || "(no description)").split(/\s+/).join(" ").slice(0, 220)}`;
     }).join("\n");
     return lead
-        ? `${lead} Load the ones whose "when" fits what you are doing before continuing, and include them in your \`Skills:\` line.\n${lines}`
-        : "Skill check (skillrouter). Load every skill below whose \"when\" fits this task (often 1-3) before starting the work, then say which in one line: `Skills: <ids>` or `Skills: none (<why>)`.\n" + lines;
+        ? `${lead} Load the ones whose "when" fits what you are doing before continuing, and include them in your \`Skills:\` line (the one that also ends your final reply).\n${lines}`
+        : "Skill check (skillrouter). Load every skill below whose \"when\" fits this task (often 1-3) before starting the work, then say which in one line: `Skills: <ids>` or `Skills: none (<why>)`. End your final reply with that line too.\n" + lines;
 }
 /** Run work in a killable process: synchronous index work cannot defeat the deadline. */
 export function runHint(agent, input, cli, timeout = 1500, mode) {

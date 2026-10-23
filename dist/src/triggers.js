@@ -21,7 +21,8 @@ export const DEFAULT_TRIGGERS = [
     // Whole path segments only: auth/, login.ts, test_auth.py — never author.ts or sessionStore.ts.
     { id: "auth", label: "worked on authentication", path: /(^|[\/_.-])(auth|authn|authz|authentication|authorization|login|oauth2?|sso|permissions?)([\/_.-]|$)/i, query: "authentication authorization security" },
     { id: "api", label: "worked on an API", path: /(^|\/)(routes?|api|controllers?|handlers?|endpoints?)\//i, query: "api design endpoints" },
-    { id: "git-history", label: "rewrote git history", command: /git(\s+-C\s+\S+)?\s+(rebase|cherry-pick|bisect|reset\s+--hard|merge)(?![-\w])/, query: "git advanced workflow history" },
+    // Not `git merge`: a merge or fast-forward adds history instead of rewriting it.
+    { id: "git-history", label: "rewrote git history", command: /git(\s+-C\s+\S+)?\s+(rebase|cherry-pick|bisect|reset\s+--hard)(?![-\w])/, query: "git advanced workflow history" },
     { id: "pull-request", label: "worked on a pull request", command: /gh\s+pr\s+(create|review|merge|checkout)\b/, query: "pull request review" },
     { id: "release", label: "published a release", command: /(npm|pnpm|yarn) publish\b|cargo publish\b|gh release\b/, query: "release publishing versioning changelog" },
 ];

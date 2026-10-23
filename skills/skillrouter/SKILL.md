@@ -12,7 +12,7 @@ Only a small core of skills is preloaded in this session. The full library is be
 1. Use every preloaded skill that fits.
 2. For each distinct part of the task no preloaded skill covers (tests, a migration, the UI, a review), call `search_skills` with that part's intent as one short phrase (e.g. "postgres migration add index", "landing page conversion audit"). Do not paste the whole prompt.
 3. `read_skill(id)` every hit whose description matches its part. Usually 1-3 skills; load all that fit, not just the first.
-4. Before starting the work, write one line: `Skills: <ids>` or `Skills: none (<why>)`. Say which skills you applied in the final answer.
+4. Before starting the work, write one line: `Skills: <ids>` or `Skills: none (<why>)`. End your final answer with the same line, updated if you loaded more along the way.
 
 skillrouter attaches "Skill check (skillrouter)" notes: on the user's prompt, and mid-task when what you do (editing tests, a Dockerfile, a migration; running docker, kubectl, git rebase) points at a skill. Judge each candidate by its "when" line; load the ones that fit exactly as the note says, copying its `hint_id` into `read_skill` so reporting can credit the hint. If a turn did real work after a note without loading a skill or writing the `Skills:` line, the Stop hook sends it back once to decide. A load is not evidence that the skill was used.
 
