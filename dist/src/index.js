@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { INDEX_FILE, SR_DIR, defaultRoots } from "./paths.js";
-import { tokenize } from "./bm25.js";
+import { tokenize, TOKENIZER_VERSION } from "./bm25.js";
 const SKIP = new Set(["node_modules", ".git", ".venv", "__pycache__", "dist"]);
 export function parseFrontmatter(text) {
     const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -88,7 +88,7 @@ export function buildIndex(extraRoots = []) {
             seen.set(real, { id, name, description, path: real, root, tokens: tokenize(head + body) });
         }
     }
-    return { builtAt: new Date().toISOString(), roots, skills: [...seen.values()] };
+    return { builtAt: new Date().toISOString(), roots, skills: [...seen.values()], tokenizer: TOKENIZER_VERSION };
 }
 export function saveIndex(index) {
     fs.mkdirSync(SR_DIR, { recursive: true });

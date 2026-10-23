@@ -4,6 +4,7 @@ import { HOME, AGENTS } from "./paths.js";
 import { loadIndex } from "./index.js";
 import { isRouterHook } from "./install.js";
 import { readLog } from "./report.js";
+import { hermesSpec } from "./live.js";
 function json(file) {
     try {
         return { data: JSON.parse(fs.readFileSync(file, "utf8")), status: "missing" };
@@ -41,6 +42,21 @@ export function configuration(agent, home = HOME) {
     return { hook, mcp: entry?.enabled === false || entry?.disabled === true ? "disabled" :
             entry && (typeof entry.command === "string" || Array.isArray(entry.command)) ? "configured (connection unverified)" : config.status };
 }
+/** MCP-only hosts: configured or not, from the same files `doctor --live` would launch. */
+export function mcpOnlyConfiguration(target, home = HOME) {
+    const file = (...p) => path.join(home, ...p);
+    if (target === "hermes") {
+        try {
+            return hermesSpec(fs.readFileSync(file(".hermes", "config.yaml"), "utf8")) ? "configured (connection unverified)" : "missing";
+        }
+        catch {
+            return "missing";
+        }
+    }
+    const cfg = json(target === "openclaude" ? file(".openclaude.json") : file(".gemini", "antigravity", "mcp_config.json"));
+    const entry = cfg.data?.mcpServers?.skillrouter;
+    return entry?.disabled === true ? "disabled" : entry && typeof entry.command === "string" ? "configured (connection unverified)" : cfg.status;
+}
 export function health(home = HOME) {
     const loaded = loadIndex();
     const index = loaded && Array.isArray(loaded.skills) ? loaded : null;
@@ -60,6 +76,11 @@ export function health(home = HOME) {
             reasons.set(row.reason ?? "legacy/unknown", (reasons.get(row.reason ?? "legacy/unknown") ?? 0) + 1);
         out.push(`  ${agent}: hook ${config.hook}; MCP ${config.mcp}`, `    last hook: ${hooks[0]?.ts ?? "not observed"}; last MCP activity: ${mcp[0]?.ts ?? "not observed"}; failures: ${failures}`, `    hook outcomes: ${[...reasons].map(([reason, n]) => `${reason}=${n}`).join(", ") || "none observed"}`);
     }
-    out.push("Configuration presence does not prove hook trust/activation or MCP connectivity. Plugin/project configs and legacy MCP clients without agent identity may be unobserved.");
+    for (const target of ["openclaude", "antigravity", "hermes"]) {
+        const own = rows.filter((r) => r.agent === target);
+        const last = own.filter((r) => r.tool === "search_skills" || r.tool === "read_skill").sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))[0]?.ts;
+        out.push(`  ${target}: no hooks on this host; MCP ${mcpOnlyConfiguration(target, home)}`, `    last MCP activity: ${last ?? "not observed"}`);
+    }
+    out.push("Configuration presence does not prove hook trust/activation or MCP connectivity (run `doctor --live` to start each server). Plugin/project configs and legacy MCP clients without agent identity may be unobserved.");
     return out;
 }

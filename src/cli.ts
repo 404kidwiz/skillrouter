@@ -5,13 +5,14 @@ import { hint, runHint, readHintInput, formatHint } from "./hint.js";
 import { serveMcp } from "./mcp.js";
 import { readCore, writeCore, syncCore, suggestCore, skipCore } from "./core.js";
 import { trim } from "./trim.js";
-import { install, NODE } from "./install.js";
+import { install, NODE, INSTALL_TARGETS, type InstallTarget } from "./install.js";
+import { liveCheck } from "./live.js";
 import { doctor, report, readCounts } from "./report.js";
 import { AGENTS, SR_DIR, type AgentId } from "./paths.js";
 
 const USAGE = `skillrouter — a big skill library without the context bloat
 
-  skillrouter doctor                     what each agent preloads today and what it costs
+  skillrouter doctor [--live] [agents]   what each agent preloads today and what it costs; --live starts each configured MCP server
   skillrouter index [--root DIR]... [--embeddings]
                                           scan every skill folder into ~/.skillrouter/index.json
   skillrouter search "<task>" [-k N]     try the router from the shell
@@ -21,7 +22,7 @@ const USAGE = `skillrouter — a big skill library without the context bloat
                                           don't link a core skill for agents that already have it (e.g. via a plugin)
   skillrouter trim [agents] [--apply] [--keep NAME]...
                                           move everything except core out of agent folders (dry run by default)
-  skillrouter install <agent>... [--local] wire MCP + prompt hook: claude codex cursor gemini opencode (pins this installation; --local remains accepted)
+  skillrouter install <agent>...         wire MCP + prompt hook: claude codex cursor gemini opencode; MCP only: openclaude antigravity hermes
   skillrouter report [days]              who searched, what got read, did hints help
   skillrouter mcp                        stdio MCP server (search_skills, read_skill)
   skillrouter hint <agent>               prompt hook: reads hook JSON on stdin
@@ -30,11 +31,17 @@ const USAGE = `skillrouter — a big skill library without the context bloat
 function flag(args: string[], name: string): boolean { const i = args.indexOf(name); if (i >= 0) { args.splice(i, 1); return true; } return false; }
 function opt(args: string[], name: string): string[] { const out: string[] = []; for (let i = args.indexOf(name); i >= 0; i = args.indexOf(name)) { out.push(args[i + 1]); args.splice(i, 2); } return out; }
 function agentsFrom(args: string[]): AgentId[] { const a = args.filter((x): x is AgentId => (AGENTS as string[]).includes(x)); return a.length ? a : AGENTS; }
+function targetsFrom(args: string[]): InstallTarget[] { const a = args.filter((x): x is InstallTarget => (INSTALL_TARGETS as string[]).includes(x)); return a.length ? a : INSTALL_TARGETS; }
 
 async function main(argv: string[]): Promise<void> {
   const [cmd, ...args] = argv;
   switch (cmd) {
-    case "doctor": console.log(doctor()); break;
+    case "doctor": {
+      const live = flag(args, "--live");
+      console.log(doctor());
+      if (live) { console.log("\nLive MCP check (each configured server started and asked for its tools):"); console.log((await liveCheck(targetsFrom(args))).join("\n")); }
+      break;
+    }
     case "index": {
       const withEmb = flag(args, "--embeddings");
       // Extra roots stick: an index rebuilt without --root keeps the roots of the previous one.
@@ -82,7 +89,7 @@ async function main(argv: string[]): Promise<void> {
     }
     case "install":
       console.log(`Node pinned for hooks and MCP: ${NODE} (override with SKILLROUTER_NODE=/path/to/node)`);
-      for (const a of agentsFrom(args)) for (const line of install(a)) console.log(line);
+      { const seen = new Set<string>(); for (const a of targetsFrom(args)) for (const line of install(a)) if (!seen.has(line)) { seen.add(line); console.log(line); } }
       break;
     case "report": console.log(report(Number(args[0] ?? 7))); break;
     case "mcp": await serveMcp(); break;

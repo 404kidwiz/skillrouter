@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { BM25 } from "./bm25.js";
+import { BM25, tokenize, stem, TOKENIZER_VERSION } from "./bm25.js";
 import { loadIndex, type Index, type SkillEntry } from "./index.js";
 import { USAGE_LOG, SR_DIR } from "./paths.js";
 
@@ -12,7 +12,9 @@ export function getIndex(): { index: Index; bm25: BM25 } {
   if (cached) return cached;
   const index = loadIndex();
   if (!index) throw new Error("No index yet. Run: skillrouter index");
-  cached = { index, bm25: new BM25(index.skills.map((s) => ({ id: s.id, tokens: s.tokens }))) };
+  // An index from an older tokenizer still works: its stored tokens get the same stemming queries get.
+  const tokens = (s: SkillEntry) => ((index.tokenizer ?? 1) < TOKENIZER_VERSION ? s.tokens.map(stem) : s.tokens);
+  cached = { index, bm25: new BM25(index.skills.map((s) => ({ id: s.id, tokens: tokens(s), name: tokenize(s.name) }))) };
   return cached;
 }
 

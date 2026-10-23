@@ -1,10 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
-import { HOME, type AgentId } from "./paths.js";
+import { execFileSync } from "node:child_process";
+import { HOME, SR_DIR, AGENTS, type AgentId } from "./paths.js";
 
 // Pin both integrations to this installed package; prompt submission never invokes npm.
 import { fileURLToPath } from "node:url";
 const CLI = fileURLToPath(new URL("./cli.js", import.meta.url));
+
+/** Agents that get the MCP server but have no prompt hook of their own. */
+export const MCP_ONLY = ["openclaude", "antigravity", "hermes"] as const;
+export type McpOnlyId = (typeof MCP_ONLY)[number];
+export type InstallTarget = AgentId | McpOnlyId;
+export const INSTALL_TARGETS: InstallTarget[] = [...AGENTS, ...MCP_ONLY];
 
 /** A Node binary another tool does not manage: the one running us, unless it lives under a managed
  * tree (~/.hermes, node_modules, …), then the first `node` on PATH that doesn't. SKILLROUTER_NODE overrides. */
@@ -22,27 +29,45 @@ export function resolveNode(): string {
 
 export const NODE = resolveNode();
 const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
-const BIN = `${quote(NODE)} ${quote(CLI)}`;
+/**
+ * Hooks call a launcher whose path never changes, so a hook's command text (what Codex hashes
+ * for trust, what Cursor and Gemini store) survives upgrades and Node changes: `install` only
+ * rewrites what the launcher execs.
+ */
+export const LAUNCHER = path.join(SR_DIR, "bin", "skillrouter-hint");
+const BIN = quote(LAUNCHER);
 const MCP_CMD = { command: NODE, args: [CLI, "mcp"] };
 const TOML_MCP = `command = ${JSON.stringify(NODE)}\nargs = [${JSON.stringify(CLI)}, "mcp"]`;
+
+export function writeLauncher(node = NODE, cli = CLI, launcher = LAUNCHER): string {
+  fs.mkdirSync(path.dirname(launcher), { recursive: true });
+  const body = `#!/bin/sh\n# skillrouter prompt-hook launcher. Rewritten by \`skillrouter install\`; hook configs point here so their text never changes.\nexec ${quote(node)} ${quote(cli)} hint "$@"\n`;
+  fs.writeFileSync(launcher + ".tmp", body, { mode: 0o755 });
+  fs.renameSync(launcher + ".tmp", launcher);
+  fs.chmodSync(launcher, 0o755);
+  return `${launcher}: execs ${node} ${cli}`;
+}
 
 export function isRouterHook(entry: unknown): boolean {
   if (!entry || typeof entry !== "object") return false;
   const value = entry as { command?: unknown; hooks?: unknown[] };
-  return (typeof value.command === "string" && /(?:skillrouter|cli\.js['"]?)\s+hint\s+(?:claude|codex|cursor|gemini|opencode)\b/.test(value.command)) ||
+  return (typeof value.command === "string" && /(?:skillrouter-hint['"]?|skillrouter|cli\.js['"]?)\s+(?:hint\s+)?(?:claude|codex|cursor|gemini|opencode)\b/.test(value.command)) ||
     (Array.isArray(value.hooks) && value.hooks.some(isRouterHook));
 }
 
 function patchJson(file: string, fn: (d: any) => string, create: object = {}): string {
   let d: any = create;
+  let mode: number | undefined;
   if (fs.existsSync(file)) {
-    fs.copyFileSync(file, `${file}.bak-skillrouter`);
+    mode = fs.statSync(file).mode & 0o777; // a config holding keys (0600) keeps its permissions
+    backup(file, mode);
     d = JSON.parse(fs.readFileSync(file, "utf8"));
   } else fs.mkdirSync(path.dirname(file), { recursive: true });
   const msg = fn(d);
   const tmp = file + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(d, null, 2) + "\n");
+  fs.writeFileSync(tmp, JSON.stringify(d, null, 2) + "\n", mode !== undefined ? { mode } : {});
   JSON.parse(fs.readFileSync(tmp, "utf8"));
+  if (mode !== undefined) fs.chmodSync(tmp, mode);
   fs.renameSync(tmp, file);
   return `${file}: ${msg}`;
 }
@@ -63,29 +88,33 @@ export function addHook(d: any, event: string, entry: object): string {
   return `added ${event} hook`;
 }
 
-/** Wire the MCP server and the prompt hook into one agent's user-scope config. Backs up every file it touches. */
-export function install(agent: AgentId, home = HOME): string[] {
+const mcpEntry = (agent: string, prev: any = {}) => ({ ...prev, ...MCP_CMD, env: { ...prev?.env, SKILLROUTER_AGENT: agent } });
+
+/** Wire the MCP server and (where the host has one) the prompt hook into one agent's user-scope config. Backs up every file it touches. */
+export function install(agent: InstallTarget, home = HOME): string[] {
   const out: string[] = [];
+  if ((AGENTS as string[]).includes(agent)) out.push(writeLauncher(NODE, CLI, home === HOME ? LAUNCHER : path.join(home, ".skillrouter", "bin", "skillrouter-hint")));
+  const bin = home === HOME ? BIN : quote(path.join(home, ".skillrouter", "bin", "skillrouter-hint"));
   switch (agent) {
     case "claude":
       out.push(patchJson(path.join(home, ".claude", "settings.json"), (d) =>
-        addHook(d, "UserPromptSubmit", { hooks: [{ type: "command", command: `${BIN} hint claude`, timeout: 5 }] })));
-      out.push(patchJson(path.join(home, ".claude.json"), (d) => { (d.mcpServers ??= {}).skillrouter = { ...d.mcpServers.skillrouter, type: "stdio", ...MCP_CMD, env: { ...d.mcpServers.skillrouter?.env, SKILLROUTER_AGENT: agent } }; return "skillrouter MCP set"; }));
+        addHook(d, "UserPromptSubmit", { hooks: [{ type: "command", command: `${bin} claude`, timeout: 5 }] })));
+      out.push(patchJson(path.join(home, ".claude.json"), (d) => { (d.mcpServers ??= {}).skillrouter = { type: "stdio", ...mcpEntry(agent, d.mcpServers.skillrouter) }; return "skillrouter MCP set"; }));
       break;
     case "codex":
       out.push(patchJson(path.join(home, ".codex", "hooks.json"), (d) =>
-        addHook(d, "UserPromptSubmit", { hooks: [{ type: "command", command: `${BIN} hint codex`, timeout: 5 }] })));
+        addHook(d, "UserPromptSubmit", { hooks: [{ type: "command", command: `${bin} codex`, timeout: 5 }] })));
       out.push(appendToml(path.join(home, ".codex", "config.toml"), `\n[mcp_servers.skillrouter]\n${TOML_MCP}\n[mcp_servers.skillrouter.env]\nSKILLROUTER_AGENT = "codex"\n`, "[mcp_servers.skillrouter]"));
-      out.push("Codex asks you to trust new hooks on next start; run `codex` and approve the skillrouter hook.");
+      out.push("Codex asks you to trust a hook once; after that the launcher keeps its command text stable across reinstalls.");
       break;
     case "cursor":
-      out.push(patchJson(path.join(home, ".cursor", "hooks.json"), (d) => addHook(d, "beforeSubmitPrompt", { command: `${BIN} hint cursor` }), { version: 1, hooks: {} }));
-      out.push(patchJson(path.join(home, ".cursor", "mcp.json"), (d) => { (d.mcpServers ??= {}).skillrouter = { ...d.mcpServers.skillrouter, ...MCP_CMD, env: { ...d.mcpServers.skillrouter?.env, SKILLROUTER_AGENT: agent } }; return "skillrouter MCP set"; }));
+      out.push(patchJson(path.join(home, ".cursor", "hooks.json"), (d) => addHook(d, "beforeSubmitPrompt", { command: `${bin} cursor` }), { version: 1, hooks: {} }));
+      out.push(patchJson(path.join(home, ".cursor", "mcp.json"), (d) => { (d.mcpServers ??= {}).skillrouter = mcpEntry(agent, d.mcpServers.skillrouter); return "skillrouter MCP set"; }));
       break;
     case "gemini":
       out.push(patchJson(path.join(home, ".gemini", "settings.json"), (d) => {
-        const h = addHook(d, "BeforeAgent", { hooks: [{ type: "command", command: `${BIN} hint gemini`, timeout: 5000 }] });
-        (d.mcpServers ??= {}).skillrouter = { ...d.mcpServers.skillrouter, ...MCP_CMD, env: { ...d.mcpServers.skillrouter?.env, SKILLROUTER_AGENT: agent } };
+        const h = addHook(d, "BeforeAgent", { hooks: [{ type: "command", command: `${bin} gemini`, timeout: 5000 }] });
+        (d.mcpServers ??= {}).skillrouter = mcpEntry(agent, d.mcpServers.skillrouter);
         return h + " + skillrouter MCP";
       }));
       break;
@@ -94,18 +123,46 @@ export function install(agent: AgentId, home = HOME): string[] {
       out.push(patchJson(cfg, (d) => { (d.mcp ??= {}).skillrouter = { ...d.mcp.skillrouter, type: "local", command: [MCP_CMD.command, ...MCP_CMD.args], enabled: true, environment: { ...d.mcp.skillrouter?.environment, SKILLROUTER_AGENT: agent } }; return "skillrouter MCP set"; }));
       const plugin = path.join(home, ".config", "opencode", "plugins", "skillrouter-hints.js");
       fs.mkdirSync(path.dirname(plugin), { recursive: true });
-      fs.writeFileSync(plugin, openCodePlugin());
+      fs.writeFileSync(plugin, openCodePlugin(home === HOME ? LAUNCHER : path.join(home, ".skillrouter", "bin", "skillrouter-hint")));
       out.push(`${plugin}: written`);
       break;
     }
+    case "openclaude":
+      out.push(patchJson(path.join(home, ".openclaude.json"), (d) => { (d.mcpServers ??= {}).skillrouter = { type: "stdio", ...mcpEntry(agent, d.mcpServers.skillrouter) }; return "skillrouter MCP set (no hooks on this host)"; }));
+      break;
+    case "antigravity":
+      out.push(patchJson(path.join(home, ".gemini", "antigravity", "mcp_config.json"), (d) => { (d.mcpServers ??= {}).skillrouter = mcpEntry(agent, d.mcpServers.skillrouter); return "skillrouter MCP set (no hooks on this host)"; }));
+      break;
+    case "hermes":
+      out.push(installHermes(home));
+      break;
   }
   return out;
+}
+
+/** Hermes keeps MCP servers in ~/.hermes/config.yaml; its own config API writes it, so its comments and layout survive. */
+function installHermes(home: string): string {
+  const cfg = path.join(home, ".hermes", "config.yaml");
+  const py = [path.join(home, ".hermes", "hermes-agent", "venv", "bin", "python"), path.join(home, ".hermes", "hermes-agent", ".venv", "bin", "python")].find((p) => fs.existsSync(p));
+  if (!fs.existsSync(cfg)) return `${cfg}: missing (Hermes not installed); skipped`;
+  if (!py) return `${cfg}: Hermes's Python not found under ~/.hermes/hermes-agent; add mcp_servers.skillrouter by hand: command ${NODE}, args [${CLI}, "mcp"], env SKILLROUTER_AGENT=hermes`;
+  backup(cfg, fs.statSync(cfg).mode & 0o777);
+  const script = `import sys, json; sys.path.insert(0, ${JSON.stringify(path.join(home, ".hermes", "hermes-agent"))})
+from hermes_cli.config import load_config, save_config
+c = load_config(); c.setdefault("mcp_servers", {})["skillrouter"] = json.loads(sys.argv[1]); save_config(c); print("ok")`;
+  try {
+    execFileSync(py, ["-c", script, JSON.stringify({ command: NODE, args: [CLI, "mcp"], env: { SKILLROUTER_AGENT: "hermes" } })], { cwd: path.join(home, ".hermes", "hermes-agent"), stdio: ["ignore", "pipe", "pipe"], timeout: 60000 });
+    return `${cfg}: skillrouter MCP set via Hermes config API (no hooks on this host)`;
+  } catch (e) {
+    return `${cfg}: Hermes config API failed (${(e as Error).message.split("\n")[0]}); not changed`;
+  }
 }
 
 function appendToml(file: string, block: string, marker: string): string {
   const cur = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  if (cur) fs.copyFileSync(file, `${file}.bak-skillrouter`);
+  const mode = cur ? fs.statSync(file).mode & 0o777 : undefined; // config.toml can hold keys: keep 0600
+  if (cur) backup(file, mode);
   // Update only the keys owned by this installer, retaining other server settings/tables.
   let next = cur;
   for (const table of block.trim().split(/\n(?=\[)/)) {
@@ -126,13 +183,22 @@ function appendToml(file: string, block: string, marker: string): string {
     }
     next = next.slice(0, after) + body + next.slice(end);
   }
-  fs.writeFileSync(file + ".tmp", next);
+  fs.writeFileSync(file + ".tmp", next, mode !== undefined ? { mode } : {});
+  if (mode !== undefined) fs.chmodSync(file + ".tmp", mode);
   fs.renameSync(file + ".tmp", file);
   return `${file}: updated ${marker}`;
 }
 
+/** The first install keeps the pristine copy; later installs don't overwrite it. */
+function backup(file: string, mode?: number): void {
+  const bak = `${file}.bak-skillrouter`;
+  if (fs.existsSync(bak)) return;
+  fs.copyFileSync(file, bak);
+  if (mode !== undefined) fs.chmodSync(bak, mode);
+}
+
 // Hints ride on the user message they belong to and are re-applied every call, so the prompt-cache prefix stays stable.
-export function openCodePlugin(command = NODE, args = [CLI, "hint", "opencode"], timeout = 2000): string { return `// skillrouter prompt hints for OpenCode (installed by: npx skillrouter install opencode)
+export function openCodePlugin(command = LAUNCHER, args = ["opencode"], timeout = 2000): string { return `// skillrouter prompt hints for OpenCode (installed by: npx skillrouter install opencode)
 import { spawn } from 'node:child_process';
 const hints = new Map();
 function ask(prompt, session_id) {

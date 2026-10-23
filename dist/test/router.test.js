@@ -7,7 +7,8 @@ import { BM25, tokenize } from "../src/bm25.js";
 import { parseFrontmatter } from "../src/index.js";
 import { formatHint } from "../src/hint.js";
 test("tokenize drops stop words and splits on punctuation", () => {
-    assert.deepEqual(tokenize("Fix the failing pytest in tests/test_auth.py"), ["fix", "failing", "pytest", "tests", "test", "auth", "py"]);
+    // plurals fold: tests -> test
+    assert.deepEqual(tokenize("Fix the failing pytest in tests/test_auth.py"), ["fix", "failing", "pytest", "test", "test", "auth", "py"]);
 });
 test("BM25 ranks the matching skill first and scores relative to the best hit", () => {
     const bm = new BM25([

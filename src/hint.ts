@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { INDEX_FILE } from "./paths.js";
 import type { AgentId } from "./paths.js";
 import { logUsage, search } from "./search.js";
+import { readCore } from "./core.js";
 
 const EVENT: Partial<Record<AgentId, string>> = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
 
@@ -42,9 +43,19 @@ export async function hint(agent: AgentId, input: string, minRaw = Number(proces
   }
   record(hits.length ? "shown" : "no_match", hits);
   if (!hits.length) return formatHint(agent, "");
-  const lines = hits.map((h) => `- ${h.skill.id} (${h.score.toFixed(2)}): ${h.skill.description.slice(0, 140)}`).join("\n");
-  return formatHint(agent,
-    "Skill hints from skillrouter for this prompt. Use one only if it fits the task: invoke it if it is already in your skill list, otherwise load it with skillrouter read_skill. When calling read_skill for this hint, include hint_id: " + hint_id + ".\n" + lines);
+  return formatHint(agent, hintText(hits, hint_id, new Set(readCore()), agent));
+}
+
+/** The hint the model reads: each candidate's trigger, and the exact way to load it (already preloaded, or via read_skill). */
+export function hintText(hits: Awaited<ReturnType<typeof search>>, hint_id: string, core: Set<string>, agent: AgentId = "claude"): string {
+  const lines = hits.map((h) => {
+    const id = h.skill.id;
+    const how = core.has(id) || core.has(h.skill.name)
+      ? (agent === "claude" ? "preloaded: invoke it with the Skill tool" : `preloaded: use the skill named ${id} from your skill list`)
+      : `not preloaded: read_skill("${id}", hint_id="${hint_id}")`;
+    return `- ${id} (${h.score.toFixed(2)}) — ${how}\n  when: ${(h.skill.description || "(no description)").split(/\s+/).join(" ").slice(0, 220)}`;
+  }).join("\n");
+  return "Skill hints from skillrouter. Use a skill only if this task matches its \"when\" line; then load it exactly as its line says (one skill, before starting the work). Otherwise ignore these.\n" + lines;
 }
 
 /** Run matching in a killable process: synchronous index work cannot defeat the deadline. */

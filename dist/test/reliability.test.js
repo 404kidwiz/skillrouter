@@ -109,7 +109,7 @@ test("hook records skips/errors/matches, stays lexical with an embedding index, 
     fs.writeFileSync(indexFile, JSON.stringify({ builtAt: new Date().toISOString(), roots: [], skills: [{ id: "demo", name: "demo", description: "demo", path: scratch, root: scratch, tokens }], embeddings: { demo: [1] } }));
     const output = invoke({ prompt: tokens.join(" "), session_id: "private-session-value" });
     const text = JSON.parse(output).hookSpecificOutput.additionalContext;
-    assert.match(text, /hint_id:/);
+    assert.match(text, /hint_id="[0-9a-f-]{36}"/);
     assert.equal(rows().at(-1)?.reason, "shown");
     assert.doesNotMatch(fs.readFileSync(logFile, "utf8"), /private-session-value|term79/);
     invoke({ prompt: "unrelated vocabulary without any matches" });

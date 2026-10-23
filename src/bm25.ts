@@ -8,39 +8,79 @@ export function tokenize(text: string): string[] {
     .toLowerCase()
     .replace(/[^a-z0-9+#.\s_-]/g, " ")
     .split(/[\s_\-./]+/)
-    .filter((t) => t.length > 1 && !STOP.has(t));
+    .filter((t) => t.length > 1 && !STOP.has(t))
+    .map(stem);
 }
 
-export interface Doc { id: string; tokens: string[] }
+/** Folds the common plural so "builds" meets "build" and "tests" meets "test"; nothing cleverer. */
+export function stem(t: string): string {
+  if (t.length > 4 && t.endsWith("ies")) return t.slice(0, -3) + "y";
+  if (t.length > 3 && t.endsWith("s") && !t.endsWith("ss") && !t.endsWith("us") && !t.endsWith("is")) return t.slice(0, -1);
+  return t;
+}
+
+export interface Doc { id: string; tokens: string[]; /** tokens of the skill's name, for the name-match bonus */ name?: string[] }
+
+// Query-side synonyms: a prompt's word reaches skills described with its neighbours. Small on purpose.
+export const SYNONYMS: Record<string, string[]> = {
+  docker: ["container", "containers", "dockerfile"], container: ["docker"], k8s: ["kubernetes"], kubernetes: ["k8s"],
+  pytest: ["python", "test", "testing"], jest: ["javascript", "test", "testing"], vitest: ["test", "testing"],
+  test: ["testing", "tests"], tests: ["testing", "test"], testing: ["test", "tests"],
+  postgres: ["postgresql", "sql", "database"], postgresql: ["postgres", "sql"], pg: ["postgres", "postgresql"], db: ["database"], database: ["db"],
+  js: ["javascript"], javascript: ["js"], ts: ["typescript"], typescript: ["ts"], py: ["python"],
+  migration: ["migrate", "migrations"], migrate: ["migration"], auth: ["authentication", "login"], login: ["auth", "authentication"],
+  perf: ["performance"], slow: ["performance", "optimize"], fast: ["performance"], a11y: ["accessibility"], accessibility: ["a11y"],
+  cro: ["conversion"], conversion: ["cro"], m1: ["apple", "silicon", "arm"], mac: ["macos"], macos: ["mac"],
+  ui: ["frontend", "interface"], frontend: ["ui"], api: ["endpoint", "rest"], bug: ["debug", "fix"], fix: ["debug"], debug: ["debugging"],
+  deploy: ["deployment"], deployment: ["deploy"], ci: ["pipeline"], repo: ["repository", "git"], pr: ["pull", "request", "review"],
+};
+
+// Both sides stemmed once, so the table meets stemmed query and doc tokens ("kubernetes" is "kubernete" in both).
+const STEMMED_SYNONYMS = new Map(Object.entries(SYNONYMS).map(([k, v]) => [stem(k), v.map(stem)]));
+
+/** Query tokens plus their synonyms (synonyms never add a token the query already has). */
+export function expand(tokens: string[]): string[] {
+  const out = new Set(tokens);
+  for (const t of tokens) for (const s of STEMMED_SYNONYMS.get(t) ?? []) out.add(s);
+  return [...out];
+}
+
+/** Bump when `tokenize` changes; an index built by an older one is re-stemmed at load. */
+export const TOKENIZER_VERSION = 2;
 
 export class BM25 {
   private df = new Map<string, number>();
   private avgLen = 0;
-  private docs: { id: string; tf: Map<string, number>; len: number }[] = [];
+  private docs: { id: string; tf: Map<string, number>; len: number; name: Set<string> }[] = [];
   constructor(docs: Doc[], private k1 = 1.2, private b = 0.75) {
     for (const d of docs) {
       const tf = new Map<string, number>();
       for (const t of d.tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
       for (const t of tf.keys()) this.df.set(t, (this.df.get(t) ?? 0) + 1);
-      this.docs.push({ id: d.id, tf, len: d.tokens.length });
+      this.docs.push({ id: d.id, tf, len: d.tokens.length, name: new Set(d.name ?? []) });
     }
     this.avgLen = this.docs.reduce((s, d) => s + d.len, 0) / Math.max(1, this.docs.length);
   }
 
   /** score = relative to the best hit (0..1); raw = BM25 sum; matched = distinct query terms found in the doc. */
   search(query: string, k = 5): { id: string; score: number; raw: number; matched: number }[] {
-    const q = [...new Set(tokenize(query))];
+    const original = [...new Set(tokenize(query))];
+    const q = expand(original);
     const n = this.docs.length;
     const out: { id: string; score: number; matched: number }[] = [];
     for (const d of this.docs) {
-      let s = 0, matched = 0;
+      let s = 0, matched = 0, inName = 0;
       for (const t of q) {
         const f = d.tf.get(t);
         if (!f) continue;
-        matched++;
+        if (original.includes(t)) matched++; // synonyms score but don't count as a match the prompt made itself
         const idf = Math.log(1 + (n - (this.df.get(t) ?? 0) + 0.5) / ((this.df.get(t) ?? 0) + 0.5));
-        s += idf * (f * (this.k1 + 1)) / (f + this.k1 * (1 - this.b + (this.b * d.len) / this.avgLen));
+        // A synonym is a weaker signal than the prompt's own word.
+        s += (original.includes(t) ? 1 : 0.6) * idf * (f * (this.k1 + 1)) / (f + this.k1 * (1 - this.b + (this.b * d.len) / this.avgLen));
+        if (original.includes(t) && d.name.has(t)) inName++; // the prompt's own words only
       }
+      // A skill whose name carries the prompt's words is what the prompt is asking for: +25% per word, up to +75%.
+      if (inName) s *= 1 + 0.25 * Math.min(inName, 3);
       if (s > 0) out.push({ id: d.id, score: s, matched });
     }
     out.sort((a, b) => b.score - a.score);
