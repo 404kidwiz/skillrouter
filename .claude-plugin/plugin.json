@@ -1,0 +1,9 @@
+{
+  "name": "skillrouter",
+  "version": "0.1.0",
+  "description": "A big agent-skill library without the context bloat: preload a small core, route the rest through one MCP server, get per-prompt skill hints, and tune from usage logs.",
+  "author": { "name": "404kidwiz" },
+  "repository": "https://github.com/404kidwiz/skillrouter",
+  "license": "MIT",
+  "keywords": ["skills", "context", "tokens", "mcp", "router"]
+}

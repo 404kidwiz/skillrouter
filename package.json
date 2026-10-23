@@ -1,0 +1,47 @@
+{
+  "name": "skillrouter",
+  "version": "0.1.0",
+  "description": "Keep a huge agent-skill library without the context bloat: a small preloaded core, one MCP router for the rest, prompt-time hints, and usage logs to tune it. Works with Claude Code, Codex, Cursor, Gemini CLI and OpenCode.",
+  "license": "MIT",
+  "repository": "github:404kidwiz/skillrouter",
+  "type": "module",
+  "bin": {
+    "skillrouter": "dist/src/cli.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "hooks",
+    ".claude-plugin",
+    ".mcp.json",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test \"dist/test/*.test.js\"",
+    "prepublishOnly": "pnpm build",
+    "prepare": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.25.0"
+  },
+  "optionalDependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "keywords": [
+    "agent-skills",
+    "skills",
+    "claude-code",
+    "codex",
+    "cursor",
+    "mcp",
+    "context-window",
+    "tokens"
+  ]
+}

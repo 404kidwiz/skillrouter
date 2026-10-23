@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "skillrouter": { "type": "stdio", "command": "npx", "args": ["-y", "skillrouter", "mcp"] }
+  }
+}

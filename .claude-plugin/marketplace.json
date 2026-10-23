@@ -1,0 +1,12 @@
+{
+  "name": "skillrouter",
+  "owner": { "name": "404kidwiz" },
+  "plugins": [
+    {
+      "name": "skillrouter",
+      "source": "./",
+      "description": "A big agent-skill library without the context bloat: small preloaded core, one MCP router for the rest, per-prompt skill hints, usage logs.",
+      "version": "0.1.0"
+    }
+  ]
+}

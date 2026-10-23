@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "npx -y skillrouter hint claude", "timeout": 5, "statusMessage": "skillrouter: matching skills…" }
+        ]
+      }
+    ]
+  }
+}
