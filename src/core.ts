@@ -47,13 +47,28 @@ export function skipCore(id: string, agents: AgentId[], on = true): boolean {
   return true;
 }
 
-/** Rebuild ~/.skillrouter/core as symlinks to the core skills, then link them into the agent folders that need them. */
-export function syncCore(agents: AgentId[]): { linked: number; missing: string[]; skipped: number } {
+const PREV_FILE = path.join(SR_DIR, "core.synced");
+
+/**
+ * Rebuild ~/.skillrouter/core as symlinks to the core skills, then link them into the agent folders
+ * that need them. A skill removed from core since the last sync has its symlink (never a real
+ * folder) removed from those agent folders too, so `core remove` takes effect.
+ */
+export function syncCore(agents: AgentId[]): { linked: number; missing: string[]; skipped: number; unlinked: number } {
   const entries = readCoreEntries();
   fs.rmSync(CORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(CORE_DIR, { recursive: true });
   const missing: string[] = [];
-  let linked = 0, skipped = 0;
+  let linked = 0, skipped = 0, unlinked = 0;
+  let previous: string[] = [];
+  try { previous = JSON.parse(fs.readFileSync(PREV_FILE, "utf8")); } catch { /* first sync */ }
+  const current = new Set(entries.map((e) => e.id));
+  for (const gone of previous.filter((n) => !current.has(n))) {
+    for (const agent of agents) {
+      const link = path.join(AGENT_SKILL_DIRS[agent][0], gone);
+      try { if (fs.lstatSync(link).isSymbolicLink()) { fs.unlinkSync(link); unlinked++; } } catch { /* not there */ }
+    }
+  }
   const targets = new Map<string, { target: string; skip: Set<AgentId> }>();
   for (const { id, skip } of entries) {
     const m = findSkill(id);
@@ -75,7 +90,8 @@ export function syncCore(agents: AgentId[]): { linked: number; missing: string[]
       fs.symlinkSync(target, link);
     }
   }
-  return { linked, missing, skipped };
+  fs.writeFileSync(PREV_FILE, JSON.stringify([...targets.keys()]));
+  return { linked, missing, skipped, unlinked };
 }
 
 /** Starting point: the N skills with the most reads in the usage log, or (first run) nothing. */

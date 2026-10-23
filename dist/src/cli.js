@@ -81,7 +81,7 @@ async function main(argv) {
             }
             else if (sub === "sync") {
                 const r = syncCore(agentsFrom(rest));
-                console.log(`linked ${r.linked} core skills${r.skipped ? `, ${r.skipped} agent-specific skips honored` : ""}${r.missing.length ? `; not found: ${r.missing.join(", ")}` : ""}`);
+                console.log(`linked ${r.linked} core skills${r.skipped ? `, ${r.skipped} agent-specific skips honored` : ""}${r.unlinked ? `, ${r.unlinked} removed-from-core links taken out of agent folders` : ""}${r.missing.length ? `; not found: ${r.missing.join(", ")}` : ""}`);
             }
             else if (sub === "skip" || sub === "unskip") {
                 const [id, ...names] = rest;

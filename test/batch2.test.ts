@@ -26,6 +26,14 @@ test("synonyms and the name-match bonus route a docker prompt to the docker skil
   assert.equal(new BM25([{ id: "x", tokens: tokenize("container images") }]).search("docker", 1)[0].matched, 0);
 });
 
+test("hints keep only described, confident candidates near the best one", async () => {
+  const { selectHints } = await import("../src/hint.js");
+  const hit = (id: string, raw: number, description = "Use when doing something specific") => ({ skill: { id, name: id, description, path: "/p", root: "/r", tokens: [] }, score: 1, raw, matched: 2 });
+  const picked = selectHints([hit("undescribed", 40, ""), hit("best", 36), hit("close", 32), hit("far", 20), hit("weak", 10)], 20, 3);
+  assert.deepEqual(picked.map((h) => h.skill.id), ["best", "close"]);
+  assert.deepEqual(selectHints([hit("lonely", 15)], 20, 3), []);
+});
+
 test("hint text says how to load each candidate: preloaded vs read_skill with the hint id", () => {
   const skill = (id: string) => ({ id, name: id, description: "Use when doing X", path: "/p", root: "/r", tokens: [] });
   const text = hintText([{ skill: skill("impeccable"), score: 1, raw: 20, matched: 3 }, { skill: skill("python-testing"), score: 0.9, raw: 18, matched: 2 }], "hint-1", new Set(["impeccable"]));

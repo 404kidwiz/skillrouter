@@ -29,6 +29,14 @@ test("core skip markers survive add/remove and keep a skill out of only the skip
     const shared = fs.readdirSync(path.join(home, ".agents", "skills")).sort();
     assert.deepEqual(claude, ["impeccable"]);
     assert.deepEqual(shared, ["impeccable", "pdf"]);
+    // Removing a skill from core removes its link from the agent folders on the next sync (real folders are never touched).
+    writeCore(["pdf"]);
+    const after = syncCore(["claude", "codex", "cursor"]);
+    assert.equal(after.unlinked, 2);
+    assert.deepEqual(fs.readdirSync(path.join(home, ".claude", "skills")), []);
+    assert.deepEqual(fs.readdirSync(path.join(home, ".agents", "skills")), ["pdf"]);
+    writeCore(["pdf", "impeccable"]);
+    syncCore(["claude", "codex", "cursor"]);
     // A shared folder drops a skill only when every agent reading it skips it.
     skipCore("pdf", ["codex", "cursor"]);
     fs.unlinkSync(path.join(home, ".agents", "skills", "pdf"));

@@ -25,6 +25,8 @@ v0.1.0 on GitHub (public), not yet published to npm.
 
 - 2026-10-23 batch: actionable hint lines (preloaded vs `read_skill(id, hint_id)` + "when:" trigger); stable hook launcher `~/.skillrouter/bin/skillrouter-hint`; `install` for openclaude/antigravity/hermes (0600 preserved; Hermes via its config API); `doctor --live` (JSON/TOML/YAML parsing + real MCP handshake, all 8 hosts connected on the author's Mac); search synonyms, name-match bonus, plural folding (docker prompt now routes to docker-patterns). Independent QA pass found and fixes landed for: `appendToml` dropping 0600 on Codex's config, synonyms not stemmed, a timer keeping `doctor --live` alive 15 s, stale indexes losing matches (now re-stemmed at load via `tokenizer` version), fragile Codex TOML / Hermes YAML parsing (quotes, spaces, flow lists, inline env), backups overwritten on reinstall (now first-copy-wins). Tests 24.
 
+- 2026-10-23 tightening: hints need raw >= 20 (was 14), a description, and raw within 85% of the best hit (max 3); hint rows log raw too. `core sync` now removes links of skills dropped from core (tracked in `~/.skillrouter/core.synced`). Core trimmed 28 → 24: verification-before-completion, test-driven-development, code-review, writing-plans were never invoked in 5 months of Claude skillUsage; no adds yet (3 organic reads, 1 each).
+
 ## Next
 - npm publication remains a separate owner-authorized action. Installer now pins the installed absolute CLI/Node paths; a stable local checkout supports `install --local`.
 - Dogfooding since 2026-10-23 on the author's machine via `install --local` (8 agents). Review `report 7` after a few days.

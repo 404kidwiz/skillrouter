@@ -106,7 +106,7 @@ test("hook records skips/errors/matches, stays lexical with an embedding index, 
     invoke({ prompt: "a sufficiently long request without an index" });
     assert.equal(rows().at(-1)?.reason, "missing_index");
     const tokens = Array.from({ length: 80 }, (_, i) => `term${i}`);
-    fs.writeFileSync(indexFile, JSON.stringify({ builtAt: new Date().toISOString(), roots: [], skills: [{ id: "demo", name: "demo", description: "demo", path: scratch, root: scratch, tokens }], embeddings: { demo: [1] } }));
+    fs.writeFileSync(indexFile, JSON.stringify({ builtAt: new Date().toISOString(), roots: [], skills: [{ id: "demo", name: "demo", description: "Use when the prompt is made of term words", path: scratch, root: scratch, tokens }], embeddings: { demo: [1] } }));
     const output = invoke({ prompt: tokens.join(" "), session_id: "private-session-value" });
     const text = JSON.parse(output).hookSpecificOutput.additionalContext;
     assert.match(text, /hint_id="[0-9a-f-]{36}"/);

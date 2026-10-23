@@ -68,7 +68,7 @@ async function main(argv: string[]): Promise<void> {
       else if (sub === "suggest") {
         const ids = suggestCore(readCounts(90), Number(rest[0] ?? 30));
         console.log(ids.length ? ids.join("\n") : "No reads logged yet. Add skills you use with: skillrouter core add <id>...");
-      } else if (sub === "sync") { const r = syncCore(agentsFrom(rest)); console.log(`linked ${r.linked} core skills${r.skipped ? `, ${r.skipped} agent-specific skips honored` : ""}${r.missing.length ? `; not found: ${r.missing.join(", ")}` : ""}`); }
+      } else if (sub === "sync") { const r = syncCore(agentsFrom(rest)); console.log(`linked ${r.linked} core skills${r.skipped ? `, ${r.skipped} agent-specific skips honored` : ""}${r.unlinked ? `, ${r.unlinked} removed-from-core links taken out of agent folders` : ""}${r.missing.length ? `; not found: ${r.missing.join(", ")}` : ""}`); }
       else if (sub === "skip" || sub === "unskip") {
         const [id, ...names] = rest;
         const agents = names.filter((x): x is AgentId => (AGENTS as string[]).includes(x)); // never default to "all" here
