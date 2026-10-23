@@ -79,6 +79,8 @@ function patchJson(file, fn, create = {}) {
 }
 export function addHook(d, event, entry) {
     const list = ((d.hooks ??= {})[event] ??= []);
+    // Reinstalling keeps the router's position: hosts that key hook trust by position (Codex) don't re-flag other hooks.
+    let at = list.findIndex((item) => isRouterHook(item));
     // Replace only router commands, preserving unrelated commands grouped in the same entry.
     for (let i = list.length - 1; i >= 0; i--) {
         const item = list[i];
@@ -90,12 +92,23 @@ export function addHook(d, event, entry) {
                 continue;
         }
         list.splice(i, 1);
+        if (i < at)
+            at--;
     }
-    list.push(entry);
+    if (at < 0 || at > list.length)
+        list.push(entry);
+    else
+        list.splice(at, 0, entry);
     return `added ${event} hook`;
 }
 // The router's read_skill is mcp__skillrouter__read_skill when installed here and mcp__plugin_…skillrouter__read_skill from the plugin.
 export const CLAUDE_TOOL_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash|Skill|mcp__.*skillrouter__read_skill";
+// Codex reports shell and exec_command as Bash and file edits as apply_patch.
+export const CODEX_TOOL_MATCHER = "Bash|apply_patch|mcp__skillrouter__read_skill";
+// Cursor's hook names (Shell, Write, MCP:<tool>) plus its edit tools' own names. Not Read: every match is a process
+// spawn, and the stop check sees SKILL.md reads in Cursor's transcript anyway.
+export const CURSOR_TOOL_MATCHER = "Shell|Write|StrReplace|Edit|MultiEdit|ApplyPatch|MCP:read_skill";
+export const GEMINI_TOOL_MATCHER = "write_file|replace|run_shell_command|activate_skill|mcp_skillrouter_read_skill";
 const mcpEntry = (agent, prev = {}) => ({ ...prev, ...MCP_CMD, env: { ...prev?.env, SKILLROUTER_AGENT: agent } });
 /** Wire the MCP server and (where the host has one) the prompt hook into one agent's user-scope config. Backs up every file it touches. */
 export function install(agent, home = HOME) {
@@ -114,17 +127,30 @@ export function install(agent, home = HOME) {
             out.push(patchJson(path.join(home, ".claude.json"), (d) => { (d.mcpServers ??= {}).skillrouter = { type: "stdio", ...mcpEntry(agent, d.mcpServers.skillrouter) }; return "skillrouter MCP set"; }));
             break;
         case "codex":
-            out.push(patchJson(path.join(home, ".codex", "hooks.json"), (d) => addHook(d, "UserPromptSubmit", { hooks: [{ type: "command", command: `${bin} codex`, timeout: 5 }] })));
+            out.push(patchJson(path.join(home, ".codex", "hooks.json"), (d) => [
+                addHook(d, "UserPromptSubmit", { hooks: [{ type: "command", command: `${bin} codex`, timeout: 5 }] }),
+                addHook(d, "PostToolUse", { matcher: CODEX_TOOL_MATCHER, hooks: [{ type: "command", command: `${bin} codex tool`, timeout: 5 }] }),
+                addHook(d, "Stop", { hooks: [{ type: "command", command: `${bin} codex stop`, timeout: 5 }] }),
+            ].join(", ")));
             out.push(appendToml(path.join(home, ".codex", "config.toml"), `\n[mcp_servers.skillrouter]\n${TOML_MCP}\n[mcp_servers.skillrouter.env]\nSKILLROUTER_AGENT = "codex"\n`, "[mcp_servers.skillrouter]"));
-            out.push("Codex asks you to trust a hook once; after that the launcher keeps its command text stable across reinstalls.");
+            out.push("Codex asks you to trust each new hook once (/hooks in Codex); after that the launcher keeps its command text stable across reinstalls.");
             break;
         case "cursor":
-            out.push(patchJson(path.join(home, ".cursor", "hooks.json"), (d) => addHook(d, "beforeSubmitPrompt", { command: `${bin} cursor` }), { version: 1, hooks: {} }));
+            out.push(patchJson(path.join(home, ".cursor", "hooks.json"), (d) => [
+                addHook(d, "beforeSubmitPrompt", { command: `${bin} cursor` }),
+                addHook(d, "postToolUse", { command: `${bin} cursor tool`, matcher: CURSOR_TOOL_MATCHER, timeout: 5 }),
+                // One follow-up at most (Cursor's default allows 5); skillrouter also never nudges a turn that is itself a follow-up.
+                addHook(d, "stop", { command: `${bin} cursor stop`, timeout: 5, loop_limit: 1 }),
+            ].join(", "), { version: 1, hooks: {} }));
             out.push(patchJson(path.join(home, ".cursor", "mcp.json"), (d) => { (d.mcpServers ??= {}).skillrouter = mcpEntry(agent, d.mcpServers.skillrouter); return "skillrouter MCP set"; }));
             break;
         case "gemini":
             out.push(patchJson(path.join(home, ".gemini", "settings.json"), (d) => {
-                const h = addHook(d, "BeforeAgent", { hooks: [{ type: "command", command: `${bin} gemini`, timeout: 5000 }] });
+                const h = [
+                    addHook(d, "BeforeAgent", { hooks: [{ type: "command", command: `${bin} gemini`, timeout: 5000 }] }),
+                    addHook(d, "AfterTool", { matcher: GEMINI_TOOL_MATCHER, hooks: [{ type: "command", command: `${bin} gemini tool`, timeout: 5000 }] }),
+                    addHook(d, "AfterAgent", { hooks: [{ type: "command", command: `${bin} gemini stop`, timeout: 5000 }] }),
+                ].join(", ");
                 (d.mcpServers ??= {}).skillrouter = mcpEntry(agent, d.mcpServers.skillrouter);
                 return h + " + skillrouter MCP";
             }));
@@ -214,29 +240,37 @@ function backup(file, mode) {
     if (mode !== undefined)
         fs.chmodSync(bak, mode);
 }
-// Hints ride on the user message they belong to and are re-applied every call, so the prompt-cache prefix stays stable.
+// Prompt hints ride on the user message they belong to and are re-applied every call, so the prompt-cache prefix
+// stays stable. Trigger hints are appended to the tool result that showed the kind of work.
 export function openCodePlugin(command = LAUNCHER, args = ["opencode"], timeout = 2000) {
-    return `// skillrouter prompt hints for OpenCode (installed by: npx skillrouter install opencode)
+    return `// skillrouter hints for OpenCode (installed by: npx skillrouter install opencode)
 import { spawn } from 'node:child_process';
 const hints = new Map();
-function ask(prompt, session_id) {
+// Only tools that show the kind of work (or load a skill) start a process.
+const TOOLS = /^(bash|edit|write|multiedit|patch|apply_patch|skill)$|read_skill$/;
+function ask(payload, mode) {
   return new Promise((resolve) => {
-    const child = spawn(${JSON.stringify(command)}, ${JSON.stringify(args)}, { stdio: ['pipe', 'pipe', 'ignore'] });
+    const child = spawn(${JSON.stringify(command)}, [...${JSON.stringify(args)}, ...(mode ? [mode] : [])], { stdio: ['pipe', 'pipe', 'ignore'] });
     let out = '';
     const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(''); }, ${timeout});
     child.stdout.on('data', (d) => { out += d; if (out.length > 65536) { child.kill('SIGKILL'); resolve(''); } });
     child.on('error', () => { clearTimeout(timer); resolve(''); });
     child.stdin.on('error', () => {});
     child.on('close', () => { clearTimeout(timer); try { resolve(JSON.parse(out).hookSpecificOutput.additionalContext || ''); } catch { resolve(''); } });
-    child.stdin.end(JSON.stringify({ prompt, session_id }));
+    child.stdin.end(JSON.stringify(payload));
   });
 }
-export const SkillrouterHints = async () => ({
+export const SkillrouterHints = async (ctx) => ({
   'chat.message': async (_input, output) => {
     const id = output?.message?.id;
     const text = (output?.parts ?? []).filter((p) => p.type === 'text' && !p.synthetic).map((p) => p.text).join('\\n').trim();
-    const hint = id ? await ask(text, output?.message?.sessionID) : '';
+    const hint = id ? await ask({ prompt: text, session_id: output?.message?.sessionID, prompt_id: id }) : '';
     if (hint) hints.set(id, hint);
+  },
+  'tool.execute.after': async (input, output) => {
+    if (!TOOLS.test(input?.tool ?? '') || typeof output?.output !== 'string') return;
+    const hint = await ask({ session_id: input.sessionID, tool_name: input.tool, tool_input: input.args, cwd: ctx?.directory }, 'tool');
+    if (hint) output.output += '\\n\\n' + hint;
   },
   'experimental.chat.messages.transform': async (_input, output) => {
     for (const m of output?.messages ?? []) {

@@ -6,21 +6,31 @@ import type { AgentId } from "./paths.js";
 import { getIndex, logUsage, search, type Hit } from "./search.js";
 import { readCore } from "./core.js";
 import { semanticScores } from "./embed.js";
-import { addShown, bareSkill, loadedSkills } from "./state.js";
+import { addShown, bareSkill, loadedSkills, markTurn } from "./state.js";
 
 const EVENT: Partial<Record<AgentId, string>> = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
+const TOOL_EVENT: Partial<Record<AgentId, string>> = { gemini: "AfterTool" }; // claude/codex: PostToolUse
 
-export function formatHint(agent: AgentId, text: string, event?: string): string {
-  if (agent === "cursor") return JSON.stringify(text ? { continue: true, additional_context: text } : { continue: true });
+/** The host's hook answer carrying context for the model. `tool`: after a tool call rather than on a prompt. */
+export function formatHint(agent: AgentId, text: string, tool = false): string {
+  if (agent === "cursor") return JSON.stringify(text ? { ...(tool ? {} : { continue: true }), additional_context: text } : tool ? {} : { continue: true });
   if (!text) return "";
-  return JSON.stringify({ hookSpecificOutput: { hookEventName: event ?? EVENT[agent] ?? "UserPromptSubmit", additionalContext: text } });
+  const hookEventName = tool ? TOOL_EVENT[agent] ?? "PostToolUse" : EVENT[agent] ?? "UserPromptSubmit";
+  return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: text } });
 }
 
 export const sessionHash = (id: unknown) => (typeof id === "string" && id ? createHash("sha256").update(id).digest("hex") : undefined);
 
+/** The conversation a hook belongs to: session_id (Claude, Codex, Gemini, OpenCode) or Cursor's conversation_id. */
+export const sessionOf = (p: any): unknown => p?.session_id ?? p?.conversation_id;
+
+/** The user turn a hook belongs to, where the host names one: Claude prompt_id, Codex turn_id, Cursor generation_id. */
+export const turnOf = (p: any): unknown => p?.prompt_id ?? p?.turn_id ?? p?.generation_id;
+
 /** Host- and harness-generated turns (notifications, subagent hand-backs, command echoes) are not the user's task. */
 export function isSystemText(prompt: string): boolean {
-  return /^(?:<task-notification>|<system-reminder>|\[SYSTEM NOTIFICATION|<local-command-|<command-name>|<agent-message|Another Claude session sent a message|Caveat: The messages below)/.test(prompt.trim());
+  // The decision nudge itself comes back as a prompt (Cursor's follow-up, Gemini's retry, Codex's continuation).
+  return /^(?:<task-notification>|<system-reminder>|\[SYSTEM NOTIFICATION|<local-command-|<command-name>|<agent-message|Another Claude session sent a message|Caveat: The messages below|skillrouter: this turn did real work)/.test(prompt.trim());
 }
 
 /** Reads the hook JSON on stdin, prints the agent-specific hook output. Never blocks a prompt. */
@@ -31,7 +41,7 @@ export async function hint(agent: AgentId, input: string, minRaw = Number(proces
   let payload: Record<string, unknown> = {};
   let semStatus: string | undefined;
   const record = (reason: string, hits: Hit[] = []) => logUsage({
-    client: `hook/${agent}`, agent, tool: "hint", hint_id, reason, session: sessionHash(payload.session_id), prompt: sessionHash(payload.prompt_id),
+    client: `hook/${agent}`, agent, tool: "hint", hint_id, reason, session: sessionHash(sessionOf(payload)), prompt: sessionHash(turnOf(payload)),
     sem: semStatus, duration_ms: Math.round(performance.now() - started), hits: hits.map((h) => [h.skill.id, h.score, h.raw, h.cos ?? null]),
   });
   try {
@@ -39,7 +49,9 @@ export async function hint(agent: AgentId, input: string, minRaw = Number(proces
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || typeof parsed.prompt !== "string") throw new Error();
     payload = parsed;
   } catch { record("invalid_input"); return formatHint(agent, ""); }
-  const session = sessionHash(payload.session_id);
+  const session = sessionHash(sessionOf(payload));
+  // Every prompt starts a turn, checked or not: the end-of-turn nudge counts work from here.
+  markTurn(session, sessionHash(turnOf(payload)));
   const prompt = (payload.prompt as string).trim();
   if (prompt.startsWith("/")) { record("skipped_command"); return formatHint(agent, ""); }
   if (isSystemText(prompt)) { record("skipped_system"); return formatHint(agent, ""); }
@@ -58,7 +70,7 @@ export async function hint(agent: AgentId, input: string, minRaw = Number(proces
   }
   record(hits.length ? "shown" : "no_match", hits);
   if (!hits.length) return formatHint(agent, "");
-  addShown(session, hits.map((h) => h.skill.id), sessionHash(payload.prompt_id));
+  addShown(session, hits.map((h) => h.skill.id), sessionHash(turnOf(payload)));
   return formatHint(agent, hintText(hits, hint_id, new Set(readCore()), agent));
 }
 

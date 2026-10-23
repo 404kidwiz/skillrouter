@@ -67,8 +67,8 @@ export function report(days = 7, rows = readLog(days)) {
     const hints = rows.filter((r) => r.tool === "hint" || (r.tool === "trigger" && r.reason === "shown")); // prompt hints + action triggers
     const loads = organic.filter((r) => r.tool === "skill_load");
     const decisions = rows.filter((r) => r.tool === "decision");
-    const native = loads.filter((r) => r.via === "Skill"); // read_skill loads are already counted from the MCP server
-    const out = [`Last ${days} days: ${searches.length} searches, ${reads.length} successful MCP skill loads, ${native.length} native Skill-tool loads, ${hints.length} hook invocations`];
+    const native = loads.filter((r) => r.via !== "read_skill"); // read_skill loads are already counted from the MCP server
+    const out = [`Last ${days} days: ${searches.length} searches, ${reads.length} successful MCP skill loads, ${native.length} native skill loads (Skill tool, activate_skill, SKILL.md reads), ${hints.length} hook invocations`];
     if (synthetic.length)
         out.push(`Excluded as synthetic (probe/self-test clients): ${synthetic.filter((r) => r.tool === "search_skills").length} searches, ${synthetic.filter((r) => r.tool === "read_skill" && r.found).length} loads from ${[...new Set(synthetic.map((r) => r.client))].join(", ")}`);
     out.push("", "By agent (searches / reads):");

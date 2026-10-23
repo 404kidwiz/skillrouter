@@ -127,7 +127,7 @@ test("report credits a hint followed by a native Skill load in the same session"
   assert.equal(followsHint(hint, load), true);
   assert.equal(followsHint(hint, { ...load, session: "other" }), false);
   const text = report(1, [hint, load, { ts: t1, client: "hook/claude", tool: "decision", reason: "decided", session: "S" }]);
-  assert.match(text, /1 native Skill-tool loads/);
+  assert.match(text, /1 native skill loads/);
   assert.match(text, /1\/1 shown hints have a correlated organic successful load/);
   assert.match(text, /1 decided/);
 });

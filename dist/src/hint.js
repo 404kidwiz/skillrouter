@@ -5,19 +5,27 @@ import { INDEX_FILE } from "./paths.js";
 import { getIndex, logUsage, search } from "./search.js";
 import { readCore } from "./core.js";
 import { semanticScores } from "./embed.js";
-import { addShown, bareSkill, loadedSkills } from "./state.js";
+import { addShown, bareSkill, loadedSkills, markTurn } from "./state.js";
 const EVENT = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
-export function formatHint(agent, text, event) {
+const TOOL_EVENT = { gemini: "AfterTool" }; // claude/codex: PostToolUse
+/** The host's hook answer carrying context for the model. `tool`: after a tool call rather than on a prompt. */
+export function formatHint(agent, text, tool = false) {
     if (agent === "cursor")
-        return JSON.stringify(text ? { continue: true, additional_context: text } : { continue: true });
+        return JSON.stringify(text ? { ...(tool ? {} : { continue: true }), additional_context: text } : tool ? {} : { continue: true });
     if (!text)
         return "";
-    return JSON.stringify({ hookSpecificOutput: { hookEventName: event ?? EVENT[agent] ?? "UserPromptSubmit", additionalContext: text } });
+    const hookEventName = tool ? TOOL_EVENT[agent] ?? "PostToolUse" : EVENT[agent] ?? "UserPromptSubmit";
+    return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: text } });
 }
 export const sessionHash = (id) => (typeof id === "string" && id ? createHash("sha256").update(id).digest("hex") : undefined);
+/** The conversation a hook belongs to: session_id (Claude, Codex, Gemini, OpenCode) or Cursor's conversation_id. */
+export const sessionOf = (p) => p?.session_id ?? p?.conversation_id;
+/** The user turn a hook belongs to, where the host names one: Claude prompt_id, Codex turn_id, Cursor generation_id. */
+export const turnOf = (p) => p?.prompt_id ?? p?.turn_id ?? p?.generation_id;
 /** Host- and harness-generated turns (notifications, subagent hand-backs, command echoes) are not the user's task. */
 export function isSystemText(prompt) {
-    return /^(?:<task-notification>|<system-reminder>|\[SYSTEM NOTIFICATION|<local-command-|<command-name>|<agent-message|Another Claude session sent a message|Caveat: The messages below)/.test(prompt.trim());
+    // The decision nudge itself comes back as a prompt (Cursor's follow-up, Gemini's retry, Codex's continuation).
+    return /^(?:<task-notification>|<system-reminder>|\[SYSTEM NOTIFICATION|<local-command-|<command-name>|<agent-message|Another Claude session sent a message|Caveat: The messages below|skillrouter: this turn did real work)/.test(prompt.trim());
 }
 /** Reads the hook JSON on stdin, prints the agent-specific hook output. Never blocks a prompt. */
 // Lexical floor calibrated 2026-10-23 on a 4,500-skill library (real matches raw 28-44, small talk ~13). Override with SKILLROUTER_MIN_RAW.
@@ -27,7 +35,7 @@ export async function hint(agent, input, minRaw = Number(process.env.SKILLROUTER
     let payload = {};
     let semStatus;
     const record = (reason, hits = []) => logUsage({
-        client: `hook/${agent}`, agent, tool: "hint", hint_id, reason, session: sessionHash(payload.session_id), prompt: sessionHash(payload.prompt_id),
+        client: `hook/${agent}`, agent, tool: "hint", hint_id, reason, session: sessionHash(sessionOf(payload)), prompt: sessionHash(turnOf(payload)),
         sem: semStatus, duration_ms: Math.round(performance.now() - started), hits: hits.map((h) => [h.skill.id, h.score, h.raw, h.cos ?? null]),
     });
     try {
@@ -40,7 +48,9 @@ export async function hint(agent, input, minRaw = Number(process.env.SKILLROUTER
         record("invalid_input");
         return formatHint(agent, "");
     }
-    const session = sessionHash(payload.session_id);
+    const session = sessionHash(sessionOf(payload));
+    // Every prompt starts a turn, checked or not: the end-of-turn nudge counts work from here.
+    markTurn(session, sessionHash(turnOf(payload)));
     const prompt = payload.prompt.trim();
     if (prompt.startsWith("/")) {
         record("skipped_command");
@@ -70,7 +80,7 @@ export async function hint(agent, input, minRaw = Number(process.env.SKILLROUTER
     record(hits.length ? "shown" : "no_match", hits);
     if (!hits.length)
         return formatHint(agent, "");
-    addShown(session, hits.map((h) => h.skill.id), sessionHash(payload.prompt_id));
+    addShown(session, hits.map((h) => h.skill.id), sessionHash(turnOf(payload)));
     return formatHint(agent, hintText(hits, hint_id, new Set(readCore()), agent));
 }
 /**

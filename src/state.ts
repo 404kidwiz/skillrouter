@@ -74,5 +74,23 @@ export function shownFor(session: string | undefined, prompt: string | undefined
   return [...new Set(mine.flatMap((r) => (Array.isArray(r.ids) ? r.ids.map(String) : [])))];
 }
 
+/**
+ * Turn bookkeeping for hosts whose transcripts skillrouter does not read (Codex, Cursor, Gemini CLI):
+ * the prompt hook marks where a turn starts, the tool hook counts the work done in it, and the
+ * end-of-turn hook reads both. `turn` is the hashed host turn id when the host has one.
+ */
+export function markTurn(session: string | undefined, turn?: string): void { append(session, "turns.jsonl", { turn }); }
+
+export function addTool(session: string | undefined, turn?: string, sub?: string): void { append(session, "tools.jsonl", { turn, sub }); }
+
+/** When this turn started (its marker, else the latest one) and how many main-thread tool calls it made. */
+export function turnStats(session: string | undefined, turn?: string): { start?: number; tools: number } {
+  const marks = rows(session, "turns.jsonl");
+  const mark = (turn && marks.filter((r) => r.turn === turn).pop()) || marks.pop();
+  if (!mark) return { tools: 0 };
+  const tools = rows(session, "tools.jsonl").filter((r) => !r.sub && r.ts >= mark.ts && (!turn || !r.turn || r.turn === turn)).length;
+  return { start: mark.ts, tools };
+}
+
 /** "plugin:name" and "name~2" are the same skill for matching purposes. */
 export const bareSkill = (s: string) => s.split(":").pop()!.replace(/~\d+$/, "").toLowerCase();

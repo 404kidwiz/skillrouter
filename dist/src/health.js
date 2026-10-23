@@ -58,6 +58,28 @@ export function mcpOnlyConfiguration(target, home = HOME) {
     const entry = cfg.data?.mcpServers?.skillrouter;
     return entry?.disabled === true ? "disabled" : entry && typeof entry.command === "string" ? "configured (connection unverified)" : cfg.status;
 }
+/** Where each host keeps its after-tool (trigger) and end-of-turn (decision nudge) hooks. OpenCode has triggers only. */
+const ACTION_HOOKS = {
+    claude: { file: [".claude", "settings.json"], tool: "PostToolUse", stop: "Stop" },
+    codex: { file: [".codex", "hooks.json"], tool: "PostToolUse", stop: "Stop" },
+    cursor: { file: [".cursor", "hooks.json"], tool: "postToolUse", stop: "stop" },
+    gemini: { file: [".gemini", "settings.json"], tool: "AfterTool", stop: "AfterAgent" },
+    opencode: { file: [".config", "opencode", "plugins", "skillrouter-hints.js"], tool: "tool.execute.after" },
+};
+function actionHooks(agent, home) {
+    const spec = ACTION_HOOKS[agent];
+    const file = path.join(home, ...spec.file);
+    try {
+        if (agent === "opencode")
+            return `; triggers ${fs.readFileSync(file, "utf8").includes(spec.tool) ? "configured" : "missing (rerun install opencode)"}; no decision nudge on this host`;
+        const d = JSON.parse(fs.readFileSync(file, "utf8"));
+        const has = (ev) => Array.isArray(d?.hooks?.[ev]) && d.hooks[ev].some(isRouterHook);
+        return `; triggers ${has(spec.tool) ? "configured" : "missing"}; decision nudge ${has(spec.stop) ? "configured" : "missing"}`;
+    }
+    catch {
+        return "";
+    } // reported by configuration()
+}
 export function health(home = HOME) {
     const loaded = loadIndex();
     const index = loaded && Array.isArray(loaded.skills) ? loaded : null;
@@ -70,15 +92,8 @@ export function health(home = HOME) {
         `Vectors: ${vectors}`,
         "Per-agent health (observations from last 7 days):"];
     const rows = readLog(7);
-    // Claude Code also runs the PostToolUse trigger hook and the Stop decision hook.
-    let claudeExtra = "";
-    try {
-        const d = JSON.parse(fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"));
-        const has = (ev) => Array.isArray(d?.hooks?.[ev]) && d.hooks[ev].some(isRouterHook);
-        claudeExtra = `; triggers ${has("PostToolUse") ? "configured" : "missing"}; decision nudge ${has("Stop") ? "configured" : "missing"}`;
-    }
-    catch { /* reported by configuration() */ }
     for (const agent of AGENTS) {
+        const extra = actionHooks(agent, home);
         const config = configuration(agent, home);
         const own = rows.filter((r) => r.agent === agent || r.client === `hook/${agent}`);
         const hooks = own.filter((r) => r.tool === "hint").sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
@@ -88,7 +103,8 @@ export function health(home = HOME) {
         const reasons = new Map();
         for (const row of hooks)
             reasons.set(row.reason ?? "legacy/unknown", (reasons.get(row.reason ?? "legacy/unknown") ?? 0) + 1);
-        out.push(`  ${agent}: hook ${config.hook}; MCP ${config.mcp}${agent === "claude" ? claudeExtra : ""}`, `    last hook: ${hooks[0]?.ts ?? "not observed"}; last MCP activity: ${mcp[0]?.ts ?? "not observed"}; failures: ${failures}`, `    hook outcomes: ${[...reasons].map(([reason, n]) => `${reason}=${n}`).join(", ") || "none observed"}`);
+        const count = (tool, reason) => own.filter((r) => r.tool === tool && r.reason === reason).length;
+        out.push(`  ${agent}: hook ${config.hook}; MCP ${config.mcp}${extra}`, `    last hook: ${hooks[0]?.ts ?? "not observed"}; last MCP activity: ${mcp[0]?.ts ?? "not observed"}; failures: ${failures}`, `    hook outcomes: ${[...reasons].map(([reason, n]) => `${reason}=${n}`).join(", ") || "none observed"}`, `    triggers shown: ${count("trigger", "shown")}; turns decided: ${count("decision", "decided")}; nudged: ${count("decision", "nudged")}`);
     }
     for (const target of ["openclaude", "antigravity", "hermes"]) {
         const own = rows.filter((r) => r.agent === target);

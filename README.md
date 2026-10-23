@@ -60,12 +60,25 @@ Hints alone get ignored when they are often wrong. Three mechanisms work togethe
 | Mechanism | When it fires | What it does |
 |---|---|---|
 | Prompt check | every user prompt (system-generated turns skipped) | lists up to 4 candidates that pass the gate, each with its "when" line and exact load call, and asks for a one-line decision: `Skills: <ids>` or `Skills: none (<why>)` |
-| Action triggers (Claude Code) | after an edit or command that shows the kind of work: tests, Dockerfiles, migrations, CI, Kubernetes, Terraform, frontend, auth, APIs, git history, PRs, releases | once per session per rule, names the fitting skills not yet loaded. Rules are editable in `~/.skillrouter/triggers.json` |
-| Decision nudge (Claude Code) | at the end of a turn that ran 3+ tool calls after a check, with no skill loaded and no `Skills:` line | sends the turn back once to decide; never twice in a row |
+| Action triggers | after an edit or command that shows the kind of work: tests, Dockerfiles, migrations, CI, Kubernetes, Terraform, frontend, auth, APIs, git history, PRs, releases | once per session per rule, names the fitting skills not yet loaded. Rules are editable in `~/.skillrouter/triggers.json` |
+| Decision nudge | at the end of a turn that ran 3+ tool calls after a check, with no skill loaded and no `Skills:` line | sends the turn back once to decide; never twice in a row |
+
+What each host gets from `install`:
+
+| Host | Prompt check | Action triggers | Decision nudge |
+|---|---|---|---|
+| Claude Code | `UserPromptSubmit` | `PostToolUse` | `Stop` (reads the transcript) |
+| Codex | `UserPromptSubmit` | `PostToolUse` on `Bash`, `apply_patch` | `Stop` (reads the turn's text from the session transcript; no nudge if it can't) |
+| Cursor | `beforeSubmitPrompt` | `postToolUse` | `stop` sends one `followup_message` (`loop_limit: 1`); counts edits and commands only, and waits for the final text in the transcript |
+| Gemini CLI | `BeforeAgent` | `AfterTool` | `AfterAgent` retries with the nudge as the prompt |
+| OpenCode | plugin `chat.message` | plugin `tool.execute.after` (appended to the tool result) | none |
+| Antigravity, OpenClaude, Hermes | none: rule text in the host's instruction file, plus the MCP server | | |
+
+Skill loads count wherever they happen: the router's `read_skill` under each host's MCP naming, Claude's Skill tool, Gemini's `activate_skill`, OpenCode's `skill` tool, and reads of a `SKILL.md` file.
 
 Local embeddings are opt-in: install `@huggingface/transformers` next to skillrouter (an optional peer dependency, ~450 MB of ONNX runtime packages), then run `skillrouter index --embeddings` (a one-time ~90 MB MiniLM model download into `~/.skillrouter/models`). With them, a candidate passes on meaning (cosine ≥ 0.45) or on words and meaning together (cosine ≥ 0.20 and cosine + BM25/100 ≥ 0.52); on 16 labeled real prompts this dropped every junk hit but one name collision. Hooks never download; the semantic step has an 800 ms budget and falls back to BM25, as it does when the vectors were built for an older index (`doctor` shows "Vectors: STALE"). Prompt checks take ~0.4-0.5 s with embeddings (~0.2 s without); tool calls that match no trigger rule add ~50-90 ms.
 
-Checks are bound to the prompt that produced them (`prompt_id`), so a later turn is never nudged for an earlier turn's hints; subagents keep their own trigger slots; a skill already loaded in the session is not suggested again.
+Checks are bound to the turn that produced them (Claude `prompt_id`, Codex `turn_id`, Cursor `generation_id`; Gemini by time since its prompt), so a later turn is never nudged for an earlier turn's hints; subagents keep their own trigger slots; a skill already loaded in the session is not suggested again.
 
 `report` credits a check when the hinted skill is loaded in the same session, through `read_skill` or the native Skill tool, and counts decided / nudged turns and fired triggers.
 
@@ -105,8 +118,10 @@ Agent folders it knows about: `~/.claude/skills`, `~/.codex/skills`, `~/.cursor/
 
 ## Limits
 
-- Codex asks you to trust a new hook once; the hint hook stays off until you approve it.
-- Gemini CLI's hook uses `BeforeAgent`; Cursor's uses `beforeSubmitPrompt`. Antigravity has no hooks, so it only gets the MCP server and the `AGENTS.md`-style instruction.
+- Codex asks you to trust each new hook once (`/hooks` in Codex); a hook stays off until you approve it.
+- Cursor's headless mode (`cursor-agent -p`) fires tool hooks but not `beforeSubmitPrompt` or `stop`, and has no transcript, so prompt checks and the nudge only run in interactive sessions.
+- Gemini's `AfterAgent` nudge rejects the final response and retries, so the nudge asks the model to give its answer again.
+- Antigravity has no hooks, so it only gets the MCP server and the `AGENTS.md`-style instruction.
 - `trim` leaves plugin-format folders (`.claude-plugin/plugin.json`) and dot-entries alone and never touches a folder that is itself a symlink.
 - Hermes Agent has its own skill system; use its `skills.disabled` list instead of `trim`.
 

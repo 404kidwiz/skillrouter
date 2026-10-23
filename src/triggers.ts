@@ -51,18 +51,50 @@ export function loadTriggers(file = path.join(SR_DIR, "triggers.json")): Trigger
   return [...byId.values()];
 }
 
-export interface Action { file?: string; command?: string }
+export interface Action { file?: string; files?: string[]; command?: string }
 
-/** What a tool call did, from the host's tool name and input (Claude/Codex/Gemini names). */
-export function actionOf(tool: string, input: any): Action | null {
+/** Files a Codex/Cursor-style patch touches (`*** Update File: path`). Bounded: hook input is untrusted. */
+export function patchFiles(patch: string): string[] {
+  const out = new Set<string>();
+  for (const m of patch.slice(0, 256 * 1024).matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm)) out.add(m[1].trim());
+  return [...out];
+}
+
+/** The script a shell tool runs: `bash -lc "<script>"` (string or argv form) is the script, not `bash`. */
+export function shellCommand(input: any): string {
+  const c = input?.command ?? input?.cmd;
+  if (Array.isArray(c)) {
+    const flag = c.findIndex((x) => /^-[a-z]{0,4}c[a-z]{0,4}$/.test(String(x)));
+    return String(flag > 0 && /(^|\/)(ba|z|da)?sh$/.test(String(c[0])) ? c[c.length - 1] : c.join(" "));
+  }
+  if (typeof c !== "string") return "";
+  // Only a whole `sh -c '<script>'` is unwrapped (`bash -c "a" && pytest` is a compound command); bounded flags keep it linear.
+  const m = /^\s*(?:\S*\/)?(?:ba|z|da)?sh\s+(?:-[a-z]{1,4}\s+){0,3}-[a-z]{0,4}c[a-z]{0,4}\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")\s*$/.exec(c);
+  return m ? m[1] ?? m[2] : c;
+}
+
+/** Some hosts send tool input as a JSON string (Cursor MCP calls); a patch string stays a string. */
+export function parsedInput(input: unknown): any {
+  if (typeof input !== "string" || !/^\s*[{[]/.test(input)) return input;
+  try { return JSON.parse(input); } catch { return input; }
+}
+
+/** What a tool call did, from the host's tool name and input: Claude, Codex, Cursor, Gemini CLI and OpenCode names. */
+export function actionOf(tool: string, raw: any): Action | null {
+  const input = parsedInput(raw);
+  if (/^(apply_patch|ApplyPatch|patch)$/i.test(tool)) {
+    const text = typeof input === "string" ? input : input?.command ?? input?.patch ?? input?.patchText ?? input?.input;
+    const files = typeof text === "string" ? patchFiles(text) : [];
+    return files.length ? { files } : null;
+  }
   if (!input || typeof input !== "object") return null;
-  if (/^(Edit|Write|MultiEdit|NotebookEdit|write_file|replace|edit_file|apply_patch)$/i.test(tool)) {
-    const file = input.file_path ?? input.notebook_path ?? input.path ?? input.filePath;
+  if (/^(Edit|Write|MultiEdit|NotebookEdit|StrReplace|write_file|replace|edit_file)$/i.test(tool)) {
+    const file = input.file_path ?? input.notebook_path ?? input.path ?? input.filePath ?? input.target_file;
     return typeof file === "string" ? { file } : null;
   }
-  if (/^(Bash|shell|run_shell_command|exec_command)$/i.test(tool)) {
-    const command = Array.isArray(input.command) ? input.command.join(" ") : input.command;
-    return typeof command === "string" ? { command } : null;
+  if (/^(Bash|Shell|shell|run_shell_command|exec_command)$/i.test(tool)) {
+    const command = shellCommand(input);
+    return command ? { command } : null;
   }
   return null;
 }
@@ -81,6 +113,17 @@ export function commandsOf(line: string): string[] {
   return noQuotes.split(/\|\||&&|;|\||\n|\$\(|`|\)/)
     .map((s) => s.trim().replace(WRAPPERS, ""))
     .filter(Boolean);
+}
+
+// Commands that only look around. A turn of these is exploration, not work worth a decision nudge.
+const READ_ONLY = /^(?:ls|ll|cat|bat|less|more|head|tail|nl|wc|rg|grep|egrep|fgrep|ag|ack|find|fd|tree|pwd|cd|echo|printf|which|type|file|stat|du|df|jq|sort|uniq|cut|tr|diff|true|date|env|whoami|uname|sed\s+-n|git\s+(?:status|log|diff|show|branch|rev-parse|blame|remote|ls-files|grep))\b/;
+
+/** Whether an action is work: any edit, or a shell line with at least one command that does more than read. */
+export function isWork(action: Action | null): boolean {
+  if (!action) return false;
+  if (action.file || action.files?.length) return true;
+  const commands = action.command ? commandsOf(action.command) : [];
+  return commands.some((c) => !READ_ONLY.test(c.replace(/^\(+/, "")) || /(?<![2&])>(?!&)/.test(c) || /^find\b.*\s-(?:delete|exec)\b/.test(c));
 }
 
 /** A command names its ecosystem the way a file extension does: `pnpm test` is JavaScript, `pytest` is Python. */
@@ -109,11 +152,13 @@ function stripHeredocs(text: string): string {
 
 export function matchTriggers(action: Action, triggers = loadTriggers()): { trigger: Trigger; query: string; subject: string }[] {
   const out: { trigger: Trigger; query: string; subject: string }[] = [];
+  const files = [...(action.files ?? []), ...(action.file ? [action.file] : [])];
   const commands = action.command ? commandsOf(action.command) : [];
   for (const t of triggers) {
-    if (action.file && t.path?.test(action.file)) {
-      const ext = action.file.split(".").pop()?.toLowerCase() ?? "";
-      out.push({ trigger: t, query: `${t.query} ${LANG[ext] ?? ""}`.trim(), subject: path.basename(action.file) });
+    const file = t.path && files.find((f) => t.path!.test(f));
+    if (file) {
+      const ext = file.split(".").pop()?.toLowerCase() ?? "";
+      out.push({ trigger: t, query: `${t.query} ${LANG[ext] ?? ""}`.trim(), subject: path.basename(file) });
       continue;
     }
     // Anchored to a command's start: `docker build …` triggers, `ls docker-build/` does not.
