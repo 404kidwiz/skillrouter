@@ -15,8 +15,9 @@ v0.1.0 on GitHub (public), not yet published to npm.
 - Claude Code plugin files: .claude-plugin/plugin.json, marketplace.json, hooks/hooks.json, .mcp.json, skills/skillrouter/SKILL.md.
 
 ## Next
-- `npm publish` (README and hook configs use `npx -y skillrouter`; until then `npx -y github:404kidwiz/skillrouter` works via the prepare script).
-- Dogfood on the author's machine, replacing the Python skill-vault + hint service, then compare `report` output.
+- `npm publish` (README and hook configs use `npx -y skillrouter`; until then `npx -y github:404kidwiz/skillrouter` or `install --local` work).
+- Dogfooding since 2026-10-23 on the author's machine via `install --local` (8 agents). Review `report 7` after a few days.
+- `core sync` should skip skills an agent already gets from a plugin (Claude: plugin-provided skills get linked twice).
 - Search quality: BM25 misfires on vague prompts ("docker build slow on M1" -> llama-cpp). Candidates: boost name matches, synonym list, or the optional embeddings path by default once the model download is acceptable.
 
 ## Blockers
