@@ -25,6 +25,22 @@ export function readCoreEntries() {
 export function readCore() {
     return readCoreEntries().map((e) => e.id);
 }
+/**
+ * The index ids the core list means: an exact id, else every variant with that name. A same-named variant
+ * with other text (design-taste-frontend~2 next to design-taste-frontend) is not what core sync linked.
+ */
+export function coreIds(core = readCore()) {
+    const { byId, byName } = getIndex();
+    const out = new Set();
+    for (const c of core) {
+        if (byId.has(c))
+            out.add(c);
+        else
+            for (const s of byName.get(c) ?? [])
+                out.add(s.id);
+    }
+    return out;
+}
 export function writeCoreEntries(entries) {
     fs.mkdirSync(SR_DIR, { recursive: true });
     const seen = new Set();

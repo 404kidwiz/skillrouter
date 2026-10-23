@@ -47,6 +47,18 @@ export function claim(session, key) {
         return false;
     }
 }
+/** Whether a claim exists, without taking it. */
+export function claimed(session, key) {
+    return !!session && fs.existsSync(path.join(dirOf(session), `claim-${key.replace(/[^\w.-]/g, "_")}`));
+}
+/** Give a claim back, so a later call can take it again. */
+export function release(session, key) {
+    if (session)
+        try {
+            fs.unlinkSync(path.join(dirOf(session), `claim-${key.replace(/[^\w.-]/g, "_")}`));
+        }
+        catch { /* not held */ }
+}
 function append(session, file, row) {
     if (!session)
         return;

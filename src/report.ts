@@ -52,6 +52,17 @@ export function readCounts(days: number): Map<string, number> {
   return m;
 }
 
+/**
+ * Which agent a row came from: the `agent` field (hooks, and MCP servers installed with SKILLROUTER_AGENT),
+ * else the MCP client name the host announces (older installs logged only that).
+ */
+export function agentOf(r: Row): string {
+  if (r.agent) return r.agent;
+  const c = String(r.client ?? "").toLowerCase();
+  const known: [RegExp, string][] = [[/^claude-code|^hook\/claude/, "claude"], [/codex/, "codex"], [/cursor/, "cursor"], [/gemini/, "gemini"], [/opencode/, "opencode"], [/openclaude/, "openclaude"], [/antigravity/, "antigravity"], [/hermes/, "hermes"]];
+  return known.find(([re]) => re.test(c))?.[1] ?? (String(r.client ?? "").split("/")[0] || "unknown"); // one row per client, not per version
+}
+
 export function report(days = 7, rows = readLog(days)): string {
   const synthetic = rows.filter(isSynthetic);
   const organic = rows.filter((r) => !isSynthetic(r));
@@ -63,9 +74,9 @@ export function report(days = 7, rows = readLog(days)): string {
   const native = loads.filter((r) => r.via !== "read_skill"); // read_skill loads are already counted from the MCP server
   const out = [`Last ${days} days: ${searches.length} searches, ${reads.length} successful MCP skill loads, ${native.length} native skill loads (Skill tool, activate_skill, SKILL.md reads), ${hints.length} hook invocations`];
   if (synthetic.length) out.push(`Excluded as synthetic (probe/self-test clients): ${synthetic.filter((r) => r.tool === "search_skills").length} searches, ${synthetic.filter((r) => r.tool === "read_skill" && r.found).length} loads from ${[...new Set(synthetic.map((r) => r.client))].join(", ")}`);
-  out.push("", "By agent (searches / reads):");
-  for (const c of [...new Set([...searches, ...reads].map((r) => r.client))].sort())
-    out.push(`  ${c}: ${searches.filter((r) => r.client === c).length} / ${reads.filter((r) => r.client === c).length}`);
+  out.push("", "By agent (searches / MCP reads / native loads):");
+  for (const a of [...new Set([...searches, ...reads, ...native].map(agentOf))].sort())
+    out.push(`  ${a}: ${searches.filter((r) => agentOf(r) === a).length} / ${reads.filter((r) => agentOf(r) === a).length} / ${native.filter((r) => agentOf(r) === a).length}`);
   out.push("", "Most-read skills (candidates for core):");
   for (const [id, n] of [...[...reads, ...native].reduce((counts, r) => { if (r.skill) counts.set(r.skill, (counts.get(r.skill) ?? 0) + 1); return counts; }, new Map<string, number>()).entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)) out.push(`  ${String(n).padStart(4)}  ${id}`);
   if (hints.length) {
@@ -83,7 +94,8 @@ export function report(days = 7, rows = readLog(days)): string {
     const by = (r: string) => decisions.filter((d) => d.reason === r).length;
     out.push(`Turn endings after hints: ${by("decided")} decided (loaded or wrote \`Skills:\`), ${by("nudged")} nudged, ${by("trivial")} too small to ask, ${by("no_hints")} without hints.`);
   }
-  out.push("", "A load is not proof a skill was applied. Native Skill-tool loads are tracked in Claude Code only (PostToolUse); other hosts count router read_skill loads.");
+  out.push("", "A load is not proof a skill was applied. Native loads (Claude's Skill tool, Gemini's activate_skill, OpenCode's skill tool, SKILL.md reads) " +
+    "are seen through each host's tool hook (Claude Code, Codex once its hooks are trusted, Cursor, Gemini CLI, OpenCode); Antigravity, OpenClaude and Hermes count router read_skill loads only.");
   return out.join("\n");
 }
 

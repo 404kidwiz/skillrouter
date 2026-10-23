@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { findSkill, logUsage, readSkill, search } from "./search.js";
+import { coreIds } from "./core.js";
 
 /** Two tools, ~500 tokens of schema: the whole library behind one door. */
 export async function serveMcp(): Promise<void> {
@@ -22,14 +23,15 @@ export async function serveMcp(): Promise<void> {
     },
     async ({ query, top_k }) => {
       let hits: Awaited<ReturnType<typeof search>>;
-      try { hits = await search(query, top_k); }
+      try { hits = await search(query, top_k, { prefer: coreIds() }); } // a preloaded skill wins over its copies
       catch {
         logUsage({ ...context(), client: client(), tool: "search_skills", reason: "index_error" });
         return { isError: true, content: [{ type: "text", text: "Index unavailable. Run skillrouter index." }] };
       }
       logUsage({ ...context(), client: client(), tool: "search_skills", query, hits: hits.map((h) => [h.skill.id, h.score]) });
       const text = hits.length
-        ? hits.map((h) => `- ${h.skill.id} (${h.score.toFixed(2)}): ${h.skill.description || "(no description)"}\n  path: ${h.skill.path}`).join("\n") +
+        ? hits.map((h) => `- ${h.skill.id} (${h.score.toFixed(2)}): ${h.skill.description || "(no description)"}\n  path: ${h.skill.path}` +
+            (h.similar?.length ? `\n  similar: ${h.similar.join(", ")}` : "")).join("\n") +
           "\n\nLoad one with read_skill(id)."
         : "No matching skills.";
       return { content: [{ type: "text", text }] };

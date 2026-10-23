@@ -3,9 +3,9 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { INDEX_FILE } from "./paths.js";
 import { getIndex, logUsage, search } from "./search.js";
-import { readCore } from "./core.js";
+import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
-import { addShown, bareSkill, loadedSkills, markTurn } from "./state.js";
+import { addShown, loadedSkills, markTurn } from "./state.js";
 const EVENT = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
 const TOOL_EVENT = { gemini: "AfterTool" }; // claude/codex: PostToolUse
 /** The host's hook answer carrying context for the model. `tool`: after a tool call rather than on a prompt. */
@@ -65,13 +65,15 @@ export async function hint(agent, input, minRaw = Number(process.env.SKILLROUTER
         return formatHint(agent, "");
     }
     let hits = [];
+    let core = new Set();
     try {
         const query = prompt.slice(0, 1000);
         const { index } = getIndex();
         const sem = await semanticScores(query, 800, index.builtAt);
         semStatus = sem.status;
         const loaded = loadedSkills(session, undefined); // already in context this session: not hinted again
-        hits = selectHints((await search(query, 12, { semantic: sem.scores })).filter((h) => !loaded.has(bareSkill(h.skill.id))), minRaw, k);
+        core = coreIds();
+        hits = selectHints(await search(query, 12, { semantic: sem.scores, known: loaded, prefer: core }), minRaw, k);
     }
     catch {
         record(fs.existsSync(INDEX_FILE) ? "index_error" : "missing_index");
@@ -80,8 +82,9 @@ export async function hint(agent, input, minRaw = Number(process.env.SKILLROUTER
     record(hits.length ? "shown" : "no_match", hits);
     if (!hits.length)
         return formatHint(agent, "");
-    addShown(session, hits.map((h) => h.skill.id), sessionHash(turnOf(payload)));
-    return formatHint(agent, hintText(hits, hint_id, new Set(readCore()), agent));
+    // Named siblings count as shown, so a later trigger this turn doesn't offer them again.
+    addShown(session, hits.flatMap((h) => [h.skill.id, ...(h.similar ?? [])]), sessionHash(turnOf(payload)));
+    return formatHint(agent, hintText(hits, hint_id, core, agent));
 }
 /**
  * Which candidates become a hint. With the semantic layer: a skill passes on strong meaning alone
@@ -105,10 +108,11 @@ export function selectHints(hits, minRaw, k) {
 export function hintText(hits, hint_id, core, agent = "claude", lead) {
     const lines = hits.map((h) => {
         const id = h.skill.id;
-        const how = core.has(id) || core.has(h.skill.name)
+        const how = core.has(id) // resolved core ids (coreIds): a same-named variant with other text is not preloaded
             ? (agent === "claude" ? "preloaded: invoke it with the Skill tool" : `preloaded: use the skill named ${id} from your skill list`)
             : `not preloaded: read_skill("${id}", hint_id="${hint_id}")`;
-        return `- ${id} — ${how}\n  when: ${(h.skill.description || "(no description)").split(/\s+/).join(" ").slice(0, 220)}`;
+        const similar = h.similar?.length ? `\n  similar (load instead if closer): ${h.similar.join(", ")}` : "";
+        return `- ${id} — ${how}\n  when: ${(h.skill.description || "(no description)").split(/\s+/).join(" ").slice(0, 220)}${similar}`;
     }).join("\n");
     return lead
         ? `${lead} Load the ones whose "when" fits what you are doing before continuing, and include them in your \`Skills:\` line (the one that also ends your final reply).\n${lines}`

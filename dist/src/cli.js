@@ -108,9 +108,10 @@ async function main(argv) {
         }
         case "search": {
             const { search } = await import("./search.js");
+            const { coreIds } = await import("./core.js");
             const k = Number(opt(args, "-k")[0] ?? 5);
-            for (const h of await search(args.join(" "), k))
-                console.log(`${h.score.toFixed(2)} (raw ${h.raw}${h.cos !== undefined ? `, cos ${h.cos}` : ""})  ${h.skill.id}  —  ${h.skill.description.slice(0, 110)}`);
+            for (const h of await search(args.join(" "), k, { prefer: coreIds() }))
+                console.log(`${h.score.toFixed(2)} (raw ${h.raw}${h.cos !== undefined ? `, cos ${h.cos}` : ""})  ${h.skill.id}  —  ${h.skill.description.slice(0, 110)}${h.similar?.length ? `  [similar: ${h.similar.join(", ")}]` : ""}`);
             break;
         }
         case "core": {

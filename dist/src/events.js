@@ -3,11 +3,11 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { INDEX_FILE } from "./paths.js";
 import { getIndex, logUsage, search } from "./search.js";
-import { readCore } from "./core.js";
+import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
 import { formatHint, hintText, sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, commandsOf, isWork, matchTriggers, parsedInput, shellCommand } from "./triggers.js";
-import { addLoaded, addShown, addTool, bareSkill, claim, loadedSkills, shownFor, turnStats } from "./state.js";
+import { addLoaded, addShown, addTool, bareSkill, claim, claimed, loadedSkills, release, shownFor, turnStats } from "./state.js";
 /** The last `bytes` of a file as lines (the usage log and transcripts only grow; hooks read their tails). */
 export function tailLines(file, bytes = 512 * 1024) {
     let fd;
@@ -149,15 +149,35 @@ export async function toolEvent(agent, input, inWorker) {
     if (!action || !session || !fs.existsSync(INDEX_FILE))
         return "";
     // At most two rules per call, and only those two are claimed, so no rule is used up without being shown.
+    // A rule that had nothing new to show this turn rests until the next turn (see triggerHints).
     const matches = matchTriggers(relativeAction(action, cwdOf(p))).slice(0, 2);
-    const claimed = matches.filter((m) => claim(session, `${m.trigger.id}${sub ? "-" + sub.slice(0, 12) : ""}`)).map((m) => m.trigger.id);
-    if (!claimed.length)
+    const tag = turnTag(session, turn);
+    const resting = (m) => claimed(session, `${ruleKey(m.trigger.id, sub)}@${tag}`);
+    const taken = matches.filter((m) => {
+        if (resting(m) || !claim(session, ruleKey(m.trigger.id, sub)))
+            return false;
+        // A worker may have rested the rule between the check and the claim: give the claim back.
+        if (resting(m)) {
+            release(session, ruleKey(m.trigger.id, sub));
+            return false;
+        }
+        return true;
+    }).map((m) => m.trigger.id);
+    if (!taken.length)
         return "";
     // Searching (and maybe loading the model) runs in a killable worker; it gets the claimed rules, not the tool output.
-    return { spawn: JSON.stringify({ ...p, _claimed: claimed, tool_response: undefined, tool_output: undefined }) };
+    return { spawn: JSON.stringify({ ...p, _claimed: taken, tool_response: undefined, tool_output: undefined }) };
 }
+/** A trigger rule's claim: once per session, per agent (subagents have their own). */
+const ruleKey = (id, sub) => `${id}${sub ? "-" + sub.slice(0, 12) : ""}`;
+/** The current turn, for claims that last one turn: the host's turn id, else when the prompt hook marked it. */
+const turnTag = (session, turn) => turn?.slice(0, 16) ?? String(turnStats(session).start ?? "none");
 async function triggerHints(agent, action, claimed, session, sub, prompt) {
     const loaded = loadedSkills(session, sub);
+    // Skills this turn already showed (prompt check, earlier triggers) aren't repeated: the main thread just saw them.
+    // Subagents never saw the main thread's checks, so they get the full list.
+    const shownNow = new Set(sub ? [] : shownFor(session, prompt, turnStats(session, prompt).start ?? Date.now()).map(bareSkill));
+    const prefer = coreIds();
     const blocks = [];
     const hint_id = randomUUID();
     const { index } = getIndex();
@@ -169,20 +189,31 @@ async function triggerHints(agent, action, claimed, session, sub, prompt) {
         const sem = semanticDown || budget < 100 ? { scores: null, status: "timeout" } : await semanticScores(m.query, budget, index.builtAt);
         if (sem.status === "timeout")
             semanticDown = true;
-        const hits = triggerPicks(await search(m.query, 10, { semantic: sem.scores }), loaded);
+        // Shown or loaded skills, and their copies, are left out of the search itself.
+        const hits = triggerPicks(await search(m.query, 10, { semantic: sem.scores, known: new Set([...loaded, ...shownNow]), prefer }), loaded, shownNow);
+        const repeat = !hits.length && shownNow.size > 0 && triggerPicks(await search(m.query, 10, { semantic: sem.scores, known: loaded, prefer }), loaded).length > 0;
         logUsage({ client: `hook/${agent}`, agent, tool: "trigger", trigger: m.trigger.id, hint_id, session, sub, prompt, sem: sem.status,
-            reason: hits.length ? "shown" : "no_match", hits: hits.map((h) => [h.skill.id, h.score, h.raw, h.cos ?? null]) });
+            reason: hits.length ? "shown" : repeat ? "already_shown" : "no_match", hits: hits.map((h) => [h.skill.id, h.score, h.raw, h.cos ?? null]) });
+        // Nothing new to say: rest the rule for this turn instead of using it up for the session.
+        if (repeat) {
+            claim(session, `${ruleKey(m.trigger.id, sub)}@${turnTag(session, prompt)}`);
+            release(session, ruleKey(m.trigger.id, sub));
+        }
         if (!hits.length)
             continue;
+        for (const h of hits)
+            for (const id of [h.skill.id, ...(h.similar ?? [])])
+                shownNow.add(bareSkill(id)); // the second rule of this call doesn't repeat the first
         if (!sub)
-            addShown(session, hits.map((h) => h.skill.id), prompt);
-        blocks.push(hintText(hits, hint_id, new Set(readCore()), agent, `Skill check (skillrouter): you ${m.trigger.label} (${m.subject}).`));
+            addShown(session, hits.flatMap((h) => [h.skill.id, ...(h.similar ?? [])]), prompt);
+        blocks.push(hintText(hits, hint_id, prefer, agent, `Skill check (skillrouter): you ${m.trigger.label} (${m.subject}).`));
     }
     return blocks.length ? formatHint(agent, blocks.join("\n"), true) : "";
 }
-/** A trigger's query is the rule's own words, so meaning decides; the two best fits not already loaded. */
-export function triggerPicks(hits, loaded) {
-    const fresh = hits.filter((h) => h.skill.description.trim().length >= 20 && !loaded.has(bareSkill(h.skill.id)) && !loaded.has(bareSkill(h.skill.name)));
+/** A trigger's query is the rule's own words, so meaning decides; the two best fits not already loaded or shown this turn. */
+export function triggerPicks(hits, loaded, shown = new Set()) {
+    const known = (h) => [h.skill.id, h.skill.name].some((x) => loaded.has(bareSkill(x)) || shown.has(bareSkill(x)));
+    const fresh = hits.filter((h) => h.skill.description.trim().length >= 20 && !known(h));
     return fresh.filter((h) => (h.cos !== undefined ? h.cos >= 0.4 : h.raw >= 12)).slice(0, 2);
 }
 /** A `Skills:` decision anywhere in the text: line start, after a bullet/heading/emphasis, or mid-sentence ("Done. Skills: none"). */

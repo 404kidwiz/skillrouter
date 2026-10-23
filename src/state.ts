@@ -44,6 +44,16 @@ export function claim(session: string | undefined, key: string): boolean {
   } catch { return false; }
 }
 
+/** Whether a claim exists, without taking it. */
+export function claimed(session: string | undefined, key: string): boolean {
+  return !!session && fs.existsSync(path.join(dirOf(session), `claim-${key.replace(/[^\w.-]/g, "_")}`));
+}
+
+/** Give a claim back, so a later call can take it again. */
+export function release(session: string | undefined, key: string): void {
+  if (session) try { fs.unlinkSync(path.join(dirOf(session), `claim-${key.replace(/[^\w.-]/g, "_")}`)); } catch { /* not held */ }
+}
+
 function append(session: string | undefined, file: string, row: object): void {
   if (!session) return;
   try { const dir = writableDir(session); fs.appendFileSync(path.join(dir, file), JSON.stringify({ ts: Date.now(), ...row }) + "\n"); touch(dir); } catch { /* best effort */ }
