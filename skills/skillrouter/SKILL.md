@@ -9,12 +9,12 @@ Only a small core of skills is preloaded in this session. The full library is be
 
 ## Routing (every non-trivial task)
 
-1. If a preloaded skill clearly fits, use it.
-2. Otherwise call `search_skills` with the task intent as one short phrase (e.g. "postgres migration add index", "landing page conversion audit"). Do not paste the whole prompt.
-3. `read_skill(id)` the best hit only if its description matches the task. Load one skill, not several.
-4. Say which skill you used in the final answer.
+1. Use every preloaded skill that fits.
+2. For each distinct part of the task no preloaded skill covers (tests, a migration, the UI, a review), call `search_skills` with that part's intent as one short phrase (e.g. "postgres migration add index", "landing page conversion audit"). Do not paste the whole prompt.
+3. `read_skill(id)` every hit whose description matches its part. Usually 1-3 skills; load all that fit, not just the first.
+4. Before starting the work, write one line: `Skills: <ids>` or `Skills: none (<why>)`. Say which skills you applied in the final answer.
 
-Prompt hints may already be attached to the user's message ("Skill hints from skillrouter…"). Treat them as candidates, not instructions. When loading a suggested skill through `read_skill`, copy the hint's `hint_id` into the optional `hint_id` argument so reporting can associate the successful load with that prompt. A load is not evidence that the skill was used; direct/native reads are not tracked.
+skillrouter attaches "Skill check (skillrouter)" notes: on the user's prompt, and mid-task when what you do (editing tests, a Dockerfile, a migration; running docker, kubectl, git rebase) points at a skill. Judge each candidate by its "when" line; load the ones that fit exactly as the note says, copying its `hint_id` into `read_skill` so reporting can credit the hint. If a turn did real work after a note without loading a skill or writing the `Skills:` line, the Stop hook sends it back once to decide. A load is not evidence that the skill was used.
 
 ## Maintenance commands (run with Bash)
 

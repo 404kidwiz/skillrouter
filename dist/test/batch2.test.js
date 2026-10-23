@@ -33,8 +33,10 @@ test("hints keep only described, confident candidates near the best one", async 
 test("hint text says how to load each candidate: preloaded vs read_skill with the hint id", () => {
     const skill = (id) => ({ id, name: id, description: "Use when doing X", path: "/p", root: "/r", tokens: [] });
     const text = hintText([{ skill: skill("impeccable"), score: 1, raw: 20, matched: 3 }, { skill: skill("python-testing"), score: 0.9, raw: 18, matched: 2 }], "hint-1", new Set(["impeccable"]));
-    assert.match(text, /impeccable \(1\.00\) — preloaded: invoke it with the Skill tool/);
-    assert.match(text, /python-testing \(0\.90\) — not preloaded: read_skill\("python-testing", hint_id="hint-1"\)/);
+    assert.match(text, /- impeccable — preloaded: invoke it with the Skill tool/);
+    assert.match(text, /- python-testing — not preloaded: read_skill\("python-testing", hint_id="hint-1"\)/);
+    assert.match(text, /Load every skill below whose "when" fits this task/);
+    assert.match(text, /`Skills: <ids>` or `Skills: none \(<why>\)`/);
     assert.match(text, /when: Use when doing X/);
 });
 test("hook commands point at a stable launcher, so a reinstall with another Node changes nothing the host trusts", () => {

@@ -55,7 +55,7 @@ export function isRouterHook(entry) {
     if (!entry || typeof entry !== "object")
         return false;
     const value = entry;
-    return (typeof value.command === "string" && /(?:skillrouter-hint['"]?|skillrouter|cli\.js['"]?)\s+(?:hint\s+)?(?:claude|codex|cursor|gemini|opencode)\b/.test(value.command)) ||
+    return (typeof value.command === "string" && /(?:skillrouter-hint['"]?|skillrouter|cli\.js['"]?|skill_hint_hook\.py['"]?)\s+(?:hint\s+)?(?:claude|codex|cursor|gemini|opencode)\b/.test(value.command)) ||
         (Array.isArray(value.hooks) && value.hooks.some(isRouterHook));
 }
 function patchJson(file, fn, create = {}) {
@@ -94,6 +94,8 @@ export function addHook(d, event, entry) {
     list.push(entry);
     return `added ${event} hook`;
 }
+// The router's read_skill is mcp__skillrouter__read_skill when installed here and mcp__plugin_…skillrouter__read_skill from the plugin.
+export const CLAUDE_TOOL_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash|Skill|mcp__.*skillrouter__read_skill";
 const mcpEntry = (agent, prev = {}) => ({ ...prev, ...MCP_CMD, env: { ...prev?.env, SKILLROUTER_AGENT: agent } });
 /** Wire the MCP server and (where the host has one) the prompt hook into one agent's user-scope config. Backs up every file it touches. */
 export function install(agent, home = HOME) {
@@ -103,7 +105,12 @@ export function install(agent, home = HOME) {
     const bin = home === HOME ? BIN : quote(path.join(home, ".skillrouter", "bin", "skillrouter-hint"));
     switch (agent) {
         case "claude":
-            out.push(patchJson(path.join(home, ".claude", "settings.json"), (d) => addHook(d, "UserPromptSubmit", { hooks: [{ type: "command", command: `${bin} claude`, timeout: 5 }] })));
+            out.push(patchJson(path.join(home, ".claude", "settings.json"), (d) => [
+                addHook(d, "UserPromptSubmit", { hooks: [{ type: "command", command: `${bin} claude`, timeout: 5 }] }),
+                // Action triggers + skill-load logging, and the once-per-turn decision nudge.
+                addHook(d, "PostToolUse", { matcher: CLAUDE_TOOL_MATCHER, hooks: [{ type: "command", command: `${bin} claude tool`, timeout: 5 }] }),
+                addHook(d, "Stop", { hooks: [{ type: "command", command: `${bin} claude stop`, timeout: 5 }] }),
+            ].join(", ")));
             out.push(patchJson(path.join(home, ".claude.json"), (d) => { (d.mcpServers ??= {}).skillrouter = { type: "stdio", ...mcpEntry(agent, d.mcpServers.skillrouter) }; return "skillrouter MCP set"; }));
             break;
         case "codex":

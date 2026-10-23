@@ -2,27 +2,33 @@ import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { INDEX_FILE } from "./paths.js";
-import { logUsage, search } from "./search.js";
+import { getIndex, logUsage, search } from "./search.js";
 import { readCore } from "./core.js";
+import { semanticScores } from "./embed.js";
+import { addShown, bareSkill, loadedSkills } from "./state.js";
 const EVENT = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
-export function formatHint(agent, text) {
+export function formatHint(agent, text, event) {
     if (agent === "cursor")
         return JSON.stringify(text ? { continue: true, additional_context: text } : { continue: true });
     if (!text)
         return "";
-    return JSON.stringify({ hookSpecificOutput: { hookEventName: EVENT[agent] ?? "UserPromptSubmit", additionalContext: text } });
+    return JSON.stringify({ hookSpecificOutput: { hookEventName: event ?? EVENT[agent] ?? "UserPromptSubmit", additionalContext: text } });
+}
+export const sessionHash = (id) => (typeof id === "string" && id ? createHash("sha256").update(id).digest("hex") : undefined);
+/** Host- and harness-generated turns (notifications, subagent hand-backs, command echoes) are not the user's task. */
+export function isSystemText(prompt) {
+    return /^(?:<task-notification>|<system-reminder>|\[SYSTEM NOTIFICATION|<local-command-|<command-name>|<agent-message|Another Claude session sent a message|Caveat: The messages below)/.test(prompt.trim());
 }
 /** Reads the hook JSON on stdin, prints the agent-specific hook output. Never blocks a prompt. */
-// Calibrated 2026-10-23 on a 4,500-skill library with synonyms + name bonus: real matches score raw 28-44,
-// small talk ~13, a noisy word match ~19. Override with SKILLROUTER_MIN_RAW.
-export async function hint(agent, input, minRaw = Number(process.env.SKILLROUTER_MIN_RAW ?? 20), k = 3) {
+// Lexical floor calibrated 2026-10-23 on a 4,500-skill library (real matches raw 28-44, small talk ~13). Override with SKILLROUTER_MIN_RAW.
+export async function hint(agent, input, minRaw = Number(process.env.SKILLROUTER_MIN_RAW ?? 20), k = 4) {
     const started = performance.now();
     const hint_id = randomUUID();
     let payload = {};
+    let semStatus;
     const record = (reason, hits = []) => logUsage({
-        client: `hook/${agent}`, agent, tool: "hint", hint_id, reason,
-        session: typeof payload.session_id === "string" ? createHash("sha256").update(payload.session_id).digest("hex") : undefined,
-        duration_ms: Math.round(performance.now() - started), hits: hits.map((h) => [h.skill.id, h.score, h.raw]),
+        client: `hook/${agent}`, agent, tool: "hint", hint_id, reason, session: sessionHash(payload.session_id), prompt: sessionHash(payload.prompt_id),
+        sem: semStatus, duration_ms: Math.round(performance.now() - started), hits: hits.map((h) => [h.skill.id, h.score, h.raw, h.cos ?? null]),
     });
     try {
         const parsed = JSON.parse(input);
@@ -34,9 +40,14 @@ export async function hint(agent, input, minRaw = Number(process.env.SKILLROUTER
         record("invalid_input");
         return formatHint(agent, "");
     }
+    const session = sessionHash(payload.session_id);
     const prompt = payload.prompt.trim();
     if (prompt.startsWith("/")) {
         record("skipped_command");
+        return formatHint(agent, "");
+    }
+    if (isSystemText(prompt)) {
+        record("skipped_system");
         return formatHint(agent, "");
     }
     if (prompt.length < 20) {
@@ -45,9 +56,12 @@ export async function hint(agent, input, minRaw = Number(process.env.SKILLROUTER
     }
     let hits = [];
     try {
-        // Fewer, surer candidates: a skill the model can't judge (no description) is never a hint, and
-        // only hits close to the best one are shown, so a hint is a recommendation rather than a list.
-        hits = selectHints(await search(prompt.slice(0, 1000), k * 2, { lexicalOnly: true }), minRaw, k);
+        const query = prompt.slice(0, 1000);
+        const { index } = getIndex();
+        const sem = await semanticScores(query, 800, index.builtAt);
+        semStatus = sem.status;
+        const loaded = loadedSkills(session, undefined); // already in context this session: not hinted again
+        hits = selectHints((await search(query, 12, { semantic: sem.scores })).filter((h) => !loaded.has(bareSkill(h.skill.id))), minRaw, k);
     }
     catch {
         record(fs.existsSync(INDEX_FILE) ? "index_error" : "missing_index");
@@ -56,35 +70,61 @@ export async function hint(agent, input, minRaw = Number(process.env.SKILLROUTER
     record(hits.length ? "shown" : "no_match", hits);
     if (!hits.length)
         return formatHint(agent, "");
+    addShown(session, hits.map((h) => h.skill.id), sessionHash(payload.prompt_id));
     return formatHint(agent, hintText(hits, hint_id, new Set(readCore()), agent));
 }
+/**
+ * Which candidates become a hint. With the semantic layer: a skill passes on strong meaning alone
+ * (cosine >= 0.45) or on words and meaning together (cosine >= 0.20 and cosine + raw/100 >= 0.52);
+ * calibrated 2026-10-23 on 16 labeled prompts, it drops every labeled junk hit but one name collision.
+ * Without it: the lexical gate. Either way only described skills, near the best one, at most k.
+ */
 export function selectHints(hits, minRaw, k) {
-    const described = hits.filter((h) => h.skill.description.trim().length >= 20 && h.matched >= 2 && h.raw >= minRaw);
-    const top = described[0]?.raw ?? 0;
-    return described.filter((h) => h.raw >= 0.85 * top).slice(0, k);
+    const described = hits.filter((h) => h.skill.description.trim().length >= 20);
+    const semantic = described.some((h) => h.cos !== undefined);
+    // A hit without a vector (new since the last embedding run) is judged by the lexical gate, on a comparable scale.
+    const strength = (h) => (!semantic ? h.raw : h.cos !== undefined ? h.cos + h.raw / 100 : h.raw / 100 + 0.25);
+    const passes = (h) => h.cos === undefined
+        ? h.matched >= 2 && h.raw >= minRaw
+        : h.cos >= 0.45 || (h.cos >= 0.2 && h.matched >= 1 && strength(h) >= 0.52);
+    const passing = described.filter(passes).sort((a, b) => strength(b) - strength(a));
+    const top = passing[0] ? strength(passing[0]) : 0;
+    return passing.filter((h) => strength(h) >= (semantic ? 0.8 : 0.85) * top).slice(0, k);
 }
-/** The hint the model reads: each candidate's trigger, and the exact way to load it (already preloaded, or via read_skill). */
-export function hintText(hits, hint_id, core, agent = "claude") {
+/** The hint the model reads: a required decision, each candidate's trigger, and the exact way to load it. */
+export function hintText(hits, hint_id, core, agent = "claude", lead) {
     const lines = hits.map((h) => {
         const id = h.skill.id;
         const how = core.has(id) || core.has(h.skill.name)
             ? (agent === "claude" ? "preloaded: invoke it with the Skill tool" : `preloaded: use the skill named ${id} from your skill list`)
             : `not preloaded: read_skill("${id}", hint_id="${hint_id}")`;
-        return `- ${id} (${h.score.toFixed(2)}) — ${how}\n  when: ${(h.skill.description || "(no description)").split(/\s+/).join(" ").slice(0, 220)}`;
+        return `- ${id} — ${how}\n  when: ${(h.skill.description || "(no description)").split(/\s+/).join(" ").slice(0, 220)}`;
     }).join("\n");
-    return "Skill hints from skillrouter. If this task matches a \"when\" line, load that skill exactly as its line says before your first tool call and follow it; if none matches, ignore this.\n" + lines;
+    return lead
+        ? `${lead} Load the ones whose "when" fits what you are doing before continuing, and include them in your \`Skills:\` line.\n${lines}`
+        : "Skill check (skillrouter). Load every skill below whose \"when\" fits this task (often 1-3) before starting the work, then say which in one line: `Skills: <ids>` or `Skills: none (<why>)`.\n" + lines;
 }
-/** Run matching in a killable process: synchronous index work cannot defeat the deadline. */
-export function runHint(agent, input, cli, timeout = 1500) {
+/** Run work in a killable process: synchronous index work cannot defeat the deadline. */
+export function runHint(agent, input, cli, timeout = 1500, mode) {
     const started = performance.now();
     return new Promise((resolve) => {
-        const child = execFile(process.execPath, [cli, "hint-worker", agent], {
+        const child = execFile(process.execPath, [cli, "hint-worker", agent, ...(mode ? [mode] : [])], {
             timeout, killSignal: "SIGKILL", maxBuffer: 64 * 1024,
         }, (error, stdout) => {
+            // A worker killed after it already wrote a complete answer (e.g. a slow model load still pending) keeps that answer.
+            const answer = stdout.trim();
+            if (error && answer) {
+                try {
+                    JSON.parse(answer);
+                    resolve(answer);
+                    return;
+                }
+                catch { /* partial: fall through */ }
+            }
             if (error) {
-                logUsage({ client: `hook/${agent}`, agent, tool: "hint", reason: error.killed ? "timeout" : "execution_error",
+                logUsage({ client: `hook/${agent}`, agent, tool: mode === "tool" ? "trigger" : "hint", reason: error.killed ? "timeout" : "execution_error",
                     duration_ms: Math.round(performance.now() - started), hits: [] });
-                resolve(formatHint(agent, ""));
+                resolve(mode ? "" : formatHint(agent, ""));
             }
             else
                 resolve(stdout.trim());
@@ -93,8 +133,8 @@ export function runHint(agent, input, cli, timeout = 1500) {
         child.stdin?.end(input);
     });
 }
-/** Bound stdin too: a host that never closes its pipe must not hang prompt submission. */
-export function readHintInput(agent, timeout = 1500) {
+/** Bound stdin too: a host that never closes its pipe must not hang prompt submission. Tool events carry tool output, so their cap is higher. */
+export function readHintInput(agent, timeout = 1500, cap = 256 * 1024) {
     return new Promise((resolve) => {
         let input = "";
         const done = (reason) => {
@@ -109,7 +149,7 @@ export function readHintInput(agent, timeout = 1500) {
         };
         const onData = (chunk) => {
             input += chunk;
-            if (Buffer.byteLength(input) > 256 * 1024)
+            if (input.length > cap)
                 done("input_too_large");
         };
         const onEnd = () => done();

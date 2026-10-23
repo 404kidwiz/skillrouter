@@ -3,8 +3,9 @@ import path from "node:path";
 import { BM25, tokenize, stem, TOKENIZER_VERSION } from "./bm25.js";
 import { loadIndex, type Index, type SkillEntry } from "./index.js";
 import { USAGE_LOG, SR_DIR } from "./paths.js";
+import { semanticScores } from "./embed.js";
 
-export interface Hit { skill: SkillEntry; score: number; raw: number; matched: number }
+export interface Hit { skill: SkillEntry; score: number; raw: number; matched: number; cos?: number }
 
 let cached: { index: Index; bm25: BM25 } | null = null;
 
@@ -18,20 +19,23 @@ export function getIndex(): { index: Index; bm25: BM25 } {
   return cached;
 }
 
-/** BM25 by default. With an embeddings index (skillrouter index --embeddings) and the model installed, blends both. */
-export async function search(query: string, k = 5, options: { lexicalOnly?: boolean } = {}): Promise<Hit[]> {
+/**
+ * BM25 by default. With vectors (skillrouter index --embeddings) and the model installed, each hit also
+ * carries its cosine to the query, semantic-only candidates join, and the ranking blends both.
+ * `cos` is undefined when no semantic layer ran.
+ */
+export async function search(query: string, k = 5, options: { lexicalOnly?: boolean; semantic?: Map<string, number> | null } = {}): Promise<Hit[]> {
   const { index, bm25 } = getIndex();
   const byId = new Map(index.skills.map((s) => [s.id, s]));
   const lexical = bm25.search(query, k * 3);
   const scores = new Map(lexical.map((h) => [h.id, h.score]));
   const raws = new Map(lexical.map((h) => [h.id, h.raw]));
   const matched = new Map(lexical.map((h) => [h.id, h.matched]));
-  if (index.embeddings && !options.lexicalOnly) {
-    const q = await embed([query]).catch(() => null);
-    if (q) {
-      const sem = cosineTop(q[0], index.embeddings, k * 2);
-      for (const [id, s] of sem) scores.set(id, Math.max(scores.get(id) ?? 0, s) * 0.5 + ((scores.get(id) ?? 0) + s) * 0.25);
-    }
+  const sem = options.semantic !== undefined ? options.semantic : options.lexicalOnly ? null : (await semanticScores(query, 800, index.builtAt)).scores;
+  if (sem) {
+    const top = [...sem.entries()].sort((a, b) => b[1] - a[1]).slice(0, k * 2);
+    for (const [id] of top) if (!scores.has(id) && byId.has(id)) scores.set(id, 0);
+    for (const id of scores.keys()) scores.set(id, 0.5 * (scores.get(id) ?? 0) + 0.5 * Math.max(0, sem.get(id) ?? 0) / Math.max(1e-9, top[0]?.[1] ?? 1));
   }
   // Collapse same-named variants (foo, foo~2 …): the library often holds several copies of one skill.
   const seenName = new Set<string>();
@@ -39,7 +43,9 @@ export async function search(query: string, k = 5, options: { lexicalOnly?: bool
     .sort((a, b) => b[1] - a[1])
     .filter(([id]) => { const n = byId.get(id)!.name; if (seenName.has(n)) return false; seenName.add(n); return true; })
     .slice(0, k)
-    .map(([id, score]) => ({ skill: byId.get(id)!, score: Math.round(score * 1000) / 1000, raw: Math.round((raws.get(id) ?? 0) * 100) / 100, matched: matched.get(id) ?? 0 }));
+    .map(([id, score]) => ({ skill: byId.get(id)!, score: Math.round(score * 1000) / 1000, raw: Math.round((raws.get(id) ?? 0) * 100) / 100,
+      // A skill missing from the vectors keeps cos undefined, so the lexical gate still judges it.
+      matched: matched.get(id) ?? 0, cos: sem?.has(id) ? Math.round(sem.get(id)! * 1000) / 1000 : undefined }));
 }
 
 export function findSkill(nameOrId: string): SkillEntry[] {
@@ -60,27 +66,4 @@ export function logUsage(event: Record<string, unknown>): void {
     fs.mkdirSync(SR_DIR, { recursive: true });
     fs.appendFileSync(USAGE_LOG, JSON.stringify({ ts: new Date().toISOString(), ...event }) + "\n");
   } catch { /* never block a tool on logging */ }
-}
-
-// --- optional embeddings (needs: pnpm add @huggingface/transformers, then skillrouter index --embeddings)
-let pipe: ((t: string[], o: object) => Promise<{ tolist(): number[][] }>) | null = null;
-export async function embed(texts: string[]): Promise<number[][]> {
-  if (!pipe) {
-    const mod = await import("@huggingface/transformers" as string).catch(() => {
-      throw new Error("Embeddings need @huggingface/transformers. Install it next to skillrouter or stay on BM25.");
-    });
-    pipe = await mod.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
-  }
-  const out = await pipe!(texts, { pooling: "mean", normalize: true });
-  return out.tolist();
-}
-
-function cosineTop(q: number[], all: Record<string, number[]>, k: number): [string, number][] {
-  const res: [string, number][] = [];
-  for (const [id, v] of Object.entries(all)) {
-    let s = 0;
-    for (let i = 0; i < q.length; i++) s += q[i] * v[i];
-    res.push([id, s]);
-  }
-  return res.sort((a, b) => b[1] - a[1]).slice(0, k);
 }

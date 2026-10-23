@@ -1,19 +1,11 @@
 #!/usr/bin/env node
-import { buildIndex, loadIndex, saveIndex } from "./index.js";
-import { search, embed, getIndex } from "./search.js";
-import { hint, runHint, readHintInput, formatHint } from "./hint.js";
-import { serveMcp } from "./mcp.js";
-import { readCore, writeCore, syncCore, suggestCore, skipCore } from "./core.js";
-import { trim } from "./trim.js";
-import { install, NODE, INSTALL_TARGETS } from "./install.js";
-import { liveCheck } from "./live.js";
-import { doctor, report, readCounts } from "./report.js";
 import { AGENTS, SR_DIR } from "./paths.js";
+// Everything else is imported where used: hooks run on every prompt and tool call, so they load only what they need.
 const USAGE = `skillrouter — a big skill library without the context bloat
 
   skillrouter doctor [--live] [agents]   what each agent preloads today and what it costs; --live starts each configured MCP server
   skillrouter index [--root DIR]... [--embeddings]
-                                          scan every skill folder into ~/.skillrouter/index.json
+                                          scan every skill folder into ~/.skillrouter/index.json (+ local vectors)
   skillrouter search "<task>" [-k N]     try the router from the shell
   skillrouter core list|add <id>...|remove <id>...|suggest [N]|sync [agents]
                                           the small set every agent preloads (sync relinks agent folders)
@@ -21,10 +13,10 @@ const USAGE = `skillrouter — a big skill library without the context bloat
                                           don't link a core skill for agents that already have it (e.g. via a plugin)
   skillrouter trim [agents] [--apply] [--keep NAME]...
                                           move everything except core out of agent folders (dry run by default)
-  skillrouter install <agent>...         wire MCP + prompt hook: claude codex cursor gemini opencode; MCP only: openclaude antigravity hermes
-  skillrouter report [days]              who searched, what got read, did hints help
+  skillrouter install <agent>...         wire MCP + hooks: claude codex cursor gemini opencode; MCP only: openclaude antigravity hermes
+  skillrouter report [days]              who searched, what got loaded, did checks help
   skillrouter mcp                        stdio MCP server (search_skills, read_skill)
-  skillrouter hint <agent>               prompt hook: reads hook JSON on stdin
+  skillrouter hint <agent> [tool|stop]   hooks: prompt check (default), PostToolUse triggers, Stop decision
 `;
 function flag(args, name) { const i = args.indexOf(name); if (i >= 0) {
     args.splice(i, 1);
@@ -35,39 +27,94 @@ function opt(args, name) { const out = []; for (let i = args.indexOf(name); i >=
     args.splice(i, 2);
 } return out; }
 function agentsFrom(args) { const a = args.filter((x) => AGENTS.includes(x)); return a.length ? a : AGENTS; }
-function targetsFrom(args) { const a = args.filter((x) => INSTALL_TARGETS.includes(x)); return a.length ? a : INSTALL_TARGETS; }
+/** Write and exit: a worker must not linger on pending work (a slow model load) after its answer is out. */
+function finish(out, exit) {
+    return new Promise((resolve) => {
+        if (!out) {
+            if (exit)
+                process.exit(0);
+            resolve();
+            return;
+        }
+        process.stdout.write(out + "\n", () => { if (exit)
+            process.exit(0); resolve(); });
+    });
+}
 async function main(argv) {
     const [cmd, ...args] = argv;
     switch (cmd) {
+        case "hint":
+        case "hint-worker": {
+            const agent = args[0];
+            const mode = args[1];
+            if (!AGENTS.includes(agent))
+                return;
+            const { readHintInput, runHint, formatHint, hint } = await import("./hint.js");
+            const worker = cmd === "hint-worker";
+            const input = await readHintInput(agent, 1500, mode ? 8 * 1024 * 1024 : 256 * 1024);
+            if (input === null)
+                return finish(mode ? "" : formatHint(agent, ""), worker);
+            if (mode === "stop") {
+                const { stopEvent } = await import("./events.js");
+                return finish(stopEvent(agent, input), worker);
+            }
+            if (mode === "tool") {
+                const { toolEvent } = await import("./events.js");
+                const first = await toolEvent(agent, input, worker);
+                return finish(typeof first === "string" ? first : await runHint(agent, first.spawn, process.argv[1], 1500, "tool"), worker);
+            }
+            return finish(worker ? await hint(agent, input) : await runHint(agent, input, process.argv[1]), worker);
+        }
         case "doctor": {
             const live = flag(args, "--live");
+            const { doctor } = await import("./report.js");
             console.log(doctor());
             if (live) {
+                const { liveCheck } = await import("./live.js");
+                const { INSTALL_TARGETS } = await import("./install.js");
+                const targets = args.filter((x) => INSTALL_TARGETS.includes(x));
                 console.log("\nLive MCP check (each configured server started and asked for its tools):");
-                console.log((await liveCheck(targetsFrom(args))).join("\n"));
+                console.log((await liveCheck((targets.length ? targets : INSTALL_TARGETS))).join("\n"));
             }
             break;
         }
         case "index": {
+            const { buildIndex, loadIndex, saveIndex } = await import("./index.js");
+            const { embed, vectorsExist, saveVectors, skillText } = await import("./embed.js");
             const withEmb = flag(args, "--embeddings");
             // Extra roots stick: an index rebuilt without --root keeps the roots of the previous one.
             const roots = opt(args, "--root");
             const index = buildIndex(roots.length ? roots : (loadIndex()?.roots ?? []));
-            if (withEmb) {
-                const vecs = await embed(index.skills.map((s) => `${s.name}: ${s.description}`));
-                index.embeddings = Object.fromEntries(index.skills.map((s, i) => [s.id, vecs[i].map((x) => Math.round(x * 1e4) / 1e4)]));
-            }
             saveIndex(index);
-            console.log(`Indexed ${index.skills.length} skills from ${index.roots.length} folders${withEmb ? " with embeddings" : ""} -> ${SR_DIR}/index.json`);
+            // Vectors are rebuilt with the index once a vector store exists. They carry the index's builtAt,
+            // so if this step fails the old vectors read as stale and hints fall back to lexical.
+            let vec = "";
+            if (withEmb || vectorsExist()) {
+                try {
+                    const rows = [];
+                    const texts = index.skills.map(skillText);
+                    for (let i = 0; i < texts.length; i += 64)
+                        rows.push(...(await embed(texts.slice(i, i + 64), true)));
+                    saveVectors(index.skills.map((s) => s.id), rows, index.builtAt);
+                    vec = " with embeddings";
+                }
+                catch (e) {
+                    vec = ` (embeddings not rebuilt: ${e.message}; hints use BM25 until \`index --embeddings\` succeeds)`;
+                    process.exitCode = 1;
+                }
+            }
+            console.log(`Indexed ${index.skills.length} skills from ${index.roots.length} folders${vec} -> ${SR_DIR}/index.json`);
             break;
         }
         case "search": {
+            const { search } = await import("./search.js");
             const k = Number(opt(args, "-k")[0] ?? 5);
             for (const h of await search(args.join(" "), k))
-                console.log(`${h.score.toFixed(2)} (raw ${h.raw})  ${h.skill.id}  —  ${h.skill.description.slice(0, 110)}`);
+                console.log(`${h.score.toFixed(2)} (raw ${h.raw}${h.cos !== undefined ? `, cos ${h.cos}` : ""})  ${h.skill.id}  —  ${h.skill.description.slice(0, 110)}`);
             break;
         }
         case "core": {
+            const { readCore, writeCore, syncCore, suggestCore, skipCore } = await import("./core.js");
             const [sub, ...rest] = args;
             if (sub === "list")
                 console.log(readCore().join("\n") || "(empty core — try: skillrouter core suggest)");
@@ -76,6 +123,7 @@ async function main(argv) {
             else if (sub === "remove")
                 writeCore(readCore().filter((id) => !rest.includes(id)));
             else if (sub === "suggest") {
+                const { readCounts } = await import("./report.js");
                 const ids = suggestCore(readCounts(90), Number(rest[0] ?? 30));
                 console.log(ids.length ? ids.join("\n") : "No reads logged yet. Add skills you use with: skillrouter core add <id>...");
             }
@@ -94,6 +142,7 @@ async function main(argv) {
             break;
         }
         case "trim": {
+            const { trim } = await import("./trim.js");
             const apply = flag(args, "--apply");
             const keep = opt(args, "--keep");
             const s = trim(agentsFrom(args), apply, keep);
@@ -106,41 +155,27 @@ async function main(argv) {
                 console.log("Nothing changed. Re-run with --apply.");
             break;
         }
-        case "install":
+        case "install": {
+            const { install, NODE, INSTALL_TARGETS } = await import("./install.js");
+            const targets = args.filter((x) => INSTALL_TARGETS.includes(x));
             console.log(`Node pinned for hooks and MCP: ${NODE} (override with SKILLROUTER_NODE=/path/to/node)`);
-            {
-                const seen = new Set();
-                for (const a of targetsFrom(args))
-                    for (const line of install(a))
-                        if (!seen.has(line)) {
-                            seen.add(line);
-                            console.log(line);
-                        }
-            }
+            const seen = new Set();
+            for (const a of (targets.length ? targets : INSTALL_TARGETS))
+                for (const line of install(a))
+                    if (!seen.has(line)) {
+                        seen.add(line);
+                        console.log(line);
+                    }
             break;
-        case "report":
+        }
+        case "report": {
+            const { report } = await import("./report.js");
             console.log(report(Number(args[0] ?? 7)));
             break;
-        case "mcp":
+        }
+        case "mcp": {
+            const { serveMcp } = await import("./mcp.js");
             await serveMcp();
-            break;
-        case "hint":
-        case "hint-worker": {
-            const agent = args[0];
-            if (!AGENTS.includes(agent)) {
-                process.stdout.write("");
-                return;
-            }
-            const input = await readHintInput(agent);
-            if (input === null) {
-                process.stdout.write(formatHint(agent, ""));
-                return;
-            }
-            const out = cmd === "hint"
-                ? await runHint(agent, input, process.argv[1])
-                : await hint(agent, input);
-            if (out)
-                process.stdout.write(out + "\n");
             break;
         }
         default:
@@ -150,4 +185,3 @@ async function main(argv) {
     }
 }
 main(process.argv.slice(2)).catch((e) => { console.error(e instanceof Error ? e.message : e); process.exitCode = 1; });
-void getIndex;

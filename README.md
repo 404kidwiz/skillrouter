@@ -53,6 +53,22 @@ claude plugin marketplace add 404kidwiz/skillrouter
 claude plugin install skillrouter
 ```
 
+## Making agents use every relevant skill
+
+Hints alone get ignored when they are often wrong. Three mechanisms work together:
+
+| Mechanism | When it fires | What it does |
+|---|---|---|
+| Prompt check | every user prompt (system-generated turns skipped) | lists up to 4 candidates that pass the gate, each with its "when" line and exact load call, and asks for a one-line decision: `Skills: <ids>` or `Skills: none (<why>)` |
+| Action triggers (Claude Code) | after an edit or command that shows the kind of work: tests, Dockerfiles, migrations, CI, Kubernetes, Terraform, frontend, auth, APIs, git history, PRs, releases | once per session per rule, names the fitting skills not yet loaded. Rules are editable in `~/.skillrouter/triggers.json` |
+| Decision nudge (Claude Code) | at the end of a turn that ran 3+ tool calls after a check, with no skill loaded and no `Skills:` line | sends the turn back once to decide; never twice in a row |
+
+Local embeddings are opt-in: install `@huggingface/transformers` next to skillrouter (an optional peer dependency, ~450 MB of ONNX runtime packages), then run `skillrouter index --embeddings` (a one-time ~90 MB MiniLM model download into `~/.skillrouter/models`). With them, a candidate passes on meaning (cosine ≥ 0.45) or on words and meaning together (cosine ≥ 0.20 and cosine + BM25/100 ≥ 0.52); on 16 labeled real prompts this dropped every junk hit but one name collision. Hooks never download; the semantic step has an 800 ms budget and falls back to BM25, as it does when the vectors were built for an older index (`doctor` shows "Vectors: STALE"). Prompt checks take ~0.4-0.5 s with embeddings (~0.2 s without); tool calls that match no trigger rule add ~50-90 ms.
+
+Checks are bound to the prompt that produced them (`prompt_id`), so a later turn is never nudged for an earlier turn's hints; subagents keep their own trigger slots; a skill already loaded in the session is not suggested again.
+
+`report` credits a check when the hinted skill is loaded in the same session, through `read_skill` or the native Skill tool, and counts decided / nudged turns and fired triggers.
+
 ## How routing works
 
 1. If a preloaded (core) skill clearly fits, the agent uses it.
@@ -69,7 +85,7 @@ Search is BM25 over name + description (weighted) + the start of the body. On a 
 
 Hooks call a fixed launcher, `~/.skillrouter/bin/skillrouter-hint <agent>`, and `install` rewrites only what the launcher execs, so a hook's command text (what Codex hashes for trust) never changes across upgrades. `install openclaude antigravity hermes` wires the MCP server into hosts that have no prompt hooks (Hermes through its own config API). `doctor --live` starts every configured server and lists its tools, which is the connectivity proof plain `doctor` can't give. Hint lines carry a "when:" trigger and say exactly how to load the skill (preloaded → Skill tool; otherwise `read_skill(id, hint_id=…)`). A hint is shown only for described skills scoring at least `SKILLROUTER_MIN_RAW` (default 20) and within 85% of the best hit, at most three, so it reads as a recommendation rather than a list. Search adds query-side synonyms, a name-match bonus and plural folding.
 
-The installer pins the MCP server to the current package's absolute CLI path and to a Node binary no other tool manages (not one under `~/.hermes` or `node_modules`; override with `SKILLROUTER_NODE=/path/to/node`). `dist/` is committed so the Claude Code plugin works straight from the repo. Keep that installation available and rerun `install` after moving/upgrading it; `--local` remains accepted for compatibility. Hooks never run npm or embeddings. Input is limited to 256 KiB with a 1.5-second stdin deadline; matching runs in a killable worker with a separate 1.5-second deadline. Failures return the host's empty/continue response and record an outcome. OpenCode additionally caps the subprocess wait at 2 seconds. These budgets exclude host and initial Node startup time.
+The installer pins the MCP server to the current package's absolute CLI path and to a Node binary no other tool manages (not one under `~/.hermes` or `node_modules`; override with `SKILLROUTER_NODE=/path/to/node`). `dist/` is committed so the Claude Code plugin works straight from the repo. Keep that installation available and rerun `install` after moving/upgrading it; `--local` remains accepted for compatibility. Hooks never run npm or embeddings. Input is limited to 256 KiB for prompt checks and 8 MiB for tool and Stop events, with a 1.5-second stdin deadline; matching runs in a killable worker with a separate 1.5-second deadline. Failures return the host's empty/continue response and record an outcome. OpenCode additionally caps the subprocess wait at 2 seconds. These budgets exclude host and initial Node startup time.
 
 Repeated installation replaces existing router hooks while preserving unrelated hook commands. JSON config files are backed up before writes. Existing multiline TOML command/args require manual adjustment; the installer refuses to rewrite that syntax.
 

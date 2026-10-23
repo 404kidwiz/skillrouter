@@ -3,6 +3,7 @@ import path from "node:path";
 import { AGENT_SKILL_DIRS, AGENTS, USAGE_LOG } from "./paths.js";
 import { health } from "./health.js";
 import { parseFrontmatter } from "./index.js";
+import { bareSkill } from "./state.js";
 export function validRow(value) {
     if (!value || typeof value !== "object")
         return false;
@@ -15,8 +16,13 @@ export function validRow(value) {
 /** Explicit prompt correlation, or a shared host session; never infer from skill identity alone. */
 export function followsHint(hint, read) {
     const elapsed = Date.parse(read.ts) - Date.parse(hint.ts);
-    if (read.tool !== "read_skill" || !read.found || elapsed < 0 || elapsed > 30 * 60e3 ||
-        !hint.hits?.some(([id]) => id === read.skill))
+    // A load is a router read_skill that succeeded, or a skill_load the PostToolUse hook saw (native Skill tool or read_skill).
+    const isLoad = (read.tool === "read_skill" && read.found === true) || read.tool === "skill_load";
+    // A subagent's load does not answer a check the main thread was shown, and vice versa.
+    if (hint.sub !== read.sub)
+        return false;
+    if (!isLoad || elapsed < 0 || elapsed > 30 * 60e3 ||
+        !hint.hits?.some(([id]) => bareSkill(id) === bareSkill(read.skill ?? "")))
         return false;
     if (hint.agent && read.agent && hint.agent !== read.agent)
         return false;
@@ -58,26 +64,36 @@ export function report(days = 7, rows = readLog(days)) {
     const organic = rows.filter((r) => !isSynthetic(r));
     const searches = organic.filter((r) => r.tool === "search_skills");
     const reads = organic.filter((r) => r.tool === "read_skill" && r.found);
-    const hints = rows.filter((r) => r.tool === "hint"); // hook rows carry no client identity beyond the agent
-    const out = [`Last ${days} days: ${searches.length} searches, ${reads.length} successful MCP skill loads, ${hints.length} hook invocations`];
+    const hints = rows.filter((r) => r.tool === "hint" || (r.tool === "trigger" && r.reason === "shown")); // prompt hints + action triggers
+    const loads = organic.filter((r) => r.tool === "skill_load");
+    const decisions = rows.filter((r) => r.tool === "decision");
+    const native = loads.filter((r) => r.via === "Skill"); // read_skill loads are already counted from the MCP server
+    const out = [`Last ${days} days: ${searches.length} searches, ${reads.length} successful MCP skill loads, ${native.length} native Skill-tool loads, ${hints.length} hook invocations`];
     if (synthetic.length)
         out.push(`Excluded as synthetic (probe/self-test clients): ${synthetic.filter((r) => r.tool === "search_skills").length} searches, ${synthetic.filter((r) => r.tool === "read_skill" && r.found).length} loads from ${[...new Set(synthetic.map((r) => r.client))].join(", ")}`);
     out.push("", "By agent (searches / reads):");
     for (const c of [...new Set([...searches, ...reads].map((r) => r.client))].sort())
         out.push(`  ${c}: ${searches.filter((r) => r.client === c).length} / ${reads.filter((r) => r.client === c).length}`);
     out.push("", "Most-read skills (candidates for core):");
-    for (const [id, n] of [...reads.reduce((counts, r) => { if (r.skill)
+    for (const [id, n] of [...[...reads, ...native].reduce((counts, r) => { if (r.skill)
             counts.set(r.skill, (counts.get(r.skill) ?? 0) + 1); return counts; }, new Map()).entries()].sort((a, b) => b[1] - a[1]).slice(0, 25))
         out.push(`  ${String(n).padStart(4)}  ${id}`);
     if (hints.length) {
         const shown = hints.filter((h) => h.hits?.length);
-        const followed = shown.filter((h) => reads.some((r) => followsHint(h, r)));
+        const followed = shown.filter((h) => [...reads, ...loads].some((r) => followsHint(h, r)));
         const syntheticFollowed = shown.filter((h) => !followed.includes(h) && synthetic.some((r) => followsHint(h, r)));
         const uncorrelated = shown.filter((h) => !h.hint_id && !(h.session && h.agent));
         out.push("", `Hints: ${shown.length}/${hints.length} hook invocations showed hints; ${followed.length}/${shown.length} shown hints have a correlated organic successful load within 30 minutes` +
             (syntheticFollowed.length ? ` (${syntheticFollowed.length} more were followed only by synthetic probe loads)` : "") + ".", `Unattributable legacy hints: ${uncorrelated.length}.`);
+        const triggers = shown.filter((h) => h.tool === "trigger");
+        if (triggers.length)
+            out.push(`Action triggers: ${triggers.length} fired (${[...new Set(triggers.map((t) => t.trigger))].join(", ")}); ${triggers.filter((h) => followed.includes(h)).length} followed by a load.`);
     }
-    out.push("", "Loads do not establish skill use; direct/native reads are not tracked.");
+    if (decisions.length) {
+        const by = (r) => decisions.filter((d) => d.reason === r).length;
+        out.push(`Turn endings after hints: ${by("decided")} decided (loaded or wrote \`Skills:\`), ${by("nudged")} nudged, ${by("trivial")} too small to ask, ${by("no_hints")} without hints.`);
+    }
+    out.push("", "A load is not proof a skill was applied. Native Skill-tool loads are tracked in Claude Code only (PostToolUse); other hosts count router read_skill loads.");
     return out.join("\n");
 }
 /** What each agent loads at startup right now, and roughly what it costs. */

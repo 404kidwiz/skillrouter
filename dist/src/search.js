@@ -3,6 +3,7 @@ import path from "node:path";
 import { BM25, tokenize, stem, TOKENIZER_VERSION } from "./bm25.js";
 import { loadIndex } from "./index.js";
 import { USAGE_LOG, SR_DIR } from "./paths.js";
+import { semanticScores } from "./embed.js";
 let cached = null;
 export function getIndex() {
     if (cached)
@@ -15,7 +16,11 @@ export function getIndex() {
     cached = { index, bm25: new BM25(index.skills.map((s) => ({ id: s.id, tokens: tokens(s), name: tokenize(s.name) }))) };
     return cached;
 }
-/** BM25 by default. With an embeddings index (skillrouter index --embeddings) and the model installed, blends both. */
+/**
+ * BM25 by default. With vectors (skillrouter index --embeddings) and the model installed, each hit also
+ * carries its cosine to the query, semantic-only candidates join, and the ranking blends both.
+ * `cos` is undefined when no semantic layer ran.
+ */
 export async function search(query, k = 5, options = {}) {
     const { index, bm25 } = getIndex();
     const byId = new Map(index.skills.map((s) => [s.id, s]));
@@ -23,13 +28,14 @@ export async function search(query, k = 5, options = {}) {
     const scores = new Map(lexical.map((h) => [h.id, h.score]));
     const raws = new Map(lexical.map((h) => [h.id, h.raw]));
     const matched = new Map(lexical.map((h) => [h.id, h.matched]));
-    if (index.embeddings && !options.lexicalOnly) {
-        const q = await embed([query]).catch(() => null);
-        if (q) {
-            const sem = cosineTop(q[0], index.embeddings, k * 2);
-            for (const [id, s] of sem)
-                scores.set(id, Math.max(scores.get(id) ?? 0, s) * 0.5 + ((scores.get(id) ?? 0) + s) * 0.25);
-        }
+    const sem = options.semantic !== undefined ? options.semantic : options.lexicalOnly ? null : (await semanticScores(query, 800, index.builtAt)).scores;
+    if (sem) {
+        const top = [...sem.entries()].sort((a, b) => b[1] - a[1]).slice(0, k * 2);
+        for (const [id] of top)
+            if (!scores.has(id) && byId.has(id))
+                scores.set(id, 0);
+        for (const id of scores.keys())
+            scores.set(id, 0.5 * (scores.get(id) ?? 0) + 0.5 * Math.max(0, sem.get(id) ?? 0) / Math.max(1e-9, top[0]?.[1] ?? 1));
     }
     // Collapse same-named variants (foo, foo~2 …): the library often holds several copies of one skill.
     const seenName = new Set();
@@ -38,7 +44,9 @@ export async function search(query, k = 5, options = {}) {
         .filter(([id]) => { const n = byId.get(id).name; if (seenName.has(n))
         return false; seenName.add(n); return true; })
         .slice(0, k)
-        .map(([id, score]) => ({ skill: byId.get(id), score: Math.round(score * 1000) / 1000, raw: Math.round((raws.get(id) ?? 0) * 100) / 100, matched: matched.get(id) ?? 0 }));
+        .map(([id, score]) => ({ skill: byId.get(id), score: Math.round(score * 1000) / 1000, raw: Math.round((raws.get(id) ?? 0) * 100) / 100,
+        // A skill missing from the vectors keeps cos undefined, so the lexical gate still judges it.
+        matched: matched.get(id) ?? 0, cos: sem?.has(id) ? Math.round(sem.get(id) * 1000) / 1000 : undefined }));
 }
 export function findSkill(nameOrId) {
     const { index } = getIndex();
@@ -58,26 +66,4 @@ export function logUsage(event) {
         fs.appendFileSync(USAGE_LOG, JSON.stringify({ ts: new Date().toISOString(), ...event }) + "\n");
     }
     catch { /* never block a tool on logging */ }
-}
-// --- optional embeddings (needs: pnpm add @huggingface/transformers, then skillrouter index --embeddings)
-let pipe = null;
-export async function embed(texts) {
-    if (!pipe) {
-        const mod = await import("@huggingface/transformers").catch(() => {
-            throw new Error("Embeddings need @huggingface/transformers. Install it next to skillrouter or stay on BM25.");
-        });
-        pipe = await mod.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
-    }
-    const out = await pipe(texts, { pooling: "mean", normalize: true });
-    return out.tolist();
-}
-function cosineTop(q, all, k) {
-    const res = [];
-    for (const [id, v] of Object.entries(all)) {
-        let s = 0;
-        for (let i = 0; i < q.length; i++)
-            s += q[i] * v[i];
-        res.push([id, s]);
-    }
-    return res.sort((a, b) => b[1] - a[1]).slice(0, k);
 }

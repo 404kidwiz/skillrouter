@@ -1,0 +1,4 @@
+allowBuilds:
+  # The optional embedding layer runs on the prebuilt onnxruntime binary; neither install script is needed.
+  onnxruntime-node: false
+  protobufjs: false

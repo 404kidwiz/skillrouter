@@ -5,6 +5,7 @@ import { loadIndex } from "./index.js";
 import { isRouterHook } from "./install.js";
 import { readLog } from "./report.js";
 import { hermesSpec } from "./live.js";
+import { loadVectors, vectorsExist } from "./embed.js";
 function json(file) {
     try {
         return { data: JSON.parse(fs.readFileSync(file, "utf8")), status: "missing" };
@@ -61,9 +62,22 @@ export function health(home = HOME) {
     const loaded = loadIndex();
     const index = loaded && Array.isArray(loaded.skills) ? loaded : null;
     const age = index ? (Date.now() - Date.parse(index.builtAt)) / 3600000 : NaN;
+    const vec = loadVectors();
+    const vectors = !vec ? (vectorsExist() ? "unreadable (run: skillrouter index --embeddings)" : "off (BM25 only; see README to enable)")
+        : index && vec.indexBuiltAt !== index.builtAt ? "STALE: built for another index, hints use BM25 (run: skillrouter index --embeddings)"
+            : `${vec.ids.length} skills`;
     const out = ["", `Index: ${!index ? "missing or invalid" : !Number.isFinite(age) ? "invalid timestamp" : `${index.skills.length} skills; ${Math.max(0, age).toFixed(1)} hours old${age > 168 ? " (stale: over 7 days)" : ""}`}`,
+        `Vectors: ${vectors}`,
         "Per-agent health (observations from last 7 days):"];
     const rows = readLog(7);
+    // Claude Code also runs the PostToolUse trigger hook and the Stop decision hook.
+    let claudeExtra = "";
+    try {
+        const d = JSON.parse(fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"));
+        const has = (ev) => Array.isArray(d?.hooks?.[ev]) && d.hooks[ev].some(isRouterHook);
+        claudeExtra = `; triggers ${has("PostToolUse") ? "configured" : "missing"}; decision nudge ${has("Stop") ? "configured" : "missing"}`;
+    }
+    catch { /* reported by configuration() */ }
     for (const agent of AGENTS) {
         const config = configuration(agent, home);
         const own = rows.filter((r) => r.agent === agent || r.client === `hook/${agent}`);
@@ -74,7 +88,7 @@ export function health(home = HOME) {
         const reasons = new Map();
         for (const row of hooks)
             reasons.set(row.reason ?? "legacy/unknown", (reasons.get(row.reason ?? "legacy/unknown") ?? 0) + 1);
-        out.push(`  ${agent}: hook ${config.hook}; MCP ${config.mcp}`, `    last hook: ${hooks[0]?.ts ?? "not observed"}; last MCP activity: ${mcp[0]?.ts ?? "not observed"}; failures: ${failures}`, `    hook outcomes: ${[...reasons].map(([reason, n]) => `${reason}=${n}`).join(", ") || "none observed"}`);
+        out.push(`  ${agent}: hook ${config.hook}; MCP ${config.mcp}${agent === "claude" ? claudeExtra : ""}`, `    last hook: ${hooks[0]?.ts ?? "not observed"}; last MCP activity: ${mcp[0]?.ts ?? "not observed"}; failures: ${failures}`, `    hook outcomes: ${[...reasons].map(([reason, n]) => `${reason}=${n}`).join(", ") || "none observed"}`);
     }
     for (const target of ["openclaude", "antigravity", "hermes"]) {
         const own = rows.filter((r) => r.agent === target);
