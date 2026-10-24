@@ -105,9 +105,12 @@ try {
   const plugin = path.join(scratch, "clean plugin");
   fs.mkdirSync(plugin);
   // Copy only distribution inputs, exactly as a clean source plugin copy would receive them.
-  for (const entry of new Set([...pkg.files, "package.json", "npm-shrinkwrap.json", "LICENSE"])) {
-    fs.cpSync(path.join(root, entry), path.join(plugin, entry), { recursive: true });
-  }
+  // (A plain walk, not fs.cpSync: on the Windows Node 22 runner cpSync left every directory empty while files copied fine.)
+  const copyTree = (from, to) => {
+    if (fs.statSync(from).isDirectory()) { fs.mkdirSync(to, { recursive: true }); for (const e of fs.readdirSync(from)) copyTree(path.join(from, e), path.join(to, e)); }
+    else { fs.mkdirSync(path.dirname(to), { recursive: true }); fs.copyFileSync(from, to); }
+  };
+  for (const entry of new Set([...pkg.files, "package.json", "npm-shrinkwrap.json", "LICENSE"])) copyTree(path.join(root, entry), path.join(plugin, entry));
   // Dependencies are installed the way Claude Code documents it: npm runs in a folder of its own that holds only the
   // dependency list, and the resulting node_modules moves into the plugin. (A CI run on Windows once lost dist/ to an
   // npm ci run inside the plugin copy; this keeps npm away from the plugin's own files.)
