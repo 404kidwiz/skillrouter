@@ -146,16 +146,22 @@ test("MCP logs only completed loads as successful and carries hint correlation",
     const client = new Client({ name: "regression", version: "1" });
     try {
         await client.connect(transport);
+        // The server appends its row before answering, but another process's append can take a moment to be visible to a
+        // reader (seen on the Windows runner): wait briefly for the row the answer implies.
+        const lastRow = async (want) => { for (let i = 0; i < 40 && !want(rows().at(-1)); i++)
+            await new Promise((r) => setTimeout(r, 50)); return rows().at(-1); };
         const result = await client.callTool({ name: "read_skill", arguments: { id: "demo", hint_id: "test-hint" } });
         assert.ok(!result.isError);
-        assert.equal(rows().at(-1)?.found, true);
-        assert.equal(rows().at(-1)?.hint_id, "test-hint");
-        assert.equal(rows().at(-1)?.agent, "codex");
+        const ok = await lastRow((r) => r?.found === true);
+        assert.equal(ok?.found, true);
+        assert.equal(ok?.hint_id, "test-hint");
+        assert.equal(ok?.agent, "codex");
         fs.unlinkSync(path.join(skill, "SKILL.md"));
         const failed = await client.callTool({ name: "read_skill", arguments: { id: "demo" } });
         assert.equal(failed.isError, true);
-        assert.equal(rows().at(-1)?.found, false);
-        assert.equal(rows().at(-1)?.reason, "read_error");
+        const bad = await lastRow((r) => r?.found === false);
+        assert.equal(bad?.found, false);
+        assert.equal(bad?.reason, "read_error");
     }
     finally {
         await client.close();
