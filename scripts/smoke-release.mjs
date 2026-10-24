@@ -108,7 +108,15 @@ try {
   for (const entry of new Set([...pkg.files, "package.json", "npm-shrinkwrap.json", "LICENSE"])) {
     fs.cpSync(path.join(root, entry), path.join(plugin, entry), { recursive: true });
   }
-  npmRun(["ci", "--ignore-scripts", "--omit=dev", "--omit=optional", "--no-audit", "--no-fund"], plugin);
+  // Dependencies are installed the way Claude Code documents it: npm runs in a folder of its own that holds only the
+  // dependency list, and the resulting node_modules moves into the plugin. (A CI run on Windows once lost dist/ to an
+  // npm ci run inside the plugin copy; this keeps npm away from the plugin's own files.)
+  const install = path.join(scratch, "plugin install");
+  fs.mkdirSync(install);
+  for (const f of ["package.json", "npm-shrinkwrap.json"]) fs.copyFileSync(path.join(root, f), path.join(install, f));
+  npmRun(["ci", "--ignore-scripts", "--omit=dev", "--omit=optional", "--no-audit", "--no-fund"], install);
+  fs.renameSync(path.join(install, "node_modules"), path.join(plugin, "node_modules"));
+  for (const f of ["dist/src/cli.js", "node_modules/@modelcontextprotocol/sdk/package.json"]) assert.ok(fs.existsSync(path.join(plugin, f)), `clean plugin copy is missing ${f}; it holds: ${fs.readdirSync(plugin).join(", ")}`);
   await exercise(plugin, "source-plugin");
   console.log(steps.join("\n"));
   console.log(`Release smoke PASS: ${pkg.version}, ${process.platform}, Node ${process.version}`);
