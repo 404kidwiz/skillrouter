@@ -111,6 +111,29 @@ export function markTurn(session: string | undefined, turn?: string): void { app
 
 export function addTool(session: string | undefined, turn?: string, sub?: string): void { append(session, "tools.jsonl", { turn, sub }); }
 
+/**
+ * True the first time a tool call (its host-given id) is seen in this session, and records it. A hook run again after
+ * the warm service timed out then doesn't count the same call twice. Hosts that send no id always count.
+ */
+export function firstUse(session: string | undefined, useId: unknown): boolean {
+  if (!session || typeof useId !== "string" || !useId) return true;
+  const id = useId.slice(0, 80);
+  try {
+    const dir = writableDir(session);
+    const file = path.join(dir, "uses.jsonl");
+    let seen = false;
+    try {
+      const size = fs.statSync(file).size;
+      const fd = fs.openSync(file, "r");
+      try { const buf = Buffer.alloc(Math.min(size, 16384)); fs.readSync(fd, buf, 0, buf.length, size - buf.length); seen = buf.toString("utf8").includes(JSON.stringify(id)); } finally { fs.closeSync(fd); }
+    } catch { /* no file yet */ }
+    if (seen) return false;
+    fs.appendFileSync(file, JSON.stringify(id) + "\n");
+    touch(dir);
+  } catch { /* best effort: count it */ }
+  return true;
+}
+
 /** A turn's time span: from its marker to the next marker (open-ended for the current turn). */
 export function turnWindow(session: string | undefined, turn: string): { start?: number; end: number } {
   const marks = rows(session, "turns.jsonl");

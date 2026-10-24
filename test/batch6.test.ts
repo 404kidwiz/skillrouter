@@ -207,7 +207,7 @@ test("OpenCode plugin: work tools get the trigger appended to their output; othe
   const calls = fs.readFileSync(seen, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].argv, ["opencode", "tool"]);
-  assert.deepEqual(calls[0].input, { session_id: "ses", tool_name: "edit", tool_input: { filePath: "/repo/tests/a.test.ts" }, cwd: "/repo" });
+  assert.deepEqual(calls[0].input, { session_id: "ses", tool_use_id: "c", tool_name: "edit", tool_input: { filePath: "/repo/tests/a.test.ts" }, cwd: "/repo" });
 });
 
 test("shell reads of a SKILL.md: what counts as a load and what doesn't", () => {

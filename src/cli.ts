@@ -25,6 +25,9 @@ const USAGE = `skillrouter — a big skill library without the context bloat
                                           skills held back after repeated declines; keep exempts one, reset forgets counts
   skillrouter mcp                        stdio MCP server (search_skills, read_skill)
   skillrouter hint <agent> [tool|stop]   hooks: prompt check (default), PostToolUse triggers, Stop decision
+  skillrouter service [status|start|stop|restart]
+                                          the warm background service hooks talk to (starts itself; SKILLROUTER_SERVICE=0 turns it off)
+  skillrouter serve [--start]            run the service in the foreground (--start: make sure one is running, then return)
 `;
 
 function flag(args: string[], name: string): boolean { const i = args.indexOf(name); if (i >= 0) { args.splice(i, 1); return true; } return false; }
@@ -51,6 +54,15 @@ async function main(argv: string[]): Promise<void> {
       const worker = cmd === "hint-worker";
       const input = await readHintInput(agent, 1500, mode ? 8 * 1024 * 1024 : 256 * 1024);
       if (input === null) return finish(mode ? "" : formatHint(agent, ""), worker);
+      // The warm service answers in milliseconds when it is running; any failure falls through to doing the work here.
+      if (!worker) {
+        const { serviceEnabled, ask, startServiceSoon } = await import("./service-client.js");
+        if (serviceEnabled() && process.env.SKILLROUTER_SERVICE_TRIED !== "1") {
+          const answer = await ask(agent, mode ?? "-", input);
+          if (answer.kind === "ok") return finish(answer.out, false);
+          if (answer.kind === "failed") startServiceSoon(); // not reachable: start one for the next hook (not after a mere decline)
+        }
+      }
       if (mode === "stop") { const { stopEvent } = await import("./events.js"); return finish(stopEvent(agent, input), worker); }
       if (mode === "decision") { const { decisionEvent } = await import("./events.js"); return finish(decisionEvent(agent, input), worker); }
       if (mode === "tool") {
@@ -139,6 +151,8 @@ async function main(argv: string[]): Promise<void> {
       console.log(`Node pinned for hooks and MCP: ${NODE} (override with SKILLROUTER_NODE=/path/to/node)`);
       const seen = new Set<string>();
       for (const a of (targets.length ? targets : INSTALL_TARGETS) as any[]) for (const line of install(a)) if (!seen.has(line)) { seen.add(line); console.log(line); }
+      // A running service holds the old code and launcher paths: stop it, the next hook starts the new one.
+      try { const { serviceSnapshot } = await import("./service-client.js"); if (serviceSnapshot().running) { const { stopService } = await import("./service.js"); await stopService(); console.log("Stopped the running warm service; the next hook starts it with the new install."); } } catch { /* best effort */ }
       break;
     }
     case "suppress": {
@@ -163,6 +177,36 @@ async function main(argv: string[]): Promise<void> {
         if (!byAgent.size) console.log("  none");
         if (v.keep.length) console.log(`Kept (never held back): ${v.keep.join(", ")}`);
       }
+      break;
+    }
+    case "serve": {
+      const svc = await import("./service.js");
+      if (args.includes("--start")) await svc.ensureStarted(); else await svc.serve();
+      break;
+    }
+    case "service": {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const { runDir } = await import("./service-client.js");
+      const svc = await import("./service.js");
+      const sub = args[0] ?? "status";
+      if (sub === "status") {
+        const s = await svc.status(1500);
+        if (!s) { console.log("Service: not running. It starts on the first hook (SKILLROUTER_SERVICE=0 turns it off)."); break; }
+        console.log(`Service: running, pid ${s.pid}, up ${Math.round((Date.now() - Date.parse(s.startedAt)) / 60000)} min, ${s.requests} requests (${s.fallbacks} handed back), ${s.rssMB} MB`);
+        console.log(`  index ${s.skills} skills, vectors ${s.vectors}, exits after ${s.idleMin} idle min, v${s.version}`);
+        for (const [m, v] of Object.entries(s.byMode)) console.log(`  ${m === "-" ? "prompt check" : m}: ${v.count} requests, ${v.avgMs} ms average`);
+        console.log(`  socket ${s.socket}`);
+      } else if (sub === "stop") console.log((await svc.stopService()) ? "Service stopped." : "Service was not running.");
+      else if (sub === "start" || sub === "restart") {
+        if (sub === "restart") await svc.stopService();
+        try { fs.rmSync(path.join(runDir(), "svc.off"), { force: true }); } catch { /* none */ } // a deliberate start clears the failure pause
+        if (!(await svc.ensureStarted())) { console.log(`Could not start the service: ${runDir()} is not writable. Hooks keep working without it.`); process.exitCode = 1; break; }
+        let s = null;
+        for (let i = 0; i < 40 && !s; i++) { await new Promise((r) => setTimeout(r, 100)); s = await svc.status(500); }
+        console.log(s ? `Service running, pid ${s.pid}.` : "Service did not start; see ~/.skillrouter/run/svc.err (hooks keep working without it).");
+        if (!s) process.exitCode = 1;
+      } else { console.log(USAGE); process.exitCode = 1; }
       break;
     }
     case "eval": {

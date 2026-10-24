@@ -8,7 +8,7 @@ import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
 import { formatHint, hintText, sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, commandsOf, isWork, matchTriggers, parsedInput, shellCommand, type Action } from "./triggers.js";
-import { addLoaded, addNudge, addShown, addTool, bareSkill, claim, claimed, consumeNudge, lastNudge, loadedSkills, release, shownAlts, shownFor, turnStats, turnWindow } from "./state.js";
+import { addLoaded, addNudge, addShown, addTool, bareSkill, claim, claimed, consumeNudge, firstUse, lastNudge, loadedSkills, release, shownAlts, shownFor, turnStats, turnWindow } from "./state.js";
 import { addVerdict, suppressed } from "./verdicts.js";
 
 /** The last `bytes` of a file as lines (the usage log and transcripts only grow; hooks read their tails). */
@@ -97,7 +97,7 @@ export function skillLoadOf(tool: string, raw: any): { skill: string; via: strin
  * have their own `agent_id`), when the tool call shows what kind of work this is. The rule is claimed
  * atomically before searching, so parallel tool calls cannot fire it twice. Cheap path first.
  */
-export async function toolEvent(agent: AgentId, input: string, inWorker: boolean): Promise<string | { spawn: string }> {
+export async function toolEvent(agent: AgentId, input: string, inWorker: boolean, ctx?: { cancelled?: boolean }): Promise<string | { spawn: string }> {
   let p: any;
   try { p = JSON.parse(input); } catch { return ""; }
   const tool = String(p?.tool_name ?? "");
@@ -105,7 +105,9 @@ export async function toolEvent(agent: AgentId, input: string, inWorker: boolean
   const sub = sessionHash(p?.agent_id);
   const turn = sessionHash(turnOf(p));
   const load = skillLoadOf(tool, p?.tool_input);
-  if (load && !inWorker) {
+  // Counted once per tool call: a hook the warm service gave up on and the standalone path ran again must not double-count.
+  const once = inWorker || firstUse(session, p?.tool_use_id);
+  if (load && !inWorker && once) {
     addLoaded(session, load.skill, sub);
     // A held-back skill the agent went and loaded anyway was wanted: count it as accepted (once per session).
     if (suppressed(agent).has(bareSkill(load.skill)) && claim(session, `rescued-${bareSkill(load.skill)}`)) addVerdict(agent, [load.skill], []);
@@ -117,11 +119,11 @@ export async function toolEvent(agent: AgentId, input: string, inWorker: boolean
     const claimed: string[] = Array.isArray(p?._claimed) ? p._claimed : [];
     const action = actionOf(tool, p?.tool_input);
     if (!action || !claimed.length) return "";
-    return triggerHints(agent, relativeAction(action, cwdOf(p)), claimed, session, sub, turn);
+    return triggerHints(agent, relativeAction(action, cwdOf(p)), claimed, session, sub, turn, ctx);
   }
   const action = actionOf(tool, p?.tool_input);
   // Work done this turn (edits, commands that do more than read), for hosts whose end-of-turn check counts it here.
-  if (isWork(action)) addTool(session, turn, sub);
+  if (isWork(action) && once) addTool(session, turn, sub);
   // No session (nothing to dedupe against) or no index (nothing to suggest): never claim, never fire.
   if (!action || !session || !fs.existsSync(INDEX_FILE)) return "";
   // At most two rules per call, and only those two are claimed, so no rule is used up without being shown.
@@ -145,7 +147,17 @@ const ruleKey = (id: string, sub?: string) => `${id}${sub ? "-" + sub.slice(0, 1
 /** The current turn, for claims that last one turn: the host's turn id, else when the prompt hook marked it. */
 const turnTag = (session?: string, turn?: string) => turn?.slice(0, 16) ?? String(turnStats(session).start ?? "none");
 
-async function triggerHints(agent: AgentId, action: Action, claimed: string[], session?: string, sub?: string, prompt?: string): Promise<string> {
+/** Give back the rules a tool event claimed when its worker never finished, so the hook run again can still show them. */
+export function releaseTriggerClaims(spawn: string): void {
+  try {
+    const p = JSON.parse(spawn);
+    const session = sessionHash(sessionOf(p));
+    const sub = sessionHash(p?.agent_id);
+    for (const id of Array.isArray(p?._claimed) ? p._claimed : []) release(session, ruleKey(String(id), sub));
+  } catch { /* nothing to give back */ }
+}
+
+async function triggerHints(agent: AgentId, action: Action, claimed: string[], session?: string, sub?: string, prompt?: string, ctx?: { cancelled?: boolean }): Promise<string> {
   const loaded = loadedSkills(session, sub);
   // Skills this turn already showed (prompt check, earlier triggers) aren't repeated: the main thread just saw them.
   // Subagents never saw the main thread's checks, so they get the full list.
@@ -165,6 +177,8 @@ async function triggerHints(agent: AgentId, action: Action, claimed: string[], s
     // Shown or loaded skills, and their copies, are left out of the search itself.
     const hits = triggerPicks(await search(m.query, 10, { semantic: sem.scores, known: new Set([...loaded, ...shownNow, ...held]), prefer }), loaded, shownNow);
     const repeat = !hits.length && shownNow.size > 0 && triggerPicks(await search(m.query, 10, { semantic: sem.scores, known: new Set([...loaded, ...held]), prefer }), loaded).length > 0;
+    // The warm service gave up on this request (its claims are already given back and the hook runs again): write nothing.
+    if (ctx?.cancelled) return "";
     logUsage({ client: `hook/${agent}`, agent, tool: "trigger", trigger: m.trigger.id, hint_id, session, sub, prompt, sem: sem.status,
       reason: hits.length ? "shown" : repeat ? "already_shown" : "no_match", hits: hits.map((h) => [h.skill.id, h.score, h.raw, h.cos ?? null]) });
     // Nothing new to say: rest the rule for this turn instead of using it up for the session.

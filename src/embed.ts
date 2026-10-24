@@ -9,6 +9,8 @@ export const MODEL = "Xenova/all-MiniLM-L6-v2";
 export const MODELS_DIR = path.join(SR_DIR, "models");
 const VEC_FILE = path.join(SR_DIR, "embeddings.f32");
 const META_FILE = path.join(SR_DIR, "embeddings.json");
+/** The files the vectors live in, for anything that watches them for changes. */
+export const VECTOR_FILES = [META_FILE, VEC_FILE];
 
 type Pipe = (t: string[], o: object) => Promise<{ tolist(): number[][] }>;
 let pipe: Promise<Pipe> | null = null; // the promise, so concurrent first calls load the model once
@@ -51,6 +53,8 @@ export function saveVectors(ids: string[], rows: number[][], indexBuiltAt: strin
 export function vectorsExist(): boolean { return fs.existsSync(META_FILE); }
 
 let vectors: Vectors | null | undefined;
+/** Forget the loaded vectors (the warm service does this when the embedding files change on disk). */
+export function resetVectors(): void { vectors = undefined; }
 export function loadVectors(): Vectors | null {
   if (vectors !== undefined) return vectors;
   try {

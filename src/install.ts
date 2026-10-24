@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { HOME, SR_DIR, AGENTS, type AgentId } from "./paths.js";
+import { PERL_CLIENT, socketPath } from "./service-client.js";
 
 // Pin both integrations to this installed package; prompt submission never invokes npm.
 import { fileURLToPath } from "node:url";
@@ -39,13 +40,33 @@ const BIN = quote(LAUNCHER);
 const MCP_CMD = { command: NODE, args: [CLI, "mcp"] };
 const TOML_MCP = `command = ${JSON.stringify(NODE)}\nargs = [${JSON.stringify(CLI)}, "mcp"]`;
 
+/**
+ * The launcher every hook calls. With Perl available it hands the hook to the Perl client (see PERL_CLIENT), which
+ * asks the warm service, starts one when needed, and otherwise runs Node exactly as before, so the service can only
+ * ever make hooks faster. Without Perl, or with SKILLROUTER_SERVICE=0, or if Perl cannot run the client at all
+ * (exit 2 or 255, before it has touched stdin), Node runs the hook directly and asks the service itself.
+ */
+export function launcherScript(node: string, cli: string, perlClient: string, dir: string, sock: string): string {
+  return `#!/bin/sh
+# skillrouter hook launcher. Rewritten by \`skillrouter install\`; hook configs point here so their text never changes.
+if [ "\${SKILLROUTER_SERVICE:-1}" != 0 ] && [ -f ${quote(perlClient)} ] && command -v perl >/dev/null 2>&1; then
+  perl ${quote(perlClient)} ${quote(dir)} ${quote(sock)} ${quote(node)} ${quote(cli)} "$@"
+  rc=$?
+  if [ $rc -ne 2 ] && [ $rc -ne 255 ]; then exit $rc; fi
+fi
+exec ${quote(node)} ${quote(cli)} hint "$@"
+`;
+}
+
 export function writeLauncher(node = NODE, cli = CLI, launcher = LAUNCHER): string {
   fs.mkdirSync(path.dirname(launcher), { recursive: true });
-  const body = `#!/bin/sh\n# skillrouter prompt-hook launcher. Rewritten by \`skillrouter install\`; hook configs point here so their text never changes.\nexec ${quote(node)} ${quote(cli)} hint "$@"\n`;
-  fs.writeFileSync(launcher + ".tmp", body, { mode: 0o755 });
-  fs.renameSync(launcher + ".tmp", launcher);
-  fs.chmodSync(launcher, 0o755);
-  return `${launcher}: execs ${node} ${cli}`;
+  const perlClient = path.join(path.dirname(launcher), "skillrouter-client.pl");
+  const dir = path.dirname(path.dirname(launcher));
+  const sock = socketPath(dir);
+  const write = (file: string, body: string) => { fs.writeFileSync(file + ".tmp", body, { mode: 0o755 }); fs.renameSync(file + ".tmp", file); fs.chmodSync(file, 0o755); };
+  write(perlClient, PERL_CLIENT);
+  write(launcher, launcherScript(node, cli, perlClient, dir, sock));
+  return `${launcher}: execs ${node} ${cli} (warm service socket ${sock})`;
 }
 
 export function isRouterHook(entry: unknown): boolean {
@@ -257,7 +278,7 @@ export const SkillrouterHints = async (ctx) => ({
   },
   'tool.execute.after': async (input, output) => {
     if (!TOOLS.test(input?.tool ?? '') || typeof output?.output !== 'string') return;
-    const hint = await ask({ session_id: input.sessionID, prompt_id: current.get(input.sessionID), tool_name: input.tool, tool_input: input.args, cwd: ctx?.directory }, 'tool');
+    const hint = await ask({ session_id: input.sessionID, prompt_id: current.get(input.sessionID), tool_use_id: input.callID, tool_name: input.tool, tool_input: input.args, cwd: ctx?.directory }, 'tool');
     if (hint) output.output += '\\n\\n' + hint;
   },
   'experimental.chat.messages.transform': async (_input, output) => {

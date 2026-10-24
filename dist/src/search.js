@@ -6,6 +6,8 @@ import { USAGE_LOG, SR_DIR } from "./paths.js";
 import { bareSkill } from "./state.js";
 import { loadVectors, semanticScores } from "./embed.js";
 let cached = null;
+/** Forget the loaded index (the warm service does this when index.json changes on disk). */
+export function resetIndexCache() { cached = null; }
 export function getIndex() {
     if (cached)
         return cached;

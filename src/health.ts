@@ -6,6 +6,7 @@ import { isRouterHook } from "./install.js";
 import { readLog } from "./report.js";
 import { hermesSpec } from "./live.js";
 import { loadVectors, vectorsExist } from "./embed.js";
+import { serviceEnabled, serviceSnapshot } from "./service-client.js";
 
 function json(file: string): { data?: any; status: string } {
   try { return { data: JSON.parse(fs.readFileSync(file, "utf8")), status: "missing" }; }
@@ -71,6 +72,15 @@ function actionHooks(agent: AgentId, home: string): string {
   } catch { return ""; } // reported by configuration()
 }
 
+/** The warm service: running (pid, uptime, requests), not running (starts on the first hook), or switched off. */
+function serviceLine(): string {
+  if (!serviceEnabled()) return "off (SKILLROUTER_SERVICE=0); hooks run on their own";
+  const s = serviceSnapshot();
+  if (!s.running) return "not running (starts itself on the next hook; `skillrouter service start` to start it now)";
+  const up = s.startedAt ? `, up ${Math.max(0, Math.round((Date.now() - Date.parse(s.startedAt)) / 60000))} min` : "";
+  return `running (pid ${s.pid}${up}${s.requests !== undefined ? `, ${s.requests} requests` : ""}${s.rssMB ? `, ${s.rssMB} MB` : ""})`;
+}
+
 export function health(home = HOME): string[] {
   const loaded = loadIndex();
   const index = loaded && Array.isArray(loaded.skills) ? loaded : null;
@@ -81,6 +91,7 @@ export function health(home = HOME): string[] {
     : `${vec.ids.length} skills`;
   const out = ["", `Index: ${!index ? "missing or invalid" : !Number.isFinite(age) ? "invalid timestamp" : `${index.skills.length} skills; ${Math.max(0, age).toFixed(1)} hours old${age > 168 ? " (stale: over 7 days)" : ""}`}`,
     `Vectors: ${vectors}`,
+    `Service: ${serviceLine()}`,
     "Per-agent health (observations from last 7 days):"];
   const rows = readLog(7);
   for (const agent of AGENTS) {

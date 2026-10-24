@@ -8,6 +8,8 @@ export const MODEL = "Xenova/all-MiniLM-L6-v2";
 export const MODELS_DIR = path.join(SR_DIR, "models");
 const VEC_FILE = path.join(SR_DIR, "embeddings.f32");
 const META_FILE = path.join(SR_DIR, "embeddings.json");
+/** The files the vectors live in, for anything that watches them for changes. */
+export const VECTOR_FILES = [META_FILE, VEC_FILE];
 let pipe = null; // the promise, so concurrent first calls load the model once
 /** Embed texts with the local model. `allowRemote` permits the one-time download (index time only, never in a hook). */
 export async function embed(texts, allowRemote = false) {
@@ -46,6 +48,8 @@ export function saveVectors(ids, rows, indexBuiltAt) {
 }
 export function vectorsExist() { return fs.existsSync(META_FILE); }
 let vectors;
+/** Forget the loaded vectors (the warm service does this when the embedding files change on disk). */
+export function resetVectors() { vectors = undefined; }
 export function loadVectors() {
     if (vectors !== undefined)
         return vectors;

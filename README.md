@@ -92,6 +92,30 @@ Every decided turn also records a verdict: each suggested skill is accepted (it,
 
 Search is BM25 over name + description (weighted) + the start of the body. On a 4,500-skill library it gets the obvious cases right (pytest → `python-testing`, landing page audit → `landing-page-design`, postgres index → `postgres-optimization`) and misses on vague or oddly worded prompts. Optional embeddings (`pnpm add @huggingface/transformers`, then `skillrouter index --embeddings`) blend a MiniLM vector score into the ranking.
 
+## The warm service
+
+Every hook used to start Node, and a prompt check also parsed the 8 MB index and loaded the embedding model: about 430 ms per prompt and 50 to 75 ms per tool call. `skillrouter` now keeps one background process per user that holds the index, the BM25 tables and the model in memory and answers hooks over an owner-only Unix socket (`~/.skillrouter/run/svc.sock`):
+
+| Hook | Before | With the service |
+|---|---|---|
+| Prompt check | ~410 ms | ~20 ms |
+| Tool and end-of-turn hooks | ~50 ms | ~17 ms |
+
+It starts itself the first time a hook finds no service, reloads when the index or vectors change, restarts when you rebuild or upgrade skillrouter, and exits after 30 idle minutes (`SKILLROUTER_SERVICE_IDLE_MIN`). It holds about 420 MB while running (the embedding model is most of it).
+
+The hook launcher hands each hook to a small Perl client (Perl is preinstalled on macOS and nearly every Linux, and starts in 10 ms where Node needs 30). The client reads the hook's input (waiting at most 1.5 s, like before), asks the service (one 0.8 s budget for connecting, sending and reading, using a non-blocking socket so a wedged service can never trap it), and when there is no healthy service it starts one in the background and runs the hook with Node itself, exactly as before. Without Perl, the Node client does the same. A missing, stopped, wedged or refusing service therefore only costs the old speed, never a hook: output and exit code are the same either way. Payloads over 1 MB, unknown hook modes, and hooks whose state folder (`SKILLROUTER_HOME`, else `$HOME/.skillrouter`) is not the one the service serves, skip the service. A wedged service is killed (only after checking that the process really is a skillrouter service) and replaced. `SKILLROUTER_SERVICE=0` turns the whole thing off.
+
+```
+skillrouter service status    # pid, uptime, requests, average latency per hook type
+skillrouter service stop      # it comes back on the next hook; SKILLROUTER_SERVICE=0 keeps it off
+skillrouter service restart
+skillrouter serve             # run it in the foreground (debugging)
+```
+
+`doctor` shows whether it is running. Settings such as `SKILLROUTER_MIN_RAW` are read when the service starts, so `service restart` after changing them. Re-run `skillrouter install` after upgrading: it rewrites the launcher and stops the old service so the next hook starts the new code.
+
+The protocol is for skillrouter's own clients, which keep their side of the socket open until the reply arrives (the reply carries its length, so they never wait for the connection to close). A client that closes its side first is treated as having left, and no work is done for it.
+
 ## Measuring routing quality
 
 `skillrouter eval` scores the prompt check on labeled prompts: top-1 and top-3 accuracy of the ranked search, hint recall and precision through the real hint gate, the false-hint rate on prompts that should get nothing, and copies shown. The repo bundles a fixture library (`eval/skills`, 47 realistic skills with copies, siblings and generic stubs, plus 400 unrelated fillers so term rarity resembles a real library) and `eval/prompts.jsonl`; `eval --ci` fails below the floors in `DEFAULT_THRESHOLDS`, and GitHub Actions runs it with the tests on every push. `eval --live` runs the same metrics on your real index with `~/.skillrouter/eval.jsonl`; label prompts with `skillrouter eval add "<prompt>" <id,id|none>`. The lexical floor scales with the log of the library size (`minRawFor`), so a 450-skill library isn't held to a floor calibrated on 4,500.
@@ -117,6 +141,7 @@ Repeated installation replaces existing router hooks while preserving unrelated 
   core/          symlinks to the core skills (agent folders point here)
   library/       long tail moved out of agent folders (.conflicts/ keeps same-name variants)
   usage.jsonl    one line per search / read / hint / verdict (hints never log prompt text)
+  run/           the warm service: socket, pid, lock, status snapshot, error log
   verdicts.json  per-skill accepted / declined counts and the keep list (drives suppression)
   backups/       tar of each folder before trim, plus RESTORE-<stamp>.md
 ```

@@ -17,6 +17,9 @@ export interface SearchOptions { lexicalOnly?: boolean; semantic?: Map<string, n
 
 let cached: { index: Index; bm25: BM25; byId: Map<string, SkillEntry>; byName: Map<string, SkillEntry[]> } | null = null;
 
+/** Forget the loaded index (the warm service does this when index.json changes on disk). */
+export function resetIndexCache(): void { cached = null; }
+
 export function getIndex(): { index: Index; bm25: BM25; byId: Map<string, SkillEntry>; byName: Map<string, SkillEntry[]> } {
   if (cached) return cached;
   const index = loadIndex();
