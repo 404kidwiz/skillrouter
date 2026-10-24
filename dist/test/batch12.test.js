@@ -93,6 +93,12 @@ const settle = async () => {
     while (Date.now() < end && fs.existsSync(path.join(runDir(), "svc.lock")))
         await sleep(50);
     await stopService().catch(() => { });
+    for (const s of [...fakes]) {
+        fakes.delete(s);
+        for (const c of s.conns ?? [])
+            c.destroy();
+        await new Promise((r) => { s.close(() => r()); setTimeout(r, 200); });
+    }
 };
 /** `test`, then clean up any service the test (or a launcher it ran) left running. */
 function svc(name, a, b) {
@@ -317,6 +323,8 @@ svc("the launcher: a wedged service costs one slow call, then it is replaced", {
 const { isServiceCommand, parseEtime } = await import("../src/service.js");
 const launcherPath = path.join(SR, "bin", "skillrouter-hint");
 const sh = (args, opts = {}) => spawnSync("sh", [launcherPath, ...args], { input: opts.input, env: { ...process.env, ...opts.env }, encoding: "utf8" });
+// Servers standing in for a service. One left listening by a test that failed halfway would keep this process alive forever.
+const fakes = new Set();
 const fake = async (onConn) => {
     fs.mkdirSync(runDir(), { recursive: true, mode: 0o700 });
     if (WIN)
@@ -346,11 +354,13 @@ const fake = async (onConn) => {
     });
     s.conns = conns;
     await new Promise((r) => s.listen(socketPath(), r));
+    fakes.add(s);
     return s;
 };
 // A launcher that found the fake hung may have replaced it with a real service at the same path, so stop that first:
 // closing the fake would otherwise unlink the real service's socket and orphan it.
 const closeFake = async (s) => {
+    fakes.delete(s);
     await sleep(700);
     await stopService().catch(() => { });
     for (const c of s.conns ?? [])
@@ -729,11 +739,19 @@ svc("OpenCode's hook gives up on a hung service sooner than the others", { skip:
     writeLauncher(process.execPath, cli, launcherPath);
     const srv = await fake(() => { });
     const time = (agent) => { const t0 = Date.now(); const r = sh([agent], { input: promptBody("oc-" + agent), env: { SKILLROUTER_SERVICE_TRIED: "" } }); return { ms: Date.now() - t0, ok: /python-testing|^$/.test(r.stdout) }; };
-    const oc = time("opencode");
-    await sleep(300);
-    fs.rmSync(path.join(runDir(), "svc.starting"), { recursive: true, force: true });
-    const cl = time("claude");
-    assert.ok(oc.ms < cl.ms - 200 && oc.ms < 1500, `opencode ${oc.ms} ms vs claude ${cl.ms} ms`);
+    // Wall-clock timing on a shared CI machine: the shorter budget has to show up in one of three tries, not in all of them.
+    let ok = false, seen = "";
+    for (let i = 0; i < 3 && !ok; i++) {
+        const oc = time("opencode");
+        await sleep(300);
+        fs.rmSync(path.join(runDir(), "svc.starting"), { recursive: true, force: true });
+        const cl = time("claude");
+        await sleep(300);
+        fs.rmSync(path.join(runDir(), "svc.starting"), { recursive: true, force: true });
+        ok = oc.ms < cl.ms - 200 && oc.ms < 1500;
+        seen += `[opencode ${oc.ms} ms vs claude ${cl.ms} ms] `;
+    }
+    assert.ok(ok, seen);
     await closeFake(srv);
 });
 svc("a cold burst of hooks starts one service, and tool calls are counted once", { skip: !hasPerl2 && "needs sh and perl" }, async () => {

@@ -12,6 +12,7 @@ jobs:
   test:
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20 # a hung test (a leaked handle keeps its process alive) must fail the job, not hold it for hours
     strategy:
       fail-fast: false
       matrix:
