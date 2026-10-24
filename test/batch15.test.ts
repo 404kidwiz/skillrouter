@@ -38,7 +38,8 @@ test("BM25 counts the matched words that are rare in the library, not the ones e
 
 test("conversational prompts point at the conversation, not at work", () => {
   for (const p of ["What's next? Any suggestions?", "ok, continue", "Let's move forward with all of your recommendations 1 through 5, verify with a QA agent", "Do suggestions 1 and 3: don't re-suggest skills already shown",
-    "Yes, build Windows stage 2 the same way", "Fix both: stop the trigger firing on merges and change the wording", "go ahead and implement step 2", "sounds good, do it"])
+    "Yes, build Windows stage 2 the same way", "Fix both: stop the trigger firing on merges and change the wording", "go ahead and implement step 2", "sounds good, do it",
+    "What is next? Do you have any suggestions for improvements before moving forward?", "Are there any suggestions for enhancements before closing out?", "what are next steps", "proceeding with option B"])
     assert.equal(isConversational(p), true, p);
   for (const p of ["write pytest tests for the api client and fix the failing fixtures", "why is my docker build slow on M1", "add a GitHub Actions workflow that runs the tests on push", "merge two pdf files and extract the tables", "How do I rebase my branch onto main and keep my hooks?"])
     assert.equal(isConversational(p), false, p);

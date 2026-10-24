@@ -41,7 +41,7 @@ export function isSystemText(prompt: string): boolean {
  * 20 were of this kind, and the hints they got were accepted once.
  */
 export function isConversational(prompt: string): boolean {
-  return /\b(what'?s next|next steps?|continue|carry on|go ahead|move forward|proceed|your (recommendations?|suggestions?|plan|proposal|review|findings)|(suggestion|item|step|option|recommendation|point|phase|stage)s? \d|the (first|second|third|last) one|as (discussed|planned|above|before|suggested)|do (it|that|this|all|both|them)|yes[,.]? (build|do|go|fix|implement|proceed|start)|fix (both|these|those|it|that|them)|sounds? good|looks? good|that works)\b/i.test(prompt);
+  return /\b(what(?:'?s| is| are) next|next steps?|continue|carry on|go ahead|mov(?:e|ing) forward|going forward|proceed(?:ing)?|before (?:we |i |you )?(?:move|moving|proceed|continue|close|closing|wrap)|your (recommendations?|suggestions?|plan|proposal|review|findings)|(suggestion|item|step|option|recommendation|point|phase|stage)s? \d|the (first|second|third|last) one|as (discussed|planned|above|before|suggested)|do (it|that|this|all|both|them)|yes[,.]? (build|do|go|fix|implement|proceed|start)|fix (both|these|those|it|that|them)|sounds? good|looks? good|that works)\b/i.test(prompt);
 }
 
 /**
