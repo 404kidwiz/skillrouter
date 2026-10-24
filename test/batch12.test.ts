@@ -195,7 +195,7 @@ svc("hostile or broken clients can't hurt it: garbage, oversize, stalls, floods"
   assert.equal(await raw(`SR1 claude tool ${Buffer.byteLength(JSON.stringify({ session_id: "ho-2c", tool_name: "Bash", tool_input: { command: "ls" }, pad: "x".repeat(1_500_000) }))}\n${JSON.stringify({ session_id: "ho-2c", tool_name: "Bash", tool_input: { command: "ls" }, pad: "x".repeat(1_500_000) })}`, 1500), "OK 0\n", "the service itself still accepts such a payload, up to its own 8 MB limit");
   const big = await Promise.all(Array.from({ length: 8 }, (_, i) => query("claude", "tool", JSON.stringify({ session_id: `ho-big${i}`, tool_name: "Bash", tool_input: { command: "ls" }, tool_response: "y".repeat(900_000) }), 3000)));
   assert.ok(big.every((r) => r === ""), "8 concurrent 900 KB payloads");
-  const parallel = await Promise.all(Array.from({ length: 40 }, (_, i) => query("claude", "-", promptBody(`ho-p${i}`))));
+  const parallel = await Promise.all(Array.from({ length: 40 }, (_, i) => query("claude", "-", promptBody(`ho-p${i}`), 5000))); // correctness, not latency: a loaded CI runner needs more than the default 700 ms for 40 at once
   assert.ok(parallel.every((r) => r !== null && r.includes("python-testing")), "40 at once");
   await down();
 });

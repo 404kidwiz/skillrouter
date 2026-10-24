@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { CORE_DIR, CORE_FILE, SR_DIR, AGENT_SKILL_DIRS, AGENTS } from "./paths.js";
 import { findSkill, getIndex } from "./search.js";
+import { linkDir } from "./platform.js";
 const HEADER = "# skillrouter core: skills every agent preloads. Everything else is reachable via search_skills/read_skill.\n# Line format: <skill id> [!agent ...]   e.g. `pdf !claude` = preload everywhere except Claude Code (it has pdf via a plugin).\n";
 /** core.txt: one skill id per line, optional `!agent` markers for agents that already have the skill, '#' comments. */
 export function readCoreEntries() {
@@ -102,7 +103,7 @@ export function syncCore(agents) {
         targets.set(path.basename(m[0].path).replace(/~\d+$/, ""), { target: m[0].path, skip });
     }
     for (const [name, { target }] of targets) {
-        fs.symlinkSync(target, path.join(CORE_DIR, name));
+        linkDir(target, path.join(CORE_DIR, name));
         linked++;
     }
     // Each agent gets core in its first folder. A folder shared by several agents (~/.agents/skills) is linked once,
@@ -126,7 +127,7 @@ export function syncCore(agents) {
                 fs.unlinkSync(link);
             }
             catch { /* not a dangling link */ }
-            fs.symlinkSync(target, link);
+            linkDir(target, link);
         }
     }
     fs.writeFileSync(PREV_FILE, JSON.stringify([...targets.keys()]));

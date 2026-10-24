@@ -6,10 +6,12 @@ import path from "node:path";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "skillrouter-batch2-"));
 process.env.HOME = home;
+process.env.USERPROFILE = home; // Windows reads this, not HOME, for os.homedir()
 process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 const { BM25, tokenize, expand } = await import("../src/bm25.js");
 const { hintText } = await import("../src/hint.js");
 const { install, writeLauncher, LAUNCHER } = await import("../src/install.js");
+const { hookPrefix, launcherFile } = await import("../src/platform.js");
 const { mcpSpec, liveCheck } = await import("../src/live.js");
 const { mcpOnlyConfiguration } = await import("../src/health.js");
 
@@ -48,14 +50,17 @@ test("hook commands point at a stable launcher, so a reinstall with another Node
   install("codex", home);
   const first = JSON.parse(fs.readFileSync(path.join(home, ".codex", "hooks.json"), "utf8")).hooks.UserPromptSubmit.at(-1).hooks[0].command;
   const launcher = path.join(home, ".skillrouter", "bin", "skillrouter-hint");
-  assert.equal(first, `'${launcher}' codex`);
+  assert.equal(first, `${hookPrefix(launcherFile(launcher))} codex`); // the shape this OS uses: quoted script on POSIX, node + module on Windows
   writeLauncher("/some/other/node", "/elsewhere/cli.js", launcher);
   install("codex", home);
   const second = JSON.parse(fs.readFileSync(path.join(home, ".codex", "hooks.json"), "utf8")).hooks.UserPromptSubmit;
   assert.equal(second.length, 1);
   assert.equal(second[0].hooks[0].command, first);
-  assert.match(fs.readFileSync(launcher, "utf8"), /^#!\/bin\/sh\n/);
-  assert.ok((fs.statSync(launcher).mode & 0o111) !== 0, "launcher is executable");
+  if (process.platform === "win32") assert.match(fs.readFileSync(launcherFile(launcher), "utf8"), /process\.argv\.splice\(1, 1, cli, "hint"\)/, "the module is rewritten in place, its path unchanged");
+  else {
+    assert.match(fs.readFileSync(launcher, "utf8"), /^#!\/bin\/sh\n/);
+    assert.ok((fs.statSync(launcher).mode & 0o111) !== 0, "launcher is executable");
+  }
   void LAUNCHER;
 });
 
@@ -68,7 +73,7 @@ test("MCP-only hosts: install writes their configs, keeps 0600, and doctor can r
   assert.equal(written.secret, "keep");
   assert.equal(written.mcpServers.other.command, "x");
   assert.equal(written.mcpServers.skillrouter.env.SKILLROUTER_AGENT, "openclaude");
-  assert.equal(fs.statSync(oc).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal(fs.statSync(oc).mode & 0o777, 0o600); // Windows has no permission bits
   assert.equal(mcpOnlyConfiguration("openclaude", home), "configured (connection unverified)");
   assert.equal(mcpOnlyConfiguration("hermes", home), "missing");
   assert.match(install("hermes", home)[0], /missing \(Hermes not installed\)/);
@@ -89,7 +94,7 @@ test("QA regressions: TOML keeps 0600, pristine backup survives reinstall, stemm
   fs.writeFileSync(toml, 'api_key = "secret"\n');
   fs.chmodSync(toml, 0o600);
   install("codex", home2);
-  assert.equal(fs.statSync(toml).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal(fs.statSync(toml).mode & 0o777, 0o600);
   assert.equal(fs.readFileSync(`${toml}.bak-skillrouter`, "utf8"), 'api_key = "secret"\n');
   install("codex", home2);
   assert.equal(fs.readFileSync(`${toml}.bak-skillrouter`, "utf8"), 'api_key = "secret"\n', "first backup is kept");

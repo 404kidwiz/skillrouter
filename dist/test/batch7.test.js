@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "skillrouter-batch7-"));
 process.env.HOME = home;
+process.env.USERPROFILE = home; // Windows reads this, not HOME, for os.homedir()
 process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 fs.mkdirSync(process.env.SKILLROUTER_HOME, { recursive: true });
 const { actionOf, matchTriggers } = await import("../src/triggers.js");

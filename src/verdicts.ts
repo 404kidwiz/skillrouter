@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SR_DIR } from "./paths.js";
 import { bareSkill } from "./state.js";
+import { renameSyncRetry } from "./platform.js";
 
 /**
  * What agents did with the skills skillrouter suggested, per host and skill (bare name): accepted (named on the
@@ -62,12 +63,12 @@ function update<T>(fn: (v: Verdicts) => T): T | undefined {
     try {
       let v = empty();
       if (fs.existsSync(FILE)) {
-        try { v = parse(fs.readFileSync(FILE, "utf8")); } catch { fs.renameSync(FILE, `${FILE}.bad-${Date.now()}`); }
+        try { v = parse(fs.readFileSync(FILE, "utf8")); } catch { renameSyncRetry(FILE, `${FILE}.bad-${Date.now()}`); }
       }
       const out = fn(v);
       const tmp = `${FILE}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(v));
-      fs.renameSync(tmp, FILE);
+      renameSyncRetry(tmp, FILE);
       return out;
     } finally { fs.rmSync(LOCK, { force: true }); }
   }

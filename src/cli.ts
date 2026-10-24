@@ -2,6 +2,7 @@
 import { AGENTS, SR_DIR, type AgentId } from "./paths.js";
 // Everything else is imported where used: hooks run on every prompt and tool call, so they load only what they need.
 
+const NO_SERVICE = "The warm service is not available on Windows yet. Hooks run on their own and work the same, just a little slower.";
 const USAGE = `skillrouter — a big skill library without the context bloat
 
   skillrouter doctor [--live] [agents]   what each agent preloads today and what it costs; --live starts each configured MCP server
@@ -148,7 +149,7 @@ async function main(argv: string[]): Promise<void> {
     case "install": {
       const { install, NODE, INSTALL_TARGETS } = await import("./install.js");
       const targets = args.filter((x) => (INSTALL_TARGETS as string[]).includes(x));
-      console.log(`Node pinned for hooks and MCP: ${NODE} (override with SKILLROUTER_NODE=/path/to/node)`);
+      console.log(process.platform === "win32" ? `Node for MCP: ${NODE} (override with SKILLROUTER_NODE=C:/path/to/node.exe); hooks run the node on PATH` : `Node pinned for hooks and MCP: ${NODE} (override with SKILLROUTER_NODE=/path/to/node)`);
       const seen = new Set<string>();
       for (const a of (targets.length ? targets : INSTALL_TARGETS) as any[]) for (const line of install(a)) if (!seen.has(line)) { seen.add(line); console.log(line); }
       // A running service holds the old code and launcher paths: stop it, the next hook starts the new one.
@@ -180,6 +181,8 @@ async function main(argv: string[]): Promise<void> {
       break;
     }
     case "serve": {
+      const { serviceSupported } = await import("./service-client.js");
+      if (!serviceSupported()) { console.log(NO_SERVICE); break; }
       const svc = await import("./service.js");
       if (args.includes("--start")) await svc.ensureStarted(); else await svc.serve();
       break;
@@ -187,7 +190,8 @@ async function main(argv: string[]): Promise<void> {
     case "service": {
       const fs = await import("node:fs");
       const path = await import("node:path");
-      const { runDir } = await import("./service-client.js");
+      const { runDir, serviceSupported } = await import("./service-client.js");
+      if (!serviceSupported()) { console.log(NO_SERVICE); break; }
       const svc = await import("./service.js");
       const sub = args[0] ?? "status";
       if (sub === "status") {
@@ -234,7 +238,7 @@ async function main(argv: string[]): Promise<void> {
         writeFillers(path.join(tmp, "fillers")); // the same 400 unrelated skills every run
         const pass = [...(ci ? ["--ci"] : []), ...(verbose ? ["-v"] : []), ...Object.entries(thresholds).flatMap(([k, v]) => [`--${k}`, String(v)])];
         const r = spawnSync(process.execPath, [process.argv[1], "eval", "--live", "--lexical", "--root", path.join(fixture, "skills"), "--root", path.join(tmp, "fillers"), path.join(fixture, "prompts.jsonl"), ...pass],
-          { env: { ...process.env, SKILLROUTER_HOME: tmp }, stdio: "inherit" });
+          { env: { ...process.env, SKILLROUTER_HOME: tmp }, stdio: "inherit", windowsHide: true });
         fs.rmSync(tmp, { recursive: true, force: true });
         process.exitCode = r.status ?? 1;
         break;

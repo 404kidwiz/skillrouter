@@ -138,7 +138,7 @@ export function runHint(agent, input, cli, timeout = 1500, mode) {
     const started = performance.now();
     return new Promise((resolve) => {
         const child = execFile(process.execPath, [cli, "hint-worker", agent, ...(mode ? [mode] : [])], {
-            timeout, killSignal: "SIGKILL", maxBuffer: 64 * 1024,
+            timeout, killSignal: "SIGKILL", maxBuffer: 64 * 1024, windowsHide: true,
         }, (error, stdout) => {
             // A worker killed after it already wrote a complete answer (e.g. a slow model load still pending) keeps that answer.
             const answer = stdout.trim();

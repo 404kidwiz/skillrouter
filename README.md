@@ -17,7 +17,7 @@ Plus:
 - **Usage log:** every search, read and hint is logged per agent, so you can see which skills get used and move them in or out of core.
 - **Safe trim:** moves the long tail out of agent auto-load folders with tar backups, a restore file, and a dry run by default. Nothing is deleted except broken symlinks.
 
-Works with Claude Code, Codex, Cursor, Gemini CLI and OpenCode. Plays well with [skills.sh](https://skills.sh) (`npx skills add …`): keep installing skills the same way, then let skillrouter decide what gets preloaded.
+Works with Claude Code, Codex, Cursor, Gemini CLI and OpenCode, on macOS, Linux and Windows. Plays well with [skills.sh](https://skills.sh) (`npx skills add …`): keep installing skills the same way, then let skillrouter decide what gets preloaded.
 
 ## Quick start
 
@@ -148,6 +148,19 @@ Repeated installation replaces existing router hooks while preserving unrelated 
 
 Agent folders it knows about: `~/.claude/skills`, `~/.codex/skills`, `~/.cursor/skills`, `~/.gemini/skills`, `~/.config/opencode/skills`, and the shared `~/.agents/skills` that Codex, Cursor, Gemini CLI and OpenCode read. `install` backs up every config file it touches as `<file>.bak-skillrouter`.
 
+## Windows
+
+Hooks, the installer, the MCP server, `core`, `trim` and the triggers run on Windows 10 and 11 with Node 20 or newer on your PATH. The commands are the same as everywhere else.
+
+- Each hook runs `node "C:/Users/you/.skillrouter/bin/skillrouter-hint.mjs" <agent>`. That shape reads the same in Git Bash, cmd.exe and PowerShell, so it works whichever shell a host picks. The launcher is a small module that runs the CLI in the same Node process, and its path never changes, so hook text stays stable across upgrades.
+- `core` and `trim` link folders with junctions, which need neither admin rights nor Developer Mode.
+- Config writes retry for a moment when antivirus or the search indexer has a file open, and no spawned process flashes a console window.
+- Claude's PowerShell tool, and Codex's `powershell -Command` and `cmd /c` wrappers, are understood by triggers and skill-load detection. Config files saved with a BOM still load.
+- The warm service is not available yet, so each prompt check starts Node itself, as it did on macOS before the service (about 400 ms there). `skillrouter service` says so.
+- An install path containing `$`, a backtick or `%` is refused, because the shells that run hooks would expand it. Point `SKILLROUTER_HOME` at another folder.
+
+CI runs the test suite on `windows-latest`, except the warm-service tests, which are POSIX-only. Nobody has run each agent by hand on a Windows PC yet, so expect rough edges and report them.
+
 ## Limits
 
 - Codex asks you to trust each new hook once (`/hooks` in Codex); a hook stays off until you approve it.
@@ -156,6 +169,7 @@ Agent folders it knows about: `~/.claude/skills`, `~/.codex/skills`, `~/.cursor/
 - Antigravity has no hooks, so it only gets the MCP server and the `AGENTS.md`-style instruction.
 - `trim` leaves plugin-format folders (`.claude-plugin/plugin.json`) and dot-entries alone and never touches a folder that is itself a symlink.
 - Hermes Agent has its own skill system; use its `skills.disabled` list instead of `trim`.
+- On Windows the warm service is off (it needs named pipes), so prompt checks are slower; a PowerShell command split across lines with backticks can read as extra commands to the decision nudge.
 
 ## Development
 

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { CORE_DIR, CORE_FILE, SR_DIR, AGENT_SKILL_DIRS, AGENTS, type AgentId } from "./paths.js";
 import { findSkill, getIndex } from "./search.js";
+import { linkDir } from "./platform.js";
 
 export interface CoreEntry { id: string; skip: Set<AgentId> }
 
@@ -89,7 +90,7 @@ export function syncCore(agents: AgentId[]): { linked: number; missing: string[]
     if (m.length !== 1) { missing.push(id); continue; }
     targets.set(path.basename(m[0].path).replace(/~\d+$/, ""), { target: m[0].path, skip });
   }
-  for (const [name, { target }] of targets) { fs.symlinkSync(target, path.join(CORE_DIR, name)); linked++; }
+  for (const [name, { target }] of targets) { linkDir(target, path.join(CORE_DIR, name)); linked++; }
   // Each agent gets core in its first folder. A folder shared by several agents (~/.agents/skills) is linked once,
   // and a skill is left out of it only when every agent reading that folder skips it.
   const byDir = new Map<string, AgentId[]>();
@@ -101,7 +102,7 @@ export function syncCore(agents: AgentId[]): { linked: number; missing: string[]
       const link = path.join(dir, name);
       if (fs.existsSync(link)) continue; // real folder or existing link: leave it
       try { fs.unlinkSync(link); } catch { /* not a dangling link */ }
-      fs.symlinkSync(target, link);
+      linkDir(target, link);
     }
   }
   fs.writeFileSync(PREV_FILE, JSON.stringify([...targets.keys()]));

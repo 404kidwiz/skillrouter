@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { SR_DIR } from "./paths.js";
+import { renameSyncRetry } from "./platform.js";
 // Optional semantic layer: MiniLM vectors for every skill's name + description, stored as one
 // Float32 file beside the index so a hook process reads it in milliseconds. Needs the optional
 // peer dependency @huggingface/transformers; everything degrades to lexical when it is missing.
@@ -43,8 +44,8 @@ export function saveVectors(ids, rows, indexBuiltAt) {
     fs.mkdirSync(SR_DIR, { recursive: true });
     fs.writeFileSync(VEC_FILE + ".tmp", Buffer.from(data.buffer));
     fs.writeFileSync(META_FILE + ".tmp", JSON.stringify({ model: MODEL, dim, count: ids.length, builtAt: new Date().toISOString(), indexBuiltAt, ids }));
-    fs.renameSync(VEC_FILE + ".tmp", VEC_FILE);
-    fs.renameSync(META_FILE + ".tmp", META_FILE);
+    renameSyncRetry(VEC_FILE + ".tmp", VEC_FILE);
+    renameSyncRetry(META_FILE + ".tmp", META_FILE);
 }
 export function vectorsExist() { return fs.existsSync(META_FILE); }
 let vectors;

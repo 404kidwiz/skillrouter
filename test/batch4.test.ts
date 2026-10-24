@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "skillrouter-batch4-"));
 process.env.HOME = home;
+process.env.USERPROFILE = home; // Windows reads this, not HOME, for os.homedir()
 process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 fs.mkdirSync(process.env.SKILLROUTER_HOME, { recursive: true });
 const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
@@ -144,5 +145,5 @@ test("install wires PostToolUse and Stop for Claude next to existing hooks", () 
   assert.equal(d.PostToolUse.length, 2);
   assert.match(JSON.stringify(d.Stop), /echo mine/);
   assert.match(d.PostToolUse[1].matcher, /mcp__\.\*skillrouter__read_skill/);
-  assert.match(d.Stop[1].hooks[0].command, /skillrouter-hint' claude stop$/);
+  assert.match(d.Stop[1].hooks[0].command, /skillrouter-hint(?:\.mjs)?['"] claude stop$/);
 });

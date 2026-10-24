@@ -9,6 +9,7 @@ import { formatHint, hintText, sessionHash, sessionOf, turnOf } from "./hint.js"
 import { actionOf, commandsOf, isWork, matchTriggers, parsedInput, shellCommand } from "./triggers.js";
 import { addLoaded, addNudge, addShown, addTool, bareSkill, claim, claimed, consumeNudge, firstUse, lastNudge, loadedSkills, release, shownAlts, shownFor, turnStats, turnWindow } from "./state.js";
 import { addVerdict, suppressed } from "./verdicts.js";
+import { SHELL_TOOLS, fwd } from "./platform.js";
 /** The last `bytes` of a file as lines (the usage log and transcripts only grow; hooks read their tails). */
 export function tailLines(file, bytes = 512 * 1024) {
     let fd;
@@ -44,19 +45,19 @@ function relativeAction(action, cwd) {
 function skillOfPath(p) {
     if (typeof p !== "string" || !/(^|[\/\\])SKILL\.md$/.test(p))
         return null;
-    const name = path.basename(path.dirname(p));
+    const name = path.posix.basename(path.posix.dirname(fwd(p))); // a Windows path has backslashes whatever platform reads it
     return /^[\w@+-][\w.@+-]*$/.test(name) ? name : null;
 }
 const READ_TOOL = /^(Read|ReadFile|read_file|read|view)$/i;
-const SHELL_TOOL = /^(Bash|Shell|shell|run_shell_command|exec_command)$/i;
-const READERS = /^(cat|head|tail|bat|less|more|nl|sed)$/;
+const READERS = /^(cat|head|tail|bat|less|more|nl|sed|get-content|gc|type)$/i; // the last three are PowerShell and cmd readers
 /**
  * The skill a shell script prints: a reader (cat, head, sed …) at the head of one of its commands,
  * with a SKILL.md as its own argument, and no redirection or tee (that would be writing it).
  * `grep x SKILL.md | head`, `ls …/SKILL.md`, `cat > SKILL.md <<EOF` and `sed -i` are not loads.
  */
 export function skillReadIn(script) {
-    const text = script.replace(/"([^"\s]*)"|'([^'\s]*)'/g, (_m, a, b) => a ?? b); // a quoted path is just a path
+    // A quoted path is just a path. One with spaces (C:\Users\Jane Doe\…) keeps them as a placeholder so it stays one word.
+    const text = script.replace(/"([^"]*)"|'([^']*)'/g, (m, a, b) => { const p = a ?? b; return !/\s/.test(p) ? p : /SKILL\.md$/.test(p) ? p.replace(/\s/g, "\u0001") : m; });
     const segments = commandsOf(text).map((s) => s.replace(/^\(+/, ""));
     if (segments.some((s) => /^tee\b/.test(s)))
         return null; // `cat a | tee b` copies a skill file, it doesn't load one
@@ -64,7 +65,7 @@ export function skillReadIn(script) {
         if (/(?<![2&])>(?!&)/.test(seg))
             continue; // writing the file (`> SKILL.md`); `2>/dev/null` is fine
         const [head, ...args] = seg.split(/\s+/);
-        const cmd = path.basename(head);
+        const cmd = path.posix.basename(fwd(head)).replace(/\.exe$/i, "");
         if (!READERS.test(cmd) || (cmd === "sed" && args.some((x) => /^-\w*i/.test(x) || x.startsWith("--in-place"))))
             continue;
         for (const x of args) {
@@ -103,7 +104,7 @@ export function skillLoadOf(tool, raw) {
                 return { skill: s, via: "file" };
         }
     }
-    if (SHELL_TOOL.test(tool)) {
+    if (SHELL_TOOLS.test(tool)) {
         const s = skillReadIn(shellCommand(input));
         if (s)
             return { skill: s, via: "file" };

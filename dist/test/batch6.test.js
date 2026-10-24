@@ -7,6 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "skillrouter-batch6-"));
 process.env.HOME = home;
+process.env.USERPROFILE = home; // Windows reads this, not HOME, for os.homedir()
 process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 fs.mkdirSync(process.env.SKILLROUTER_HOME, { recursive: true });
 const { actionOf, matchTriggers, patchFiles } = await import("../src/triggers.js");
@@ -173,7 +174,7 @@ test("install wires tool and end-of-turn hooks per host, idempotently, keeping u
     assert.deepEqual(Object.keys(codex).sort(), ["PostToolUse", "Stop", "UserPromptSubmit"]);
     assert.equal(codex.PostToolUse.length, 1);
     assert.equal(codex.PostToolUse[0].matcher, CODEX_TOOL_MATCHER);
-    assert.match(codex.Stop[0].hooks[0].command, /skillrouter-hint' codex stop$/);
+    assert.match(codex.Stop[0].hooks[0].command, /skillrouter-hint(?:\.mjs)?['"] codex stop$/);
     const cursor = JSON.parse(fs.readFileSync(path.join(h, ".cursor", "hooks.json"), "utf8")).hooks;
     assert.equal(cursor.postToolUse.length, 1);
     assert.equal(cursor.postToolUse[0].matcher, CURSOR_TOOL_MATCHER);

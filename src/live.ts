@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { parseJson } from "./platform.js";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -7,7 +8,7 @@ import { INSTALL_TARGETS, type InstallTarget } from "./install.js";
 
 export interface McpSpec { command: string; args: string[]; env: Record<string, string>; disabled?: boolean }
 
-function json(file: string): any { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return undefined; } }
+function json(file: string): any { try { return parseJson(fs.readFileSync(file, "utf8")); } catch { return undefined; } }
 
 const unquote = (s: string) => s.trim().replace(/^(["'])(.*)\1$/, "$2");
 /** A TOML/YAML string or a flow/inline array of them. */

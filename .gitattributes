@@ -1,0 +1,2 @@
+# Checkouts on Windows must not turn committed files (dist/, fixtures, shell launchers) into CRLF.
+* text=auto eol=lf

@@ -20,7 +20,9 @@ export const MAX_PROMPT_BYTES = 256 * 1024;
 export const MAX_EVENT_BYTES = 8 * 1024 * 1024;
 
 export const runDir = (dir = SR_DIR) => path.join(dir, "run");
-export const serviceEnabled = () => process.env.SKILLROUTER_SERVICE !== "0";
+/** The service speaks over a Unix socket and is started with POSIX tools; Windows hooks run on their own until it gets named pipes. */
+export const serviceSupported = (platform: NodeJS.Platform = process.platform) => platform !== "win32";
+export const serviceEnabled = (platform: NodeJS.Platform = process.platform) => serviceSupported(platform) && process.env.SKILLROUTER_SERVICE !== "0";
 
 /**
  * Where the socket lives. Unix socket paths are limited to about 104 bytes, so a long state directory (a temp
@@ -88,6 +90,7 @@ export async function query(agent: string, mode: string, body: string, timeoutMs
  * (a fresh run/svc.lock) or starting keeps failing (a recent run/svc.off). The starter itself checks again.
  */
 export function startServiceSoon(dir = SR_DIR): void {
+  if (!serviceSupported()) return;
   try {
     // Recent means 0 to N ms old: a file from the future (the clock was stepped back) does not count.
     const recent = (f: string, ms: number) => { try { const age = Date.now() - fs.statSync(f).mtimeMs; return age >= 0 && age < ms; } catch { return false; } };
@@ -97,7 +100,7 @@ export function startServiceSoon(dir = SR_DIR): void {
     fs.mkdirSync(runDir(dir), { recursive: true, mode: 0o700 });
     try { fs.mkdirSync(stamp, { mode: 0o700 }); }
     catch { if (!recent(stamp, 15000)) try { fs.rmdirSync(stamp); } catch { /* gone */ } return; }
-    spawn(process.execPath, [process.argv[1], "serve", "--start"], { detached: true, stdio: "ignore" }).unref();
+    spawn(process.execPath, [process.argv[1], "serve", "--start"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
   } catch { /* hooks never fail on this */ }
 }
 

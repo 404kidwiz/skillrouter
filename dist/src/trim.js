@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { NO_WINDOW, linkDir, renameSyncRetry, tarCommand } from "./platform.js";
 import { AGENT_SKILL_DIRS, BACKUP_DIR, LIBRARY_DIR } from "./paths.js";
 import { readCore } from "./core.js";
 function realOrNull(p) { try {
@@ -32,7 +33,7 @@ export function trim(agents, apply, keep = []) {
     for (const dir of dirs) {
         if (apply) {
             const tar = path.join(BACKUP_DIR, `${path.basename(path.dirname(dir))}-${path.basename(dir)}-${stamp}.tar`.replace(/^\./, ""));
-            execFileSync("tar", ["-cf", tar, "-C", path.dirname(dir), path.basename(dir)]);
+            execFileSync(tarCommand(), ["-cf", tar, "-C", path.dirname(dir), path.basename(dir)], NO_WINDOW);
             stats.backups.push(tar);
         }
         for (const name of fs.readdirSync(dir)) {
@@ -56,7 +57,7 @@ export function trim(agents, apply, keep = []) {
                 }
                 if (!taken.has(name)) {
                     if (apply)
-                        fs.symlinkSync(target, dest);
+                        linkDir(target, dest);
                     taken.set(name, target);
                     stats.linked++;
                 }
@@ -65,7 +66,7 @@ export function trim(agents, apply, keep = []) {
                     if (apply) {
                         fs.mkdirSync(path.dirname(alt), { recursive: true });
                         if (!fs.existsSync(alt))
-                            fs.symlinkSync(target, alt);
+                            linkDir(target, alt);
                     }
                     stats.conflicts++;
                 }
@@ -82,7 +83,7 @@ export function trim(agents, apply, keep = []) {
                 }
                 if (apply) {
                     fs.mkdirSync(path.dirname(to), { recursive: true });
-                    fs.renameSync(p, to);
+                    renameSyncRetry(p, to);
                 }
             }
             else {

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { SR_DIR } from "./paths.js";
+import { SHELL_TOOLS, fwd, parseJson } from "./platform.js";
 
 /**
  * Action triggers: what the agent is doing (the file it edited, the command it ran) says which
@@ -39,7 +40,7 @@ export const DEFAULT_TRIGGERS: Trigger[] = [
 
 export function loadTriggers(file = path.join(SR_DIR, "triggers.json")): Trigger[] {
   let user: any[] = [];
-  try { user = JSON.parse(fs.readFileSync(file, "utf8")); if (!Array.isArray(user)) user = []; } catch { /* defaults */ }
+  try { user = parseJson(fs.readFileSync(file, "utf8")); if (!Array.isArray(user)) user = []; } catch { /* defaults */ }
   const byId = new Map(DEFAULT_TRIGGERS.map((t) => [t.id, t]));
   for (const u of user) {
     if (!u || typeof u.id !== "string") continue;
@@ -66,13 +67,21 @@ export function shellCommand(input: any): string {
   const c = input?.command ?? input?.cmd;
   if (Array.isArray(c)) {
     const flag = c.findIndex((x) => /^-[a-z]{0,4}c[a-z]{0,4}$/.test(String(x)));
-    return String(flag > 0 && /(^|\/)(ba|z|da)?sh$/.test(String(c[0])) ? c[c.length - 1] : c.join(" "));
+    if (flag > 0 && /(^|\/)(ba|z|da)?sh$/.test(String(c[0]))) return String(c[c.length - 1]);
+    // Codex on Windows: ["powershell.exe", "-NoProfile", "-Command", "<script>"] or ["cmd.exe", "/c", "<script>"]; the script is the rest.
+    const win = /^(powershell|pwsh)$|^cmd$/i.exec(String(c[0]).split(/[\\/]/).pop()!.replace(/\.exe$/i, ""));
+    const at = win ? c.findIndex((x, i) => i > 0 && (win[1] ? /^-(c|command)$/i : /^\/[ck]$/i).test(String(x))) : -1;
+    return String(at > 0 ? c.slice(at + 1).join(" ") : c.join(" "));
   }
   if (typeof c !== "string") return "";
   // Only a whole `sh -c '<script>'` is unwrapped (`bash -c "a" && pytest` is a compound command); bounded flags keep it linear.
   const m = /^\s*(?:\S*\/)?(?:ba|z|da)?sh\s+(?:-[a-z]{1,4}\s+){0,3}-[a-z]{0,4}c[a-z]{0,4}\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")\s*$/.exec(c);
-  return m ? m[1] ?? m[2] : c;
+  if (m) return m[1] ?? m[2];
+  const w = WIN_SHELL.exec(c);
+  return w ? (/^"([^"]*)"$/.exec(w[1]) ?? /^'([^']*)'$/.exec(w[1]))?.[1] ?? w[1] : c;
 }
+// `powershell -NoProfile -Command <script>` and `cmd /c <script>`: the script is everything after the flag (bounded flags keep it linear).
+const WIN_SHELL = /^\s*(?:\S*[\\/])?(?:(?:powershell|pwsh)(?:\.exe)?\s+(?:-\w+\s+){0,6}-(?:c|command)|cmd(?:\.exe)?\s+(?:\/\w\s+){0,2}\/[ck])\s+(.+?)\s*$/is;
 
 /** Some hosts send tool input as a JSON string (Cursor MCP calls); a patch string stays a string. */
 export function parsedInput(input: unknown): any {
@@ -93,7 +102,7 @@ export function actionOf(tool: string, raw: any): Action | null {
     const file = input.file_path ?? input.notebook_path ?? input.path ?? input.filePath ?? input.target_file;
     return typeof file === "string" ? { file } : null;
   }
-  if (/^(Bash|Shell|shell|run_shell_command|exec_command)$/i.test(tool)) {
+  if (SHELL_TOOLS.test(tool)) {
     const command = shellCommand(input);
     return command ? { command } : null;
   }
@@ -118,13 +127,15 @@ export function commandsOf(line: string): string[] {
 
 // Commands that only look around. A turn of these is exploration, not work worth a decision nudge.
 const READ_ONLY = /^(?:ls|ll|cat|bat|less|more|head|tail|nl|wc|rg|grep|egrep|fgrep|ag|ack|find|fd|tree|pwd|cd|echo|printf|which|type|file|stat|du|df|jq|sort|uniq|cut|tr|diff|true|date|env|whoami|uname|sed\s+-n|git\s+(?:status|log|diff|show|branch|rev-parse|blame|remote|ls-files|grep))\b/;
+// The same for PowerShell (any case): a whole word, so `gc.sh` or `dir/build.sh` are not it.
+const PS_READ_ONLY = /^(?:get-(?:content|childitem|item|location|command|date)|gci|gc|dir|select-string|sls|set-location|write-(?:output|host)|test-path|resolve-path|measure-object|where-object|select-object|sort-object|format-(?:table|list))(?=\s|$)/i;
 
 /** Whether an action is work: any edit, or a shell line with at least one command that does more than read. */
 export function isWork(action: Action | null): boolean {
   if (!action) return false;
   if (action.file || action.files?.length) return true;
   const commands = action.command ? commandsOf(action.command) : [];
-  return commands.some((c) => !READ_ONLY.test(c.replace(/^\(+/, "")) || /(?<![2&])>(?!&)/.test(c) || /^find\b.*\s-(?:delete|exec)\b/.test(c));
+  return commands.some((c) => !(READ_ONLY.test(c.replace(/^\(+/, "")) || PS_READ_ONLY.test(c.replace(/^\(+/, ""))) || /(?<![2&])>(?!&)/.test(c) || /^find\b.*\s-(?:delete|exec)\b/.test(c));
 }
 
 /** A command names its ecosystem the way a file extension does: `pnpm test` is JavaScript, `pytest` is Python. */
@@ -153,7 +164,7 @@ function stripHeredocs(text: string): string {
 
 export function matchTriggers(action: Action, triggers = loadTriggers()): { trigger: Trigger; query: string; subject: string }[] {
   const out: { trigger: Trigger; query: string; subject: string }[] = [];
-  const files = [...(action.files ?? []), ...(action.file ? [action.file] : [])];
+  const files = [...(action.files ?? []), ...(action.file ? [action.file] : [])].map(fwd); // Windows paths arrive with backslashes
   const commands = action.command ? commandsOf(action.command) : [];
   for (const t of triggers) {
     const file = t.path && files.find((f) => t.path!.test(f));

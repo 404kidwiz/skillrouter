@@ -6,10 +6,11 @@ import { isRouterHook } from "./install.js";
 import { readLog } from "./report.js";
 import { hermesSpec } from "./live.js";
 import { loadVectors, vectorsExist } from "./embed.js";
-import { serviceEnabled, serviceSnapshot } from "./service-client.js";
+import { serviceEnabled, serviceSnapshot, serviceSupported } from "./service-client.js";
+import { parseJson } from "./platform.js";
 function json(file) {
     try {
-        return { data: JSON.parse(fs.readFileSync(file, "utf8")), status: "missing" };
+        return { data: parseJson(fs.readFileSync(file, "utf8")), status: "missing" };
     }
     catch {
         return { status: fs.existsSync(file) ? "invalid config" : "missing" };
@@ -73,7 +74,7 @@ function actionHooks(agent, home) {
     try {
         if (agent === "opencode")
             return `; triggers ${fs.readFileSync(file, "utf8").includes(spec.tool) ? "configured" : "missing (rerun install opencode)"}; no decision nudge on this host`;
-        const d = JSON.parse(fs.readFileSync(file, "utf8"));
+        const d = parseJson(fs.readFileSync(file, "utf8"));
         const has = (ev) => Array.isArray(d?.hooks?.[ev]) && d.hooks[ev].some(isRouterHook);
         return `; triggers ${has(spec.tool) ? "configured" : "missing"}; decision nudge ${has(spec.stop) ? "configured" : "missing"}`;
     }
@@ -83,6 +84,8 @@ function actionHooks(agent, home) {
 }
 /** The warm service: running (pid, uptime, requests), not running (starts on the first hook), or switched off. */
 function serviceLine() {
+    if (!serviceSupported())
+        return "not available on Windows yet; hooks run on their own";
     if (!serviceEnabled())
         return "off (SKILLROUTER_SERVICE=0); hooks run on their own";
     const s = serviceSnapshot();

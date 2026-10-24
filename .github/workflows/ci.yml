@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "ci/**"] # ci/* branches get the full matrix before they reach main
   pull_request:
 
 permissions:
@@ -20,6 +20,9 @@ jobs:
         include:
           # The hooks are developed on macOS; one run there catches platform-only breakage.
           - os: macos-latest
+            node: 22
+          # Hooks, launcher and installer run on Windows; the warm service does not yet, so its tests skip there.
+          - os: windows-latest
             node: 22
     steps:
       - uses: actions/checkout@v4

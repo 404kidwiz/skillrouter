@@ -6,6 +6,7 @@ import path from "node:path";
 // Own process (node --test runs each file separately), so HOME can be redirected before paths.js loads.
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "skillrouter-core-"));
 process.env.HOME = home;
+process.env.USERPROFILE = home; // Windows reads this, not HOME, for os.homedir()
 process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 const { readCoreEntries, writeCore, skipCore, syncCore } = await import("../src/core.js");
 const { buildIndex, saveIndex } = await import("../src/index.js");

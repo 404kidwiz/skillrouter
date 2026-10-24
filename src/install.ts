@@ -3,6 +3,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { HOME, SR_DIR, AGENTS, type AgentId } from "./paths.js";
 import { PERL_CLIENT, socketPath } from "./service-client.js";
+import { NO_WINDOW, fwd, hookPrefix, launcherFile, parseJson, renameSyncRetry, windowsLauncher, type Platform } from "./platform.js";
 
 // Pin both integrations to this installed package; prompt submission never invokes npm.
 import { fileURLToPath } from "node:url";
@@ -22,7 +23,7 @@ export function resolveNode(): string {
   const real = (p: string) => { try { return fs.realpathSync(p); } catch { return p; } };
   if (!managed(real(process.execPath))) return process.execPath;
   for (const dir of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
-    const cand = path.join(dir, "node");
+    const cand = path.join(dir, process.platform === "win32" ? "node.exe" : "node");
     try { if (fs.statSync(cand).isFile() && !managed(real(cand))) return cand; } catch { /* not here */ }
   }
   return process.execPath;
@@ -36,7 +37,6 @@ const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
  * rewrites what the launcher execs.
  */
 export const LAUNCHER = path.join(SR_DIR, "bin", "skillrouter-hint");
-const BIN = quote(LAUNCHER);
 const MCP_CMD = { command: NODE, args: [CLI, "mcp"] };
 const TOML_MCP = `command = ${JSON.stringify(NODE)}\nargs = [${JSON.stringify(CLI)}, "mcp"]`;
 
@@ -58,12 +58,19 @@ exec ${quote(node)} ${quote(cli)} hint "$@"
 `;
 }
 
-export function writeLauncher(node = NODE, cli = CLI, launcher = LAUNCHER): string {
+export function writeLauncher(node = NODE, cli = CLI, launcher = LAUNCHER, platform: Platform = process.platform): string {
   fs.mkdirSync(path.dirname(launcher), { recursive: true });
+  if (platform === "win32") {
+    // No shell script, no Perl, no warm service yet: a module `node` runs that hands the hook to the CLI in the same process.
+    const file = launcherFile(launcher, "win32");
+    fs.writeFileSync(file + ".tmp", windowsLauncher(cli));
+    renameSyncRetry(file + ".tmp", file);
+    return `${file}: runs ${cli} (node from PATH; no warm service on Windows yet)`;
+  }
   const perlClient = path.join(path.dirname(launcher), "skillrouter-client.pl");
   const dir = path.dirname(path.dirname(launcher));
   const sock = socketPath(dir);
-  const write = (file: string, body: string) => { fs.writeFileSync(file + ".tmp", body, { mode: 0o755 }); fs.renameSync(file + ".tmp", file); fs.chmodSync(file, 0o755); };
+  const write = (file: string, body: string) => { fs.writeFileSync(file + ".tmp", body, { mode: 0o755 }); renameSyncRetry(file + ".tmp", file); fs.chmodSync(file, 0o755); };
   write(perlClient, PERL_CLIENT);
   write(launcher, launcherScript(node, cli, perlClient, dir, sock));
   return `${launcher}: execs ${node} ${cli} (warm service socket ${sock})`;
@@ -72,7 +79,7 @@ export function writeLauncher(node = NODE, cli = CLI, launcher = LAUNCHER): stri
 export function isRouterHook(entry: unknown): boolean {
   if (!entry || typeof entry !== "object") return false;
   const value = entry as { command?: unknown; hooks?: unknown[] };
-  return (typeof value.command === "string" && /(?:skillrouter-hint['"]?|skillrouter|cli\.js['"]?|skill_hint_hook\.py['"]?)\s+(?:hint\s+)?(?:claude|codex|cursor|gemini|opencode)\b/.test(value.command)) ||
+  return (typeof value.command === "string" && /(?:skillrouter-hint(?:\.mjs)?['"]?|skillrouter|cli\.js['"]?|skill_hint_hook\.py['"]?)\s+(?:hint\s+)?(?:claude|codex|cursor|gemini|opencode)\b/.test(value.command)) ||
     (Array.isArray(value.hooks) && value.hooks.some(isRouterHook));
 }
 
@@ -82,14 +89,14 @@ function patchJson(file: string, fn: (d: any) => string, create: object = {}): s
   if (fs.existsSync(file)) {
     mode = fs.statSync(file).mode & 0o777; // a config holding keys (0600) keeps its permissions
     backup(file, mode);
-    d = JSON.parse(fs.readFileSync(file, "utf8"));
+    d = parseJson(fs.readFileSync(file, "utf8"));
   } else fs.mkdirSync(path.dirname(file), { recursive: true });
   const msg = fn(d);
   const tmp = file + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(d, null, 2) + "\n", mode !== undefined ? { mode } : {});
   JSON.parse(fs.readFileSync(tmp, "utf8"));
   if (mode !== undefined) fs.chmodSync(tmp, mode);
-  fs.renameSync(tmp, file);
+  renameSyncRetry(tmp, file);
   return `${file}: ${msg}`;
 }
 
@@ -114,7 +121,7 @@ export function addHook(d: any, event: string, entry: object): string {
 }
 
 // The router's read_skill is mcp__skillrouter__read_skill when installed here and mcp__plugin_…skillrouter__read_skill from the plugin.
-export const CLAUDE_TOOL_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash|Skill|mcp__.*skillrouter__read_skill";
+export const CLAUDE_TOOL_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Skill|mcp__.*skillrouter__read_skill";
 // Codex reports shell and exec_command as Bash and file edits as apply_patch.
 export const CODEX_TOOL_MATCHER = "Bash|apply_patch|mcp__skillrouter__read_skill";
 // Cursor's hook names (Shell, Write, MCP:<tool>) plus its edit tools' own names. Not Read: every match is a process
@@ -125,10 +132,13 @@ export const GEMINI_TOOL_MATCHER = "write_file|replace|run_shell_command|activat
 const mcpEntry = (agent: string, prev: any = {}) => ({ ...prev, ...MCP_CMD, env: { ...prev?.env, SKILLROUTER_AGENT: agent } });
 
 /** Wire the MCP server and (where the host has one) the prompt hook into one agent's user-scope config. Backs up every file it touches. */
-export function install(agent: InstallTarget, home = HOME): string[] {
+export function install(agent: InstallTarget, home = HOME, platform: Platform = process.platform): string[] {
   const out: string[] = [];
-  if ((AGENTS as string[]).includes(agent)) out.push(writeLauncher(NODE, CLI, home === HOME ? LAUNCHER : path.join(home, ".skillrouter", "bin", "skillrouter-hint")));
-  const bin = home === HOME ? BIN : quote(path.join(home, ".skillrouter", "bin", "skillrouter-hint"));
+  const base = home === HOME ? LAUNCHER : path.join(home, ".skillrouter", "bin", "skillrouter-hint");
+  const launcher = launcherFile(base, platform);
+  if ((AGENTS as string[]).includes(agent)) out.push(writeLauncher(NODE, CLI, base, platform));
+  // How a hook command starts the launcher, in a form the host's shell accepts (see hookPrefix).
+  const bin = hookPrefix(launcher, platform);
   switch (agent) {
     case "claude":
       out.push(patchJson(path.join(home, ".claude", "settings.json"), (d) => [
@@ -173,7 +183,8 @@ export function install(agent: InstallTarget, home = HOME): string[] {
       out.push(patchJson(cfg, (d) => { (d.mcp ??= {}).skillrouter = { ...d.mcp.skillrouter, type: "local", command: [MCP_CMD.command, ...MCP_CMD.args], enabled: true, environment: { ...d.mcp.skillrouter?.environment, SKILLROUTER_AGENT: agent } }; return "skillrouter MCP set"; }));
       const plugin = path.join(home, ".config", "opencode", "plugins", "skillrouter-hints.js");
       fs.mkdirSync(path.dirname(plugin), { recursive: true });
-      fs.writeFileSync(plugin, openCodePlugin(home === HOME ? LAUNCHER : path.join(home, ".skillrouter", "bin", "skillrouter-hint")));
+      // The plugin spawns without a shell: the POSIX launcher directly, on Windows node with the launcher module.
+      fs.writeFileSync(plugin, platform === "win32" ? openCodePlugin(fwd(NODE), [fwd(launcher), "opencode"]) : openCodePlugin(launcher));
       out.push(`${plugin}: written`);
       break;
     }
@@ -193,7 +204,8 @@ export function install(agent: InstallTarget, home = HOME): string[] {
 /** Hermes keeps MCP servers in ~/.hermes/config.yaml; its own config API writes it, so its comments and layout survive. */
 function installHermes(home: string): string {
   const cfg = path.join(home, ".hermes", "config.yaml");
-  const py = [path.join(home, ".hermes", "hermes-agent", "venv", "bin", "python"), path.join(home, ".hermes", "hermes-agent", ".venv", "bin", "python")].find((p) => fs.existsSync(p));
+  const agentDir = path.join(home, ".hermes", "hermes-agent");
+  const py = ["venv", ".venv"].flatMap((v) => [path.join(agentDir, v, "bin", "python"), path.join(agentDir, v, "Scripts", "python.exe")]).find((p) => fs.existsSync(p));
   if (!fs.existsSync(cfg)) return `${cfg}: missing (Hermes not installed); skipped`;
   if (!py) return `${cfg}: Hermes's Python not found under ~/.hermes/hermes-agent; add mcp_servers.skillrouter by hand: command ${NODE}, args [${CLI}, "mcp"], env SKILLROUTER_AGENT=hermes`;
   backup(cfg, fs.statSync(cfg).mode & 0o777);
@@ -201,7 +213,7 @@ function installHermes(home: string): string {
 from hermes_cli.config import load_config, save_config
 c = load_config(); c.setdefault("mcp_servers", {})["skillrouter"] = json.loads(sys.argv[1]); save_config(c); print("ok")`;
   try {
-    execFileSync(py, ["-c", script, JSON.stringify({ command: NODE, args: [CLI, "mcp"], env: { SKILLROUTER_AGENT: "hermes" } })], { cwd: path.join(home, ".hermes", "hermes-agent"), stdio: ["ignore", "pipe", "pipe"], timeout: 60000 });
+    execFileSync(py, ["-c", script, JSON.stringify({ command: NODE, args: [CLI, "mcp"], env: { SKILLROUTER_AGENT: "hermes" } })], { cwd: path.join(home, ".hermes", "hermes-agent"), stdio: ["ignore", "pipe", "pipe"], timeout: 60000, ...NO_WINDOW });
     return `${cfg}: skillrouter MCP set via Hermes config API (no hooks on this host)`;
   } catch (e) {
     return `${cfg}: Hermes config API failed (${(e as Error).message.split("\n")[0]}); not changed`;
@@ -235,7 +247,7 @@ function appendToml(file: string, block: string, marker: string): string {
   }
   fs.writeFileSync(file + ".tmp", next, mode !== undefined ? { mode } : {});
   if (mode !== undefined) fs.chmodSync(file + ".tmp", mode);
-  fs.renameSync(file + ".tmp", file);
+  renameSyncRetry(file + ".tmp", file);
   return `${file}: updated ${marker}`;
 }
 
@@ -258,7 +270,7 @@ const current = new Map(); // session -> its latest prompt (message id), so trig
 const TOOLS = /^(bash|edit|write|multiedit|patch|apply_patch|skill)$|read_skill$/;
 function ask(payload, mode) {
   return new Promise((resolve) => {
-    const child = spawn(${JSON.stringify(command)}, [...${JSON.stringify(args)}, ...(mode ? [mode] : [])], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const child = spawn(${JSON.stringify(command)}, [...${JSON.stringify(args)}, ...(mode ? [mode] : [])], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
     let out = '';
     const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(''); }, ${timeout});
     child.stdout.on('data', (d) => { out += d; if (out.length > 65536) { child.kill('SIGKILL'); resolve(''); } });

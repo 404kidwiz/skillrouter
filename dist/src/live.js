@@ -1,11 +1,12 @@
 import fs from "node:fs";
+import { parseJson } from "./platform.js";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { HOME } from "./paths.js";
 import { INSTALL_TARGETS } from "./install.js";
 function json(file) { try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
+    return parseJson(fs.readFileSync(file, "utf8"));
 }
 catch {
     return undefined;

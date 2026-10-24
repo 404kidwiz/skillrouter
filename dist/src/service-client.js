@@ -18,7 +18,9 @@ export const PROTOCOL = "SR1";
 export const MAX_PROMPT_BYTES = 256 * 1024;
 export const MAX_EVENT_BYTES = 8 * 1024 * 1024;
 export const runDir = (dir = SR_DIR) => path.join(dir, "run");
-export const serviceEnabled = () => process.env.SKILLROUTER_SERVICE !== "0";
+/** The service speaks over a Unix socket and is started with POSIX tools; Windows hooks run on their own until it gets named pipes. */
+export const serviceSupported = (platform = process.platform) => platform !== "win32";
+export const serviceEnabled = (platform = process.platform) => serviceSupported(platform) && process.env.SKILLROUTER_SERVICE !== "0";
 /**
  * Where the socket lives. Unix socket paths are limited to about 104 bytes, so a long state directory (a temp
  * folder, a deep home) gets a short per-user path under /tmp keyed by the directory; the owner is checked on use.
@@ -93,6 +95,8 @@ export async function query(agent, mode, body, timeoutMs = 700, sock = socketPat
  * (a fresh run/svc.lock) or starting keeps failing (a recent run/svc.off). The starter itself checks again.
  */
 export function startServiceSoon(dir = SR_DIR) {
+    if (!serviceSupported())
+        return;
     try {
         // Recent means 0 to N ms old: a file from the future (the clock was stepped back) does not count.
         const recent = (f, ms) => { try {
@@ -118,7 +122,7 @@ export function startServiceSoon(dir = SR_DIR) {
                 catch { /* gone */ }
             return;
         }
-        spawn(process.execPath, [process.argv[1], "serve", "--start"], { detached: true, stdio: "ignore" }).unref();
+        spawn(process.execPath, [process.argv[1], "serve", "--start"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
     }
     catch { /* hooks never fail on this */ }
 }

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { INDEX_FILE, SR_DIR, defaultRoots } from "./paths.js";
 import { tokenize, TOKENIZER_VERSION } from "./bm25.js";
+import { renameSyncRetry } from "./platform.js";
 const SKIP = new Set(["node_modules", ".git", ".venv", "__pycache__", "dist"]);
 export function parseFrontmatter(text) {
     const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -97,7 +98,7 @@ export function saveIndex(index) {
     fs.mkdirSync(SR_DIR, { recursive: true });
     const tmp = INDEX_FILE + ".tmp";
     fs.writeFileSync(tmp, JSON.stringify(index));
-    fs.renameSync(tmp, INDEX_FILE);
+    renameSyncRetry(tmp, INDEX_FILE);
 }
 export function loadIndex() {
     try {
