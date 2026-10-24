@@ -70,13 +70,14 @@ test("vectors built for another index are not used to collapse (CLI end to end)"
 });
 test("a preloaded core copy takes its cluster's slot from a higher-ranked copy", async () => {
     const query = "anti slop design taste frontend greenfield pages audits redesigns";
-    assert.equal((await search(query, 3, { lexicalOnly: true }))[0].skill.id, "toolbox-x-design-taste-frontend", "baseline: the toolbox copy ranks first");
     const base = (await search(query, 3, { lexicalOnly: true }))[0];
-    const hits = await search(query, 3, { lexicalOnly: true, prefer: coreIds(["design-taste-frontend"]) });
-    assert.equal(hits[0].skill.id, "design-taste-frontend~2", "core.txt names the skill; with no exact id, its variants count");
+    assert.equal(base.skill.id, "design-taste-frontend~2", "between plain copies the shorter id is named");
+    const hits = await search(query, 3, { lexicalOnly: true, prefer: coreIds(["toolbox-x-design-taste-frontend"]) });
+    assert.equal(hits[0].skill.id, "toolbox-x-design-taste-frontend", "a preloaded copy takes the slot even with the longer id");
     assert.equal(hits.filter((h) => /design-taste-frontend/.test(h.skill.id)).length, 1);
     assert.equal(hits[0].score, base.score, "the cluster keeps its rank and metrics when the preloaded copy takes the slot");
     assert.equal(hits[0].raw, base.raw);
+    assert.equal((await search(query, 3, { lexicalOnly: true, prefer: coreIds(["design-taste-frontend"]) }))[0].skill.id, "design-taste-frontend~2", "core.txt names the skill; with no exact id, its variants count");
 });
 test("a shown or loaded skill anchors its cluster: its copies are left out too", async () => {
     const hits = await search("python testing pytest fixtures", 5, { lexicalOnly: true, known: new Set(["pytest-patterns"]) });

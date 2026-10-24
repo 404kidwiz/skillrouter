@@ -1,0 +1,59 @@
+{"prompt": "write pytest tests for the api client and fix the failing fixtures", "expect": ["python-testing", "test-fixing"]}
+{"prompt": "add unit tests for the new payment module in python with mocked http calls", "expect": ["python-testing"]}
+{"prompt": "my vitest suite has flaky async tests, help me stabilize them", "expect": ["jest-testing"]}
+{"prompt": "write jest tests for the React hook that fetches users", "expect": ["jest-testing", "react-components"]}
+{"prompt": "after my refactor 40 tests fail, go through them and fix them", "expect": ["test-fixing"]}
+{"prompt": "add a Dockerfile and docker compose setup for the api service", "expect": ["docker-patterns"]}
+{"prompt": "make the docker image smaller with a multi-stage build", "expect": ["docker-patterns"]}
+{"prompt": "deploy odoo with docker compose and postgres", "expect": ["odoo-docker-deployment"]}
+{"prompt": "write kubernetes deployment and service manifests for nginx with 2 replicas", "expect": ["kubernetes-manifests"]}
+{"prompt": "pods keep crashlooping after the rollout, help me troubleshoot the cluster", "expect": ["kubernetes-operations"]}
+{"prompt": "package the app as a helm chart with configurable values", "expect": ["helm-charts"]}
+{"prompt": "write a terraform module for an s3 bucket with versioning and a kms key", "expect": ["terraform-modules"]}
+{"prompt": "build a serverless endpoint on aws lambda behind api gateway", "expect": ["aws-lambda"]}
+{"prompt": "rebase my branch onto main and squash the fixup commits", "expect": ["git-advanced"]}
+{"prompt": "I lost commits after a bad reset, how do I recover them", "expect": ["git-advanced"]}
+{"prompt": "write the commit message for this change following conventional commits", "expect": ["git-conventional-commits"]}
+{"prompt": "review this pull request for bugs and security problems", "expect": ["pr-review", "security-review"]}
+{"prompt": "design a landing page hero section with a strong call to action", "expect": ["landing-page-design"]}
+{"prompt": "build a react component for a searchable dropdown with keyboard support", "expect": ["react-components"]}
+{"prompt": "style the pricing table with tailwind including dark mode", "expect": ["tailwind-styling"]}
+{"prompt": "implement login with jwt access tokens and refresh token rotation", "expect": ["auth-jwt"]}
+{"prompt": "this postgres query takes 9 seconds, add the right index", "expect": ["postgres-optimization"]}
+{"prompt": "add a migration that renames the users.email column without downtime", "expect": ["database-migrations"]}
+{"prompt": "design the rest api for orders with pagination and versioning", "expect": ["rest-api-design"]}
+{"prompt": "do a security audit of the upload handler for injection and auth flaws", "expect": ["security-review"]}
+{"prompt": "merge these three pdf files and extract the tables from the first one", "expect": ["pdf"]}
+{"prompt": "create an excel workbook with a summary sheet and a chart of monthly sales", "expect": ["xlsx"]}
+{"prompt": "generate a word document report with headings and a table of results", "expect": ["docx"]}
+{"prompt": "reply to the last email from the client and keep the thread", "expect": ["gws-gmail-reply"]}
+{"prompt": "reply all to the planning thread so everyone sees the update", "expect": ["gws-gmail-reply-all"]}
+{"prompt": "use the anthropic sdk to call claude with tool use and streaming", "expect": ["claude-api"]}
+{"prompt": "call the openai chat completions api with function calling", "expect": ["openai-api"]}
+{"prompt": "fix the borrow checker error in this rust function", "expect": ["rust-ownership"]}
+{"prompt": "write a go worker pool with context cancellation", "expect": ["go-concurrency"]}
+{"prompt": "set up a github actions workflow that runs tests on node 20 and 22", "expect": ["github-actions"]}
+{"prompt": "the app crashes intermittently on startup and I can't tell why", "expect": ["systematic-debugging"]}
+{"prompt": "plan the migration of the monolith to services before we start coding", "expect": ["writing-plans"]}
+{"prompt": "write the README and API reference for this library", "expect": ["technical-writing"]}
+{"prompt": "make a chart comparing revenue by region for the quarterly report", "expect": ["data-visualization"]}
+{"prompt": "fine-tune the pytorch model and plot the loss curve with checkpoints", "expect": ["ml-training"]}
+{"prompt": "audit the site for seo: meta tags, structured data and core web vitals", "expect": ["seo-audit"]}
+{"prompt": "add spanish and arabic translations with right-to-left support", "expect": ["i18n"]}
+{"prompt": "check the checkout form for wcag contrast and keyboard navigation", "expect": ["accessibility-audit"]}
+{"prompt": "write a bash script that backs up the database and rotates old files safely", "expect": ["shell-scripting"]}
+{"prompt": "write a regex that matches iso dates but not timestamps", "expect": ["regex-patterns"]}
+{"prompt": "add redis caching for the product catalog with invalidation on update", "expect": ["caching-strategies"]}
+{"prompt": "plan a drip email sequence for new signups", "expect": ["email-marketing"]}
+{"prompt": "what's the weather like in Paris today", "expect": []}
+{"prompt": "rename the variable foo to bar in utils.ts", "expect": []}
+{"prompt": "summarize this paragraph in two sentences", "expect": []}
+{"prompt": "add a comment explaining what this function returns", "expect": []}
+{"prompt": "what time is it in UTC+2 right now", "expect": []}
+{"prompt": "fix the typo in the README title", "expect": []}
+{"prompt": "explain the difference between let and const", "expect": []}
+{"prompt": "sort these names alphabetically", "expect": []}
+{"prompt": "write a haiku about autumn", "expect": []}
+{"prompt": "bump the version number in package.json", "expect": []}
+{"prompt": "open the settings page and change the theme to dark", "expect": []}
+{"prompt": "what does HTTP 418 mean", "expect": []}

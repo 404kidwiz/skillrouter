@@ -52,7 +52,11 @@ function* walk(root: string, depth = 0): Generator<string> {
 }
 
 export function buildIndex(extraRoots: string[] = []): Index {
-  const roots = defaultRoots(extraRoots).filter((r) => fs.existsSync(r));
+  return buildIndexFrom(defaultRoots(extraRoots).filter((r) => fs.existsSync(r)));
+}
+
+/** An index of exactly these folders (eval fixtures, custom corpora): no agent folders added. */
+export function buildIndexFrom(roots: string[]): Index {
   const seen = new Map<string, SkillEntry>();
   const ids = new Map<string, number>();
   for (const root of roots) {

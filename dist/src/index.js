@@ -55,7 +55,10 @@ function* walk(root, depth = 0) {
     }
 }
 export function buildIndex(extraRoots = []) {
-    const roots = defaultRoots(extraRoots).filter((r) => fs.existsSync(r));
+    return buildIndexFrom(defaultRoots(extraRoots).filter((r) => fs.existsSync(r)));
+}
+/** An index of exactly these folders (eval fixtures, custom corpora): no agent folders added. */
+export function buildIndexFrom(roots) {
     const seen = new Map();
     const ids = new Map();
     for (const root of roots) {

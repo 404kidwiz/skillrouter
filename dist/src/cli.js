@@ -14,6 +14,11 @@ const USAGE = `skillrouter — a big skill library without the context bloat
   skillrouter trim [agents] [--apply] [--keep NAME]...
                                           move everything except core out of agent folders (dry run by default)
   skillrouter install <agent>...         wire MCP + hooks: claude codex cursor gemini opencode; MCP only: openclaude antigravity hermes
+  skillrouter eval [-v] [--ci]           routing quality on the bundled fixture (what CI runs)
+  skillrouter eval --live [file] [--lexical] [-v] [--ci]
+                                          the same on the real index and ~/.skillrouter/eval.jsonl
+  skillrouter eval add "<prompt>" <id,id|none>
+                                          label a prompt for the live eval
   skillrouter report [days]              who searched, what got loaded, did checks help, per-skill accept rates
   skillrouter suppress [keep|unkeep|reset] [id]...
                                           skills held back after repeated declines; keep exempts one, reset forgets counts
@@ -216,6 +221,68 @@ async function main(argv) {
                     console.log("  none");
                 if (v.keep.length)
                     console.log(`Kept (never held back): ${v.keep.join(", ")}`);
+            }
+            break;
+        }
+        case "eval": {
+            const path = await import("node:path");
+            const { fileURLToPath } = await import("node:url");
+            if (args[0] === "add") {
+                const { addCase } = await import("./eval.js");
+                if (!args[1] || !args[2]) {
+                    console.log('usage: skillrouter eval add "<prompt>" <id,id|none>');
+                    process.exitCode = 1;
+                    break;
+                }
+                const c = addCase(path.join(SR_DIR, "eval.jsonl"), args[1], args[2]);
+                console.log(`labeled: ${JSON.stringify(c.prompt)} -> ${c.expect.join(", ") || "none"} (${path.join(SR_DIR, "eval.jsonl")})`);
+                break;
+            }
+            const live = flag(args, "--live"), ci = flag(args, "--ci"), lexical = flag(args, "--lexical"), verbose = flag(args, "-v") || flag(args, "--verbose");
+            const roots = opt(args, "--root");
+            const thresholds = {};
+            for (const key of ["top1", "top3", "hintRecall", "hintPrecision", "falseHints", "copiesShown"]) {
+                const v = opt(args, `--${key}`)[0];
+                if (v !== undefined)
+                    thresholds[key] = Number(v);
+            }
+            if (!live && !roots.length) {
+                // The bundled fixture, in an isolated state dir so the real index, core and verdicts play no part.
+                const os = await import("node:os");
+                const fs = await import("node:fs");
+                const { spawnSync } = await import("node:child_process");
+                const fixture = fileURLToPath(new URL("../../eval/", import.meta.url));
+                const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "skillrouter-eval-"));
+                const { writeFillers } = await import("./eval.js");
+                writeFillers(path.join(tmp, "fillers")); // the same 400 unrelated skills every run
+                const pass = [...(ci ? ["--ci"] : []), ...(verbose ? ["-v"] : []), ...Object.entries(thresholds).flatMap(([k, v]) => [`--${k}`, String(v)])];
+                const r = spawnSync(process.execPath, [process.argv[1], "eval", "--live", "--lexical", "--root", path.join(fixture, "skills"), "--root", path.join(tmp, "fillers"), path.join(fixture, "prompts.jsonl"), ...pass], { env: { ...process.env, SKILLROUTER_HOME: tmp }, stdio: "inherit" });
+                fs.rmSync(tmp, { recursive: true, force: true });
+                process.exitCode = r.status ?? 1;
+                break;
+            }
+            if (roots.length) {
+                const { buildIndexFrom, saveIndex } = await import("./index.js");
+                saveIndex(buildIndexFrom(roots.map((r) => path.resolve(r))));
+            }
+            const { readCases, evaluate, formatEval, checkThresholds, DEFAULT_THRESHOLDS } = await import("./eval.js");
+            const file = args.find((a) => !a.startsWith("-")) ?? path.join(SR_DIR, "eval.jsonl");
+            const cases = readCases(file);
+            if (!cases.length) {
+                console.log(`No labeled prompts at ${file}. Add one: skillrouter eval add "<prompt>" <skill-id|none>`);
+                process.exitCode = 1;
+                break;
+            }
+            const result = await evaluate(cases, { lexicalOnly: lexical });
+            console.log(formatEval(result, verbose));
+            if (ci) {
+                const failures = checkThresholds(result.summary, { ...DEFAULT_THRESHOLDS, ...thresholds });
+                if (failures.length) {
+                    console.log("\nFAIL:\n  " + failures.join("\n  "));
+                    process.exitCode = 1;
+                }
+                else
+                    console.log("\nPASS");
             }
             break;
         }

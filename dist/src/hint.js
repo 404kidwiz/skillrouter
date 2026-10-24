@@ -28,9 +28,19 @@ export function isSystemText(prompt) {
     // The decision nudge itself comes back as a prompt (Cursor's follow-up, Gemini's retry, Codex's continuation).
     return /^(?:<task-notification>|<system-reminder>|\[SYSTEM NOTIFICATION|<local-command-|<command-name>|<agent-message|Another Claude session sent a message|Caveat: The messages below|skillrouter: this turn did real work)/.test(prompt.trim());
 }
+/**
+ * The lexical floor a hint must clear. Calibrated 2026-10-23 on a 4,500-skill library (real matches raw 28-44, small
+ * talk ~13). BM25 scores grow with the log of the library size (rare terms weigh more in a big library), so the floor
+ * scales the same way: a 450-skill library gets about 0.7 of it. SKILLROUTER_MIN_RAW sets an absolute floor instead.
+ */
+export function minRawFor(skills) {
+    const raw = process.env.SKILLROUTER_MIN_RAW;
+    if (raw !== undefined && raw.trim() !== "" && Number.isFinite(Number(raw)))
+        return Number(raw);
+    return Math.round(20 * Math.log(Math.max(2, skills)) / Math.log(4500) * 10) / 10;
+}
 /** Reads the hook JSON on stdin, prints the agent-specific hook output. Never blocks a prompt. */
-// Lexical floor calibrated 2026-10-23 on a 4,500-skill library (real matches raw 28-44, small talk ~13). Override with SKILLROUTER_MIN_RAW.
-export async function hint(agent, input, minRaw = Number(process.env.SKILLROUTER_MIN_RAW ?? 20), k = 4) {
+export async function hint(agent, input, minRaw, k = 4) {
     const started = performance.now();
     const hint_id = randomUUID();
     let payload = {};
@@ -72,6 +82,7 @@ export async function hint(agent, input, minRaw = Number(process.env.SKILLROUTER
     try {
         const query = prompt.slice(0, 1000);
         const { index } = getIndex();
+        minRaw ??= minRawFor(index.skills.length);
         const sem = await semanticScores(query, 800, index.builtAt);
         semStatus = sem.status;
         const loaded = loadedSkills(session, undefined); // already in context this session: not hinted again

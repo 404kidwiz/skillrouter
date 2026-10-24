@@ -76,8 +76,15 @@ export async function search(query: string, k = 5, options: SearchOptions = {}):
     if (j < 0) { kept.push({ skill: s, score, ref: id, similar: [] }); continue; }
     const other = kept[j];
     const kind = other.skill.name === s.name ? "copy" : kindOf(other.skill, s);
-    // A preloaded copy takes the slot (no read needed); a meaning-only match is named, since it may be a distinct sibling.
-    if (prefer.has(s.id) && !prefer.has(other.skill.id)) kept[j] = { ...other, skill: s, similar: kind === "similar" ? [other.skill.id, ...other.similar] : other.similar };
+    // A preloaded copy takes the slot (no read needed); among plain copies the shorter id is the original to name
+    // (python-testing, not toolbox-x-python-testing); a meaning-only match is named, since it may be a distinct sibling.
+    const preferred = (x: SkillEntry) => prefer.has(x.id);
+    // Slot swaps go by the two skills' own texts, never by a shared name alone: a same-named variant holding other
+    // text (impeccable~3 with frontend-design's) must not hand its cluster to the real skill of that name.
+    const own = duplicateKind(other.skill, s, v);
+    const plainCopy = own === "copy" && !preferred(other.skill) && s.id.length < other.skill.id.length;
+    if ((preferred(s) && !preferred(other.skill) && own) || plainCopy)
+      kept[j] = { ...other, skill: s, similar: own === "similar" ? [other.skill.id, ...other.similar] : other.similar };
     else if (kind === "similar" && !other.similar.includes(s.id)) other.similar.push(s.id);
   }
   return kept.map(({ skill, score, ref, similar }) => ({ skill, score: Math.round(score * 1000) / 1000, raw: Math.round((raws.get(ref) ?? 0) * 100) / 100,
