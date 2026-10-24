@@ -737,11 +737,13 @@ svc("a lock or failure marker stamped in the future doesn't block starting", asy
 });
 svc("OpenCode's hook gives up on a hung service sooner than the others", { skip: !hasPerl2 && "needs sh and perl" }, async () => {
     writeLauncher(process.execPath, cli, launcherPath);
-    const srv = await fake(() => { });
     const time = (agent) => { const t0 = Date.now(); const r = sh([agent], { input: promptBody("oc-" + agent), env: { SKILLROUTER_SERVICE_TRIED: "" } }); return { ms: Date.now() - t0, ok: /python-testing|^$/.test(r.stdout) }; };
     // Wall-clock timing on a shared CI machine: the shorter budget has to show up in one of three tries, not in all of them.
+    // Each try starts from a fresh hung fake: the first launcher that finds it hung starts a real service in its place,
+    // and against a live service both hooks answer in 30 ms, so a retry on the same fake could never pass.
     let ok = false, seen = "";
     for (let i = 0; i < 3 && !ok; i++) {
+        const srv = await fake(() => { });
         const oc = time("opencode");
         await sleep(300);
         fs.rmSync(path.join(runDir(), "svc.starting"), { recursive: true, force: true });
@@ -750,9 +752,9 @@ svc("OpenCode's hook gives up on a hung service sooner than the others", { skip:
         fs.rmSync(path.join(runDir(), "svc.starting"), { recursive: true, force: true });
         ok = oc.ms < cl.ms - 200 && oc.ms < 1500;
         seen += `[opencode ${oc.ms} ms vs claude ${cl.ms} ms] `;
+        await closeFake(srv); // also stops the real service a launcher started meanwhile
     }
     assert.ok(ok, seen);
-    await closeFake(srv);
 });
 svc("a cold burst of hooks starts one service, and tool calls are counted once", { skip: !hasPerl2 && "needs sh and perl" }, async () => {
     writeLauncher(process.execPath, cli, launcherPath);
