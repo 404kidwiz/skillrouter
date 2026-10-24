@@ -21,7 +21,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.json && node --test \"dist/test/*.test.js\"",
+    "test": "tsc -p tsconfig.json && node --test dist/test",
     "prepublishOnly": "pnpm build",
     "prepare": "tsc -p tsconfig.json"
   },
