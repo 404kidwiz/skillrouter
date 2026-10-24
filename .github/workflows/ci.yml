@@ -28,16 +28,22 @@ jobs:
         with:
           version: 11
 
+      # pnpm 11 itself needs Node 22.13+, so install on 22, then switch to the matrix version for the tests.
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - uses: actions/setup-node@v4
+        if: matrix.node != 22
+        with:
+          node-version: ${{ matrix.node }}
+
       - name: Build and run tests
-        run: pnpm test
+        run: npm test
 
       - name: Routing eval on the bundled fixture (lexical; no model download in CI)
         run: node dist/src/cli.js eval --ci
