@@ -80,6 +80,8 @@ Local embeddings are opt-in: install `@huggingface/transformers` next to skillro
 
 Checks are bound to the turn that produced them (Claude `prompt_id`, Codex `turn_id`, Cursor `generation_id`; Gemini by time since its prompt), so a later turn is never nudged for an earlier turn's hints; subagents keep their own trigger slots; a skill already loaded in the session is not suggested again.
 
+Every decided turn also records a verdict: each suggested skill is accepted (it, or a sibling the check named, is on the final reply's `Skills:` line, or it was loaded) or declined, on Claude Code, Codex, Cursor and Gemini CLI at the end of the turn, and on OpenCode once the next prompt arrives. A turn that answers a nudge is credited to the nudged turn. `report` shows accept rates per skill. On each host separately, a skill declined in at least 5 sessions (one decline per session counts) and accepted in under 10% of its counted turns is held back from prompt checks and triggers for 30 days after its last verdict, then offered again with fresh counts. `search_skills` always finds it, and an agent loading it on its own counts as accepting it: see it with `skillrouter suppress`, exempt one with `skillrouter suppress keep <id>`, forget counts with `skillrouter suppress reset [id]`, change the threshold with `SKILLROUTER_SUPPRESS_AFTER` (0 turns it off). Counts live in `~/.skillrouter/verdicts.json`.
+
 `report` credits a check when the hinted skill is loaded in the same session, through `read_skill` or the native Skill tool, and counts decided / nudged turns and fired triggers.
 
 ## How routing works
@@ -110,7 +112,8 @@ Repeated installation replaces existing router hooks while preserving unrelated 
   core.txt       skill ids every agent preloads
   core/          symlinks to the core skills (agent folders point here)
   library/       long tail moved out of agent folders (.conflicts/ keeps same-name variants)
-  usage.jsonl    one line per search / read / hint (hints never log prompt text)
+  usage.jsonl    one line per search / read / hint / verdict (hints never log prompt text)
+  verdicts.json  per-skill accepted / declined counts and the keep list (drives suppression)
   backups/       tar of each folder before trim, plus RESTORE-<stamp>.md
 ```
 

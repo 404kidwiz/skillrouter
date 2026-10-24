@@ -12,7 +12,7 @@ process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 fs.mkdirSync(process.env.SKILLROUTER_HOME, { recursive: true });
 const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 const { runHint, selectHints, sessionHash } = await import("../src/hint.js");
-const { toolEvent, stopEvent, DECISION } = await import("../src/events.js");
+const { toolEvent, stopEvent, decisionOf } = await import("../src/events.js");
 const { matchTriggers, actionOf } = await import("../src/triggers.js");
 const { saveIndex } = await import("../src/index.js");
 const { saveVectors, semanticScores } = await import("../src/embed.js");
@@ -116,10 +116,11 @@ test("Stop counts loads recorded by the tool hook (turns longer than the transcr
     await toolEvent("claude", JSON.stringify({ session_id: "S4", tool_name: "Skill", tool_input: { skill: "python-testing" } }), false);
     assert.equal(stopEvent("claude", JSON.stringify({ session_id: "S4", prompt_id: "p4", transcript_path: transcript(work) })), "");
     assert.equal(lastRow().reason, "decided");
-    for (const t of ["- Skills: none (x)", "Done. Skills: none (plain edit)", "## Skills: python-testing", "**Skills:** python-testing", "Skill: python-testing"])
-        assert.ok(DECISION.test(t), t);
-    for (const t of ["Skills are useful", "skillset: big", "Skills:"])
-        assert.ok(!DECISION.test(t), t);
+    for (const t of ["- Skills: none (x)", "Done. Skills: none (plain edit)", "## Skills: python-testing", "**Skills:** python-testing", "`Skills: none (n/a)`"])
+        assert.ok(decisionOf([t]), t);
+    // The protocol line is the capitalised plural; prose and the singular are not decisions.
+    for (const t of ["Skills are useful", "skillset: big", "Skills:", "Skill: python-testing", "Design skills: none loaded", "**Total Skills:** 203"])
+        assert.equal(decisionOf([t]), null, t);
 });
 test("hint CLI exits promptly after answering and handles large tool payloads", () => {
     const big = JSON.stringify({ session_id: "S5", cwd: "/r", tool_name: "Write", tool_input: { file_path: "/r/src/a.txt", content: "x".repeat(600 * 1024) }, tool_response: { originalFile: "y".repeat(600 * 1024) } });

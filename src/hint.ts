@@ -7,6 +7,7 @@ import { getIndex, logUsage, search, type Hit } from "./search.js";
 import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
 import { addShown, bareSkill, loadedSkills, markTurn } from "./state.js";
+import { suppressed } from "./verdicts.js";
 
 const EVENT: Partial<Record<AgentId, string>> = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
 const TOOL_EVENT: Partial<Record<AgentId, string>> = { gemini: "AfterTool" }; // claude/codex: PostToolUse
@@ -50,9 +51,10 @@ export async function hint(agent: AgentId, input: string, minRaw = Number(proces
     payload = parsed;
   } catch { record("invalid_input"); return formatHint(agent, ""); }
   const session = sessionHash(sessionOf(payload));
-  // Every prompt starts a turn, checked or not: the end-of-turn nudge counts work from here.
-  markTurn(session, sessionHash(turnOf(payload)));
   const prompt = (payload.prompt as string).trim();
+  // Every prompt starts a turn, checked or not: the end-of-turn nudge counts work from here. The nudge itself
+  // coming back as a prompt (Cursor's follow-up, Gemini's retry, Codex's continuation) belongs to the nudged turn.
+  if (!/^skillrouter: this turn did real work/.test(prompt)) markTurn(session, sessionHash(turnOf(payload)));
   if (prompt.startsWith("/")) { record("skipped_command"); return formatHint(agent, ""); }
   if (isSystemText(prompt)) { record("skipped_system"); return formatHint(agent, ""); }
   if (prompt.length < 20) { record("skipped_short_prompt"); return formatHint(agent, ""); }
@@ -65,7 +67,8 @@ export async function hint(agent: AgentId, input: string, minRaw = Number(proces
     semStatus = sem.status;
     const loaded = loadedSkills(session, undefined); // already in context this session: not hinted again
     core = coreIds();
-    hits = selectHints(await search(query, 12, { semantic: sem.scores, known: loaded, prefer: core }), minRaw, k);
+    // Loaded skills and those agents keep declining (verdicts.json) are not offered.
+    hits = selectHints(await search(query, 12, { semantic: sem.scores, known: new Set([...loaded, ...suppressed(agent)]), prefer: core }), minRaw, k);
   } catch {
     record(fs.existsSync(INDEX_FILE) ? "index_error" : "missing_index");
     return formatHint(agent, "");
@@ -73,7 +76,7 @@ export async function hint(agent: AgentId, input: string, minRaw = Number(proces
   record(hits.length ? "shown" : "no_match", hits);
   if (!hits.length) return formatHint(agent, "");
   // Named siblings count as shown, so a later trigger this turn doesn't offer them again.
-  addShown(session, hits.flatMap((h) => [h.skill.id, ...(h.similar ?? [])]), sessionHash(turnOf(payload)));
+  addShown(session, hits.map((h) => h.skill.id), sessionHash(turnOf(payload)), Object.fromEntries(hits.filter((h) => h.similar?.length).map((h) => [h.skill.id, h.similar!])));
   return formatHint(agent, hintText(hits, hint_id, core, agent));
 }
 

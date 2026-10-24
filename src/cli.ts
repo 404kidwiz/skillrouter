@@ -15,7 +15,9 @@ const USAGE = `skillrouter — a big skill library without the context bloat
   skillrouter trim [agents] [--apply] [--keep NAME]...
                                           move everything except core out of agent folders (dry run by default)
   skillrouter install <agent>...         wire MCP + hooks: claude codex cursor gemini opencode; MCP only: openclaude antigravity hermes
-  skillrouter report [days]              who searched, what got loaded, did checks help
+  skillrouter report [days]              who searched, what got loaded, did checks help, per-skill accept rates
+  skillrouter suppress [keep|unkeep|reset] [id]...
+                                          skills held back after repeated declines; keep exempts one, reset forgets counts
   skillrouter mcp                        stdio MCP server (search_skills, read_skill)
   skillrouter hint <agent> [tool|stop]   hooks: prompt check (default), PostToolUse triggers, Stop decision
 `;
@@ -45,6 +47,7 @@ async function main(argv: string[]): Promise<void> {
       const input = await readHintInput(agent, 1500, mode ? 8 * 1024 * 1024 : 256 * 1024);
       if (input === null) return finish(mode ? "" : formatHint(agent, ""), worker);
       if (mode === "stop") { const { stopEvent } = await import("./events.js"); return finish(stopEvent(agent, input), worker); }
+      if (mode === "decision") { const { decisionEvent } = await import("./events.js"); return finish(decisionEvent(agent, input), worker); }
       if (mode === "tool") {
         const { toolEvent } = await import("./events.js");
         const first = await toolEvent(agent, input, worker);
@@ -131,6 +134,30 @@ async function main(argv: string[]): Promise<void> {
       console.log(`Node pinned for hooks and MCP: ${NODE} (override with SKILLROUTER_NODE=/path/to/node)`);
       const seen = new Set<string>();
       for (const a of (targets.length ? targets : INSTALL_TARGETS) as any[]) for (const line of install(a)) if (!seen.has(line)) { seen.add(line); console.log(line); }
+      break;
+    }
+    case "suppress": {
+      const { readVerdicts, suppressedByAgent, setKeep, resetVerdicts, suppressAfter } = await import("./verdicts.js");
+      const [sub, ...ids] = args;
+      if (sub === "keep" || sub === "unkeep") {
+        if (!ids.length) { console.log(`usage: skillrouter suppress ${sub} <id>...`); process.exitCode = 1; break; }
+        const kept = setKeep(ids, sub === "keep");
+        if (!kept) { console.log("verdicts.json is busy (another hook is writing); try again"); process.exitCode = 1; break; }
+        console.log(`kept (never held back): ${kept.join(", ") || "none"}`);
+      } else if (sub === "reset") {
+        const n = resetVerdicts(ids);
+        if (n === undefined) { console.log("verdicts.json is busy (another hook is writing); try again"); process.exitCode = 1; break; }
+        console.log(`forgot decision counts for ${n} skill(s)`);
+      }
+      else if (sub && sub !== "list") { console.log(USAGE); process.exitCode = 1; }
+      else {
+        const v = readVerdicts();
+        const byAgent = suppressedByAgent(v);
+        console.log(suppressAfter() > 0 ? `Held back after declines in ${suppressAfter()}+ sessions with under 10% accepted, per host, for 30 days (SKILLROUTER_SUPPRESS_AFTER; 0 = off):` : "Suppression is off (SKILLROUTER_SUPPRESS_AFTER=0).");
+        for (const [agent, held] of byAgent) for (const id of held) console.log(`  ${agent}: ${id}: accepted ${v.agents[agent][id].accepted} of ${v.agents[agent][id].shown}, last ${v.agents[agent][id].last.slice(0, 10)}`);
+        if (!byAgent.size) console.log("  none");
+        if (v.keep.length) console.log(`Kept (never held back): ${v.keep.join(", ")}`);
+      }
       break;
     }
     case "report": { const { report } = await import("./report.js"); console.log(report(Number(args[0] ?? 7))); break; }

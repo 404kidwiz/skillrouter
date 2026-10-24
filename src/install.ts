@@ -231,6 +231,8 @@ function backup(file: string, mode?: number): void {
 export function openCodePlugin(command = LAUNCHER, args = ["opencode"], timeout = 2000): string { return `// skillrouter hints for OpenCode (installed by: npx skillrouter install opencode)
 import { spawn } from 'node:child_process';
 const hints = new Map();
+const decided = new Set(); // turns whose decision was sent
+const current = new Map(); // session -> its latest prompt (message id), so trigger checks belong to that turn
 // Only tools that show the kind of work (or load a skill) start a process.
 const TOOLS = /^(bash|edit|write|multiedit|patch|apply_patch|skill)$|read_skill$/;
 function ask(payload, mode) {
@@ -249,20 +251,39 @@ export const SkillrouterHints = async (ctx) => ({
   'chat.message': async (_input, output) => {
     const id = output?.message?.id;
     const text = (output?.parts ?? []).filter((p) => p.type === 'text' && !p.synthetic).map((p) => p.text).join('\\n').trim();
+    if (id) current.set(output?.message?.sessionID, id);
     const hint = id ? await ask({ prompt: text, session_id: output?.message?.sessionID, prompt_id: id }) : '';
     if (hint) hints.set(id, hint);
   },
   'tool.execute.after': async (input, output) => {
     if (!TOOLS.test(input?.tool ?? '') || typeof output?.output !== 'string') return;
-    const hint = await ask({ session_id: input.sessionID, tool_name: input.tool, tool_input: input.args, cwd: ctx?.directory }, 'tool');
+    const hint = await ask({ session_id: input.sessionID, prompt_id: current.get(input.sessionID), tool_name: input.tool, tool_input: input.args, cwd: ctx?.directory }, 'tool');
     if (hint) output.output += '\\n\\n' + hint;
   },
   'experimental.chat.messages.transform': async (_input, output) => {
-    for (const m of output?.messages ?? []) {
+    const messages = output?.messages ?? [];
+    for (const m of messages) {
       const hint = m?.info?.role === 'user' && hints.get(m.info.id);
       const base = hint && m.parts.find((p) => p.type === 'text');
       if (base && !m.parts.some((p) => p.id === base.id + '-skillrouter')) m.parts.push({ ...base, id: base.id + '-skillrouter', text: hint, synthetic: true });
     }
+    // No end-of-turn hook here: a turn is over once the model has started answering a newer prompt (a prompt
+    // queued mid-turn doesn't end it) and all its replies are complete. Each finished turn's text is sent once,
+    // for the last few turns only, so skillrouter can record what was decided about its checks.
+    const turns = new Map();
+    let answering;
+    for (const m of messages) {
+      const i = m?.info;
+      if (i?.role !== 'assistant' || !i.parentID) continue;
+      answering = i.parentID;
+      const t = turns.get(i.parentID) ?? { session_id: i.sessionID, prompt_id: i.parentID, text: '', done: true };
+      t.done = t.done && !!i.time?.completed;
+      const text = (m.parts ?? []).filter((p) => p.type === 'text' && !p.synthetic).map((p) => p.text).join('\\n');
+      t.text = t.text ? t.text + '\\n' + text : text;
+      turns.set(i.parentID, t);
+    }
+    const ended = [...turns.values()].filter((t) => t.done && t.prompt_id !== answering && !decided.has(t.prompt_id));
+    for (const { done, ...payload } of ended.slice(-3)) { decided.add(payload.prompt_id); ask(payload, 'decision'); }
   },
 });
 `; }

@@ -69,19 +69,37 @@ function rows(session: string | undefined, file: string): any[] {
 
 export function addLoaded(session: string | undefined, skill: string, sub?: string): void { append(session, "loaded.jsonl", { skill, sub }); }
 
-/** Skills loaded in this session (by this agent: main thread when `sub` is undefined), optionally since a time. */
-export function loadedSkills(session: string | undefined, sub?: string, since = 0): Set<string> {
-  return new Set(rows(session, "loaded.jsonl").filter((r) => r.sub === sub && r.ts >= since).map((r) => bareSkill(String(r.skill))));
+/** Skills loaded in this session (by this agent: main thread when `sub` is undefined), optionally within a time window. */
+export function loadedSkills(session: string | undefined, sub?: string, since = 0, until = Infinity): Set<string> {
+  return new Set(rows(session, "loaded.jsonl").filter((r) => r.sub === sub && r.ts >= since && r.ts < until).map((r) => bareSkill(String(r.skill))));
 }
 
-/** A check that was shown on the main thread, keyed by the hashed prompt_id when the host sends one. */
-export function addShown(session: string | undefined, ids: string[], prompt?: string): void { append(session, "shown.jsonl", { ids, prompt }); }
+/**
+ * A check that was shown on the main thread, keyed by the hashed prompt_id when the host sends one. `alts`:
+ * for a shown skill, the siblings it named as "similar". They are not repeated later, and taking one counts
+ * as taking the suggestion; only `ids` were suggested (verdicts, nudges).
+ */
+export function addShown(session: string | undefined, ids: string[], prompt?: string, alts: Record<string, string[]> = {}): void {
+  append(session, "shown.jsonl", { ids, prompt, ...(Object.keys(alts).length ? { alts } : {}) });
+}
 
-/** Skill ids shown for this prompt (exact), or, for hosts without prompt ids, since a time. */
-export function shownFor(session: string | undefined, prompt: string | undefined, since: number): string[] {
+function shownRows(session: string | undefined, prompt: string | undefined, since: number): any[] {
   const all = rows(session, "shown.jsonl");
-  const mine = prompt && all.some((r) => r.prompt) ? all.filter((r) => r.prompt === prompt) : all.filter((r) => r.ts >= since);
-  return [...new Set(mine.flatMap((r) => (Array.isArray(r.ids) ? r.ids.map(String) : [])))];
+  return prompt && all.some((r) => r.prompt) ? all.filter((r) => r.prompt === prompt) : all.filter((r) => r.ts >= since);
+}
+
+const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : []);
+
+/** Skill ids shown for this prompt (exact), or, for hosts without prompt ids, since a time; `withAlts` adds named siblings. */
+export function shownFor(session: string | undefined, prompt: string | undefined, since: number, withAlts = false): string[] {
+  return [...new Set(shownRows(session, prompt, since).flatMap((r) => [...list(r.ids), ...(withAlts ? Object.values(r.alts ?? {}).flatMap(list) : [])]))];
+}
+
+/** For each skill shown for this prompt, the siblings named with it. */
+export function shownAlts(session: string | undefined, prompt: string | undefined, since: number): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const r of shownRows(session, prompt, since)) for (const [id, alts] of Object.entries(r.alts ?? {})) out.set(id, [...(out.get(id) ?? []), ...list(alts)]);
+  return out;
 }
 
 /**
@@ -93,6 +111,14 @@ export function markTurn(session: string | undefined, turn?: string): void { app
 
 export function addTool(session: string | undefined, turn?: string, sub?: string): void { append(session, "tools.jsonl", { turn, sub }); }
 
+/** A turn's time span: from its marker to the next marker (open-ended for the current turn). */
+export function turnWindow(session: string | undefined, turn: string): { start?: number; end: number } {
+  const marks = rows(session, "turns.jsonl");
+  const i = marks.map((r) => r.turn).lastIndexOf(turn);
+  if (i < 0) return { end: Infinity };
+  return { start: marks[i].ts, end: marks.slice(i + 1).find((r) => r.ts > marks[i].ts)?.ts ?? Infinity };
+}
+
 /** When this turn started (its marker, else the latest one) and how many main-thread tool calls it made. */
 export function turnStats(session: string | undefined, turn?: string): { start?: number; tools: number } {
   const marks = rows(session, "turns.jsonl");
@@ -101,6 +127,23 @@ export function turnStats(session: string | undefined, turn?: string): { start?:
   const tools = rows(session, "tools.jsonl").filter((r) => !r.sub && r.ts >= mark.ts && (!turn || !r.turn || r.turn === turn)).length;
   return { start: mark.ts, tools };
 }
+
+/**
+ * A nudged turn's checks, so the turn that answers the nudge is credited to them: Codex, Cursor and Gemini
+ * continue under a new turn id (or none). `key` is the nudged turn's verdict key.
+ */
+export function addNudge(session: string | undefined, ids: string[], key: string, since: number, prompt?: string): void { append(session, "nudges.jsonl", { ids, key, since, prompt }); }
+
+/** The latest nudge not yet answered (within 30 minutes). `prompt` is the nudged turn's prompt key, for its siblings. */
+export function lastNudge(session: string | undefined, maxAgeMs = 30 * 60e3): { ids: string[]; key: string; since: number; prompt?: string } | undefined {
+  const all = rows(session, "nudges.jsonl");
+  const done = new Set(all.filter((r) => typeof r.done === "string").map((r) => r.done));
+  const r = all.filter((x) => typeof x.key === "string" && Array.isArray(x.ids) && !done.has(x.key)).pop();
+  return r && Date.now() - r.ts <= maxAgeMs ? { ids: r.ids.map(String), key: r.key, since: Number(r.since) || r.ts, prompt: r.prompt } : undefined;
+}
+
+/** A nudge was answered: it is never credited again. */
+export function consumeNudge(session: string | undefined, key: string): void { append(session, "nudges.jsonl", { done: key }); }
 
 /** "plugin:name" and "name~2" are the same skill for matching purposes. */
 export const bareSkill = (s: string) => s.split(":").pop()!.replace(/~\d+$/, "").toLowerCase();

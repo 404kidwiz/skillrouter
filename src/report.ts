@@ -4,9 +4,11 @@ import { AGENT_SKILL_DIRS, AGENTS, USAGE_LOG } from "./paths.js";
 import { health } from "./health.js";
 import { parseFrontmatter } from "./index.js";
 import { bareSkill } from "./state.js";
+import { readVerdicts, suppressAfter, suppressedByAgent } from "./verdicts.js";
 
 export interface Row { ts: string; client: string; tool: string; skill?: string; found?: boolean;
-  hits?: [string, number, ...unknown[]][]; agent?: string; session?: string; hint_id?: string; reason?: string; via?: string; trigger?: string }
+  hits?: [string, number, ...unknown[]][]; agent?: string; session?: string; hint_id?: string; reason?: string; via?: string; trigger?: string;
+  accepted?: string[]; declined?: string[]; prompt?: string }
 
 export function validRow(value: unknown): value is Row {
   if (!value || typeof value !== "object") return false;
@@ -94,9 +96,35 @@ export function report(days = 7, rows = readLog(days)): string {
     const by = (r: string) => decisions.filter((d) => d.reason === r).length;
     out.push(`Turn endings after hints: ${by("decided")} decided (loaded or wrote \`Skills:\`), ${by("nudged")} nudged, ${by("trivial")} too small to ask, ${by("no_hints")} without hints.`);
   }
+  out.push(...verdictLines(rows.filter((r) => r.tool === "verdict")));
   out.push("", "A load is not proof a skill was applied. Native loads (Claude's Skill tool, Gemini's activate_skill, OpenCode's skill tool, SKILL.md reads) " +
     "are seen through each host's tool hook (Claude Code, Codex once its hooks are trusted, Cursor, Gemini CLI, OpenCode); Antigravity, OpenClaude and Hermes count router read_skill loads only.");
   return out.join("\n");
+}
+
+/** Per-skill accept rates from decided turns in the period, and what is held back now (all-time counts). */
+function verdictLines(verdicts: Row[]): string[] {
+  const out: string[] = [];
+  const per = new Map<string, { acc: number; dec: number }>();
+  const bump = (id: string, k: "acc" | "dec") => { const e = per.get(bareSkill(id)) ?? { acc: 0, dec: 0 }; e[k]++; per.set(bareSkill(id), e); };
+  for (const v of verdicts) { (v.accepted ?? []).forEach((id) => bump(id, "acc")); (v.declined ?? []).forEach((id) => bump(id, "dec")); }
+  const acc = [...per.values()].reduce((n, e) => n + e.acc, 0), dec = [...per.values()].reduce((n, e) => n + e.dec, 0);
+  if (verdicts.length) {
+    out.push("", `Skill decisions: ${verdicts.length} decided turns after checks; ${acc} of ${acc + dec} suggested skills accepted (${Math.round((100 * acc) / Math.max(1, acc + dec))}%).`);
+    const rate = ([id, e]: [string, { acc: number; dec: number }]) => `  ${`${e.acc}/${e.acc + e.dec}`.padStart(6)}  ${id}`;
+    const taken = [...per].filter(([, e]) => e.acc).sort((a, b) => b[1].acc - a[1].acc || a[1].dec - b[1].dec).slice(0, 8);
+    const turnedDown = [...per].filter(([, e]) => e.dec).sort((a, b) => b[1].dec - a[1].dec || a[1].acc - b[1].acc).slice(0, 8);
+    if (taken.length) out.push("Most accepted (accepted/suggested):", ...taken.map(rate));
+    if (turnedDown.length) out.push("Most declined (accepted/suggested):", ...turnedDown.map(rate));
+  }
+  const v = readVerdicts();
+  for (const [agent, held] of suppressedByAgent(v)) {
+    const ids = [...held];
+    out.push(`Held back from ${agent}'s checks (declined in ${suppressAfter()}+ sessions, accepted under 10%; search_skills still finds them): ` +
+      ids.slice(0, 12).map((id) => `${id} (${v.agents[agent][id].accepted}/${v.agents[agent][id].shown})`).join(", ") + (ids.length > 12 ? ` and ${ids.length - 12} more` : "") +
+      ". Exempt one: skillrouter suppress keep <id>.");
+  }
+  return out;
 }
 
 /** What each agent loads at startup right now, and roughly what it costs. */
