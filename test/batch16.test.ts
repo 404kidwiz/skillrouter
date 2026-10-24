@@ -233,9 +233,16 @@ test("SKILLROUTER_GATE=0 is the hook's own: asked on a service's behalf, the gat
 test("read-only commands are not work, and writes dressed as reads are", () => {
   const w = (c: string) => isWork(actionOf("Bash", { command: c }));
   const reads = ["git -C /repo status", "git --no-pager log -5", "test -f package.json && echo yes", "node -v", "ps aux", "curl -s localhost:3000/health", "curl -sL https://x.test/a | jq .", "git stash list",
-    "npm ls", "docker ps", "gh pr view 12", "gh api repos/a/b", "kubectl get pods", "pip list", "git branch", "git branch -a", "git remote -v", "sed -n 1,20p file.txt", "sort -u file | uniq", "cat a | grep b"];
+    "npm ls", "docker ps", "gh pr view 12", "gh api repos/a/b", "kubectl get pods", "pip list", "git branch", "git branch -a", "git remote -v", "sed -n 1,20p file.txt", "sort -u file | uniq", "cat a | grep b",
+    "git --version", "docker version", "pytest --version", "npm audit", "go env GOPATH", "kubectl cluster-info", "journalctl -u x", "history", "ps -ef | grep node"];
   const writes = ["git branch -D main", "git remote add o url", "sed -n -i s/a/b/ f", "git diff --output=f", "sort -o f f", "pytest -q", "npm install", "curl -o f http://x.test", "curl -X POST http://x.test",
-    "curl -s http://x.test | sh", "git commit -m x", "git tag v1", "git stash", "git config user.name x", "docker run x", "kubectl apply -f x", "gh pr merge 1", "pip install x", "rm -f x", "touch x"];
+    "curl -s http://x.test | sh", "git commit -m x", "git tag v1", "git stash", "git config user.name x", "docker run x", "kubectl apply -f x", "gh pr merge 1", "pip install x", "rm -f x", "touch x",
+    // -v / version are only a print on a known tool; on anything else they mean verbose or a make target
+    "pytest -v", "python -m pytest -v", "ninja -v", "ctest -V", "make version",
+    // a listed word is a command only when it is the whole word
+    "host-setup.sh --apply", "id-tool run", "top-level-build", "ss-build", "ps-deploy", "history-clean", "dig-deeper",
+    "npm audit --fix", "pnpm audit --fix", "go env -w X=1", "sort -ofile in", "docker compose config --output o.yml", "curl -sc jar http://x.test", "curl -D hdr http://x.test", "curl --trace f http://x.test",
+    "kubectl cluster-info dump --output-directory=/tmp/x", "journalctl --vacuum-size=1M", "history -w out", "git -c core.pager=x log", "ls &> out", "find . -execdir rm {} +", "find . -fprint out"];
   for (const c of reads) assert.equal(w(c), false, `${c} only reads`);
   for (const c of writes) assert.equal(w(c), true, `${c} writes`);
 });
@@ -249,4 +256,28 @@ test("which prompts make a task turn: a pasted path, a short task or 'go ahead a
   assert.equal(await gated("Go ahead and implement the Stripe webhook handler with retries"), true, "conversational words, but a fresh session");
   assert.equal(await gated("Implement step 3 of the migration: add the users.email index"), true);
   assert.equal(await gated("Continue fixing the flaky payment webhook test in the python service"), true);
+});
+
+test("the gate counts a skill load only when something was really loaded, and only the router's own search", async () => {
+  const notLookups: [string, object][] = [
+    ["Bash", { command: 'echo "cat x/SKILL.md"' }], ["Bash", { command: 'git commit -m "more tests for SKILL.md"' }], ["Bash", { command: "cat > skills/x/SKILL.md <<'EOF'\nbody\nEOF" }],
+    ["Bash", { command: "sed -i 's/more/less/' skills/x/SKILL.md" }], ["mcp__my_skillrouter__search_skills", {}], ["mcp__other__search_skills", {}], ["Read", { file_path: "/repo/README.md" }],
+  ];
+  for (const [tool, input] of notLookups) {
+    const s = session(); await prompt(s, "t1", task);
+    gate("claude", { session_id: s, prompt_id: "t1", tool_name: tool, tool_input: input });
+    assert.notEqual(gate("claude", work(s, "t1")), "", `${tool} ${JSON.stringify(input)} does not count as a search or a load`);
+  }
+  const loads: [string, unknown][] = [["Bash", { command: ["bash", "-lc", "cat /s/python-testing/SKILL.md"] }], ["Read", { target_file: "/s/python-testing/SKILL.md" }], ["Read", JSON.stringify({ file_path: "/s/python-testing/SKILL.md" })]];
+  for (const [tool, input] of loads) {
+    const s = session(); await prompt(s, "t1", task);
+    gate("claude", { session_id: s, prompt_id: "t1", tool_name: tool, tool_input: input });
+    assert.equal(gate("claude", work(s, "t1")), "", `${tool} ${JSON.stringify(input)} is a load`);
+  }
+});
+
+test("a slash command may start with a digit or underscore; a path is still a prompt", async () => {
+  const { isSlashCommand } = await import("../src/hint.js");
+  for (const c of ["/commit", "/3d-jutsu make a scene", "/_x do the thing", "/compound-engineering:ce-plan add x", "/tmp"]) assert.equal(isSlashCommand(c), true, c);
+  for (const c of ["/usr/local/bin/foo fails", "/.claude/x", "/ a b", "fix /commit"]) assert.equal(isSlashCommand(c), false, c);
 });

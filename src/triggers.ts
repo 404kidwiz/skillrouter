@@ -126,22 +126,26 @@ export function commandsOf(line: string): string[] {
 }
 
 // Commands that only look around. A turn of these is exploration, not work worth a decision nudge or a search first.
-const READ_ONLY = /^(?:ls|ll|cat|bat|less|more|head|tail|nl|wc|rg|grep|egrep|fgrep|ag|ack|find|fd|tree|pwd|cd|echo|printf|which|type|file|stat|du|df|jq|uniq|cut|tr|diff|true|date|env|whoami|uname|ps|top|htop|lsof|netstat|ss|uptime|hostname|id|groups|nproc|vm_stat|history|printenv|sw_vers|dig|nslookup|host)\b/;
-// Commands that read unless a flag or subcommand says otherwise; each pattern is the read-only form. Git first loses its global options.
-const GIT_GLOBAL = /^git(?:\s+(?:-C\s+\S+|-c\s+\S+|--no-pager|--git-dir=\S+|--work-tree=\S+|-P))+\s+/;
+// Whole words (`ps` is not `ps-deploy`, `id` is not `id-tool`): the next character must be whitespace or the end.
+const READ_ONLY = /^(?:ls|ll|cat|bat|less|more|head|tail|nl|wc|rg|grep|egrep|fgrep|ag|ack|find|fd|tree|pwd|cd|echo|printf|which|type|file|stat|du|df|jq|uniq|cut|tr|diff|true|date|env|whoami|uname|ps|top|htop|lsof|netstat|ss|uptime|hostname|id|groups|nproc|vm_stat|printenv|sw_vers|dig|nslookup|host)(?=\s|$)/;
+// Commands that read unless a flag or subcommand says otherwise; each pattern is the read-only form. Git first loses its
+// global options (not -c: a config value can run a program).
+const GIT_GLOBAL = /^git(?:\s+(?:-C\s+\S+|--no-pager|--git-dir=\S+|--work-tree=\S+|-P))+\s+/;
+// Tools whose -v / -V / -h / `version` only print: for any other command `-v` means verbose (`pytest -v`) and `version` a target.
+const VERSIONED = "node|npm|pnpm|yarn|bun|deno|python3?|pip3?|go|cargo|rustc|ruby|java|php|docker|kubectl|gh|git|brew|uv|tsc|claude|codex|gcc|clang";
 const READ_ONLY_FORMS: RegExp[] = [
-  /^sed\s+-n\b(?!.*(?:\s-[A-Za-z]*i|--in-place))/, /^sort\b(?!.*(?:\s-[A-Za-z]*o\b|--output))/,
+  /^sed\s+-n(?=\s)(?!.*(?:\s-[A-Za-z]*i|--in-place))/, /^sort(?=\s|$)(?!.*(?:\s-[A-Za-z]*o|--output))/, /^history(?:\s+\d+)?$/,
   /^git\s+(?:status|log|diff|show|rev-parse|blame|ls-files|grep|describe|shortlog|rev-list|merge-base|cat-file|for-each-ref|ls-remote|ls-tree|name-rev|count-objects|whatchanged|check-ignore|var)\b(?!.*--output)/,
   /^git\s+branch(?:\s+(?:-a|-r|-v|-vv|-l|--all|--remotes|--verbose|--list|--show-current|--contains\s+\S+|--merged|--no-merged|--sort=\S+))*\s*$/,
   /^git\s+remote(?:\s+(?:-v|--verbose))?\s*$/, /^git\s+remote\s+(?:show|get-url)\b/, /^git\s+(?:stash\s+(?:list|show)|worktree\s+list|config\s+(?:--get\S*|--list|-l))\b/, /^git\s+tag(?:\s*$|\s+(?:-l|--list)\b)/,
-  /^\S+\s+(?:-v|-V|--version|version|--help|-h)\s*$/, /^(?:\[\[?|test)\s/,
-  /^curl\b(?!.*(?:\s-[A-Za-z]*[dFToOX]|--(?:request|data|data-\w+|form|upload-file|output|remote-name|json)\b))/,
-  /^docker\s+(?:ps|images|logs|inspect|info|stats|top|port|history|diff|search)\b/, /^docker\s+(?:network|volume|container|image|compose)\s+(?:ls|ps|logs|inspect|config|list)\b/,
-  /^kubectl\s+(?:get|describe|logs|top|explain|api-resources|api-versions|cluster-info|config\s+(?:view|get-contexts|current-context))\b/,
+  /^\S+\s+(?:--version|--help)\s*$/, new RegExp(`^(?:${VERSIONED})\\s+(?:-v|-V|-h|version)\\s*$`), /^(?:\[\[?|test)\s/,
+  /^curl(?=\s)(?!.*(?:\s-[A-Za-z]*[dFToOXcD]|--(?:request|data|data-\w+|form|upload-file|output|remote-name|json|trace|trace-ascii|stderr|cookie-jar|dump-header)\b))/,
+  /^docker\s+(?:ps|images|logs|inspect|info|stats|top|port|history|diff|search)\b/, /^docker\s+(?:network|volume|container|image|compose)\s+(?:ls|ps|logs|inspect|config|list)\b(?!.*--output)/,
+  /^kubectl\s+(?:get|describe|logs|top|explain|api-resources|api-versions|config\s+(?:view|get-contexts|current-context)|cluster-info(?!\s+dump))\b/,
   /^gh\s+(?:(?:pr|issue|run|repo|release|workflow|gist|label|project|ruleset|cache|secret|variable|codespace)\s+(?:view|list|status|checks|diff|watch)|auth\s+status|api\s+[^-\s]\S*\s*$)/,
-  /^(?:npm|pnpm|yarn|bun)\s+(?:ls|list|view|info|outdated|why|explain|root|bin|prefix|audit)\b(?!.*\sfix)/, /^npm\s+config\s+(?:get|list)\b/,
+  /^(?:npm|pnpm|yarn|bun)\s+(?:ls|list|view|info|outdated|why|explain|root|bin|prefix|audit)\b(?!.*\s(?:--)?fix)/, /^npm\s+config\s+(?:get|list)\b/,
   /^pip3?\s+(?:list|show|freeze|check)\b/, /^uv\s+(?:pip\s+(?:list|show|freeze|tree|check)|tree)\b/, /^cargo\s+(?:tree|metadata|search|locate-project)\b/,
-  /^go\s+(?:list|env|doc)\b/, /^brew\s+(?:list|info|search|outdated|deps|leaves|--prefix)\b/, /^(?:systemctl\s+(?:status|list-\S+|is-\S+|show)|launchctl\s+list|journalctl)\b/,
+  /^go\s+(?:list|doc)\b/, /^go\s+env\b(?!.*\s-[wu]\b)/, /^brew\s+(?:list|info|search|outdated|deps|leaves|--prefix)\b/, /^(?:systemctl\s+(?:status|list-\S+|is-\S+|show)|launchctl\s+list)\b/, /^journalctl\b(?!.*--(?:vacuum|rotate|flush|sync))/,
 ];
 const isReadOnly = (command: string): boolean => {
   const c = command.replace(/^\(+/, "").replace(GIT_GLOBAL, "git ");
@@ -155,7 +159,7 @@ export function isWork(action: Action | null): boolean {
   if (!action) return false;
   if (action.file || action.files?.length) return true;
   const commands = action.command ? commandsOf(action.command) : [];
-  return commands.some((c) => !(isReadOnly(c) || PS_READ_ONLY.test(c.replace(/^\(+/, ""))) || /(?<![2&])>(?!&)/.test(c) || /^find\b.*\s-(?:delete|exec)\b/.test(c));
+  return commands.some((c) => !(isReadOnly(c) || PS_READ_ONLY.test(c.replace(/^\(+/, ""))) || /(?<![2&])>(?!&)/.test(c) || /&>/.test(c) || /^find\b.*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b/.test(c));
 }
 
 /** A command names its ecosystem the way a file extension does: `pnpm test` is JavaScript, `pytest` is Python. */

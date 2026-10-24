@@ -30,7 +30,7 @@ export function isSystemText(prompt) {
 }
 /** A slash command (`/commit`, `/caveman lite`): its first word has no further slash, so a pasted path is a prompt. */
 export function isSlashCommand(prompt) {
-    return /^\/[A-Za-z][\w:.-]*(?:\s|$)/.test(prompt);
+    return /^\/\w[\w:.-]*(?:\s|$)/.test(prompt);
 }
 /**
  * A prompt that points back at the conversation rather than describing work: "what's next", "continue", "do suggestion 2",

@@ -36,7 +36,7 @@ export function isSystemText(prompt: string): boolean {
 
 /** A slash command (`/commit`, `/caveman lite`): its first word has no further slash, so a pasted path is a prompt. */
 export function isSlashCommand(prompt: string): boolean {
-  return /^\/[A-Za-z][\w:.-]*(?:\s|$)/.test(prompt);
+  return /^\/\w[\w:.-]*(?:\s|$)/.test(prompt);
 }
 
 /**

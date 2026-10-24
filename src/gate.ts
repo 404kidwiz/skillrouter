@@ -2,6 +2,7 @@ import { logUsage } from "./search.js";
 import type { AgentId } from "./paths.js";
 import { sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, isWork, shellCommand } from "./triggers.js";
+import { skillLoadOf } from "./events.js";
 import { addSearched, claimDenial, gateProgress, gatedTurn, loadedSkills } from "./state.js";
 
 /**
@@ -39,25 +40,18 @@ function actionFor(p: any) {
   return null;
 }
 
-/** The router's search_skills under the host namings (mcp__skillrouter__…, mcp__plugin_…__…, mcp_skillrouter_…, MCP:…). */
-export const ROUTER_SEARCH = /(^|_)skillrouter_{1,2}search_skills$|^MCP:search_skills$/;
-// Loading a skill counts as searching: the router's read_skill, a host's own skill tool, a read of a SKILL.md.
-const SKILL_LOAD_TOOL = /(^|_)skillrouter_{1,2}read_skill$|^MCP:read_skill$|^(?:Skill|activate_skill)$/;
-const FILE_READ_TOOL = /^(?:Read|read_file|view_file)$/;
-const SHELL_SKILL_READ = /\b(?:cat|head|tail|less|more|bat|nl|sed\s+-n)\b[^|;&\n]*SKILL\.md\b/;
+/** The router's search_skills under the host namings (mcp__skillrouter__…, mcp__plugin_…skillrouter__…, mcp_skillrouter_…, skillrouter_…, MCP:…); another server's tool of that name is not it. */
+export const ROUTER_SEARCH = /^(?:mcp__(?:plugin_[\w.-]+_)?skillrouter__|mcp_skillrouter_|skillrouter_{1,2}|MCP:)search_skills$/;
 
 /**
  * A search or a skill load, seen by the gate itself. The post-tool hook would see it too, but Codex asks the user to trust
  * each hook entry and never runs one that is not trusted yet, so the gate does not wait on another hook to learn that the
- * agent has done what it asks.
+ * agent has done what it asks. Loads use the same detector as the post-tool hook (skillLoadOf), so `echo "cat x/SKILL.md"`
+ * or writing a SKILL.md is not one.
  */
 function isLookup(p: any): boolean {
   const tool = typeof p?.tool_name === "string" ? p.tool_name : "";
-  if (ROUTER_SEARCH.test(tool) || SKILL_LOAD_TOOL.test(tool)) return true;
-  const input = p?.tool_input;
-  if (FILE_READ_TOOL.test(tool)) { const f = input?.file_path ?? input?.path; return typeof f === "string" && /(^|[\\/])SKILL\.md$/.test(f); }
-  const command = typeof input === "object" && input ? input.command ?? input.cmd : typeof p?.command === "string" ? p.command : undefined;
-  return typeof command === "string" && SHELL_SKILL_READ.test(command.slice(0, 4096));
+  return ROUTER_SEARCH.test(tool) || skillLoadOf(tool, p?.tool_input) !== null;
 }
 
 /**
