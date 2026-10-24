@@ -276,6 +276,6 @@ test("config files saved with a UTF-8 BOM (Notepad, PowerShell 5.1) still instal
 });
 
 test("the read-only check for POSIX commands is not widened by the PowerShell names", () => {
-  for (const c of ["sl commit -m x", "gc.sh", "dir/build.sh", "dir-tool run", "ft build", "fl --help", "LS"]) assert.ok(isWork({ command: c }), c);
+  for (const c of ["sl commit -m x", "gc.sh", "dir/build.sh", "dir-tool run", "ft build", "fl out.txt", "LS"]) assert.ok(isWork({ command: c }), c);
   for (const c of ["ls -la", "Get-ChildItem", "GET-CONTENT x", "dir"]) assert.ok(!isWork({ command: c }), c);
 });

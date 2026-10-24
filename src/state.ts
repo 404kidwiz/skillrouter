@@ -144,12 +144,11 @@ export function turnWindow(session: string | undefined, turn: string): { start?:
 
 /**
  * The search gate's state (see gate.ts). A "task" row is written by the prompt check when the turn's prompt describes work
- * (not a command, system text or a reply about the conversation); "searched" rows are search_skills calls; "denied" rows
- * count how often the gate has stopped a work call in the turn.
+ * (not a command or system text; a short or conversational one only while the session has not searched); "searched" rows are
+ * searches and skill loads the gate hook saw. How often it has stopped a work call is counted by claiming slots (claimDenial).
  */
 export function addGateTask(session: string | undefined, turn?: string): void { append(session, "gate.jsonl", { kind: "task", turn }); }
 export function addSearched(session: string | undefined, turn?: string, sub?: string): void { append(session, "gate.jsonl", { kind: "searched", turn, sub }); }
-export function addDenied(session: string | undefined, turn?: string): void { append(session, "gate.jsonl", { kind: "denied", turn }); }
 
 /**
  * Where the current turn started if it is a task turn the gate applies to, else undefined: the turn's marker (the one with
@@ -164,10 +163,25 @@ export function gatedTurn(session: string | undefined, turn?: string): { start: 
   return task ? { start: mark.ts } : undefined;
 }
 
-/** Whether the main thread searched since `since`, and how often the gate has denied a call since then. */
-export function gateProgress(session: string | undefined, since: number, turn?: string): { searched: boolean; denied: number } {
+/** Whether the main thread searched or loaded a skill since `since`. */
+export function gateProgress(session: string | undefined, since: number, turn?: string): { searched: boolean } {
   const g = rows(session, "gate.jsonl").filter((r) => r.ts >= since && (!turn || !r.turn || r.turn === turn)); // (ids, where the host has them: two turns can share a millisecond)
-  return { searched: g.some((r) => r.kind === "searched" && !r.sub), denied: g.filter((r) => r.kind === "denied").length };
+  return { searched: g.some((r) => r.kind === "searched" && !r.sub) };
+}
+
+/** Whether the session has searched or loaded a skill at any point: a short or conversational prompt then carries on earlier work. */
+export function sessionSearched(session: string | undefined): boolean {
+  return rows(session, "gate.jsonl").some((r) => r.kind === "searched" && !r.sub) || loadedSkills(session, undefined).size > 0;
+}
+
+/**
+ * Take one of a turn's `max` refusal slots. Each slot is a file made with O_EXCL, so hooks running at once (parallel tool
+ * calls) cannot take more than `max` between them, and a state folder that cannot be written takes none: the gate then fails
+ * open instead of refusing for ever. "stepped_aside" is returned once, to the call that finds the slots used up.
+ */
+export function claimDenial(session: string | undefined, turnKey: string, max: number): "denied" | "stepped_aside" | "spent" {
+  for (let i = 1; i <= max; i++) if (claim(session, `deny-${turnKey}-${i}`)) return "denied";
+  return claim(session, `deny-${turnKey}-over`) ? "stepped_aside" : "spent";
 }
 
 /** When this turn started (its marker, else the latest one) and how many main-thread tool calls it made. */

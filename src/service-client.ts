@@ -269,6 +269,9 @@ eval {
   }
 };
 
+# SKILLROUTER_GATE=0 is this hook's environment, not the service's: the gate is off here, whatever the service was started with.
+exit 0 if $mode eq "gate" && defined $ENV{SKILLROUTER_GATE} && $ENV{SKILLROUTER_GATE} eq "0";
+
 # A file counts as recent when it is 0 to N seconds old: one from the future (the clock was stepped back) does not.
 sub recent {
   my ($f, $secs) = @_;

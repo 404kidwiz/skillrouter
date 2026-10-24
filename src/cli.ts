@@ -61,6 +61,8 @@ async function main(argv: string[]): Promise<void> {
       const worker = cmd === "hint-worker";
       const input = await readHintInput(agent, 1500, mode ? 8 * 1024 * 1024 : 256 * 1024);
       if (input === null) return finish(mode ? "" : formatHint(agent, ""), worker);
+      // SKILLROUTER_GATE=0 is the hook's own environment: the warm service has its own and must not be asked.
+      if (mode === "gate") { const { gateEnabled } = await import("./gate.js"); if (!gateEnabled()) return finish("", worker); }
       // The warm service answers in milliseconds when it is running; any failure falls through to doing the work here.
       if (!worker) {
         const { serviceEnabled, ask, startServiceSoon } = await import("./service-client.js");

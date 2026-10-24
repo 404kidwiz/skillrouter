@@ -5,7 +5,7 @@ import { INDEX_FILE } from "./paths.js";
 import { getIndex, logUsage, search } from "./search.js";
 import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
-import { addGateTask, addShown, bareSkill, loadedSkills, markTurn } from "./state.js";
+import { addGateTask, addShown, bareSkill, loadedSkills, markTurn, sessionSearched } from "./state.js";
 import { endorsed, suppressed } from "./verdicts.js";
 const EVENT = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
 const TOOL_EVENT = { gemini: "AfterTool" }; // claude/codex: PostToolUse
@@ -27,6 +27,10 @@ export const turnOf = (p) => p?.prompt_id ?? p?.turn_id ?? p?.generation_id;
 export function isSystemText(prompt) {
     // The decision nudge itself comes back as a prompt (Cursor's follow-up, Gemini's retry, Codex's continuation).
     return /^(?:<task-notification>|<system-reminder>|\[SYSTEM NOTIFICATION|<local-command-|<command-name>|<agent-message|Another Claude session sent a message|Caveat: The messages below|# Files mentioned by the user|skillrouter: this turn did real work)/.test(prompt.trim());
+}
+/** A slash command (`/commit`, `/caveman lite`): its first word has no further slash, so a pasted path is a prompt. */
+export function isSlashCommand(prompt) {
+    return /^\/[A-Za-z][\w:.-]*(?:\s|$)/.test(prompt);
 }
 /**
  * A prompt that points back at the conversation rather than describing work: "what's next", "continue", "do suggestion 2",
@@ -74,7 +78,7 @@ export async function hint(agent, input, minRaw, k = 3) {
     // coming back as a prompt (Cursor's follow-up, Gemini's retry, Codex's continuation) belongs to the nudged turn.
     if (!/^skillrouter: this turn did real work/.test(prompt))
         markTurn(session, sessionHash(turnOf(payload)));
-    if (prompt.startsWith("/")) {
+    if (isSlashCommand(prompt)) {
         record("skipped_command");
         return formatHint(agent, "");
     }
@@ -82,13 +86,15 @@ export async function hint(agent, input, minRaw, k = 3) {
         record("skipped_system");
         return formatHint(agent, "");
     }
+    // A prompt that describes work is a task turn: the search gate (gate.ts) holds its first work call until the agent has searched.
+    // A short or conversational one ("fix the login bug", "go ahead and implement it") carries on earlier work, so it is a task
+    // turn only while the session has not searched at all.
+    if ((prompt.length >= 20 && !isConversational(prompt)) || !sessionSearched(session))
+        addGateTask(session, sessionHash(turnOf(payload)));
     if (prompt.length < 20) {
         record("skipped_short_prompt");
         return formatHint(agent, "");
     }
-    // A prompt that describes work is a task turn: the search gate (gate.ts) holds its first work call until the agent has searched.
-    if (!isConversational(prompt))
-        addGateTask(session, sessionHash(turnOf(payload)));
     let hits = [];
     let core = new Set();
     try {

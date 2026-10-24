@@ -257,7 +257,7 @@ export async function serve(): Promise<void> {
       pending.spawn = undefined;
       return out;
     }
-    if (mode === "gate") return gateEvent(agent, body);
+    if (mode === "gate") return gateEvent(agent, body, true); // the hook checked its own SKILLROUTER_GATE before asking
     if (mode === "stop") return stopEvent(agent, body);
     if (mode === "decision") return decisionEvent(agent, body);
     return null;

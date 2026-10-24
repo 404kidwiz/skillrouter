@@ -2,7 +2,7 @@ import { logUsage } from "./search.js";
 import type { AgentId } from "./paths.js";
 import { sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, isWork, shellCommand } from "./triggers.js";
-import { addDenied, gateProgress, gatedTurn, loadedSkills } from "./state.js";
+import { addSearched, claimDenial, gateProgress, gatedTurn, loadedSkills } from "./state.js";
 
 /**
  * The search gate: the rule "search the skill library before you start work" as something the agent cannot skip.
@@ -10,8 +10,9 @@ import { addDenied, gateProgress, gatedTurn, loadedSkills } from "./state.js";
  * On a turn whose prompt describes a task (the prompt check marks it, see hint.ts), the first work tool call (an edit, or a
  * command that does more than read) is refused until the agent has called search_skills or loaded a skill in that turn. The
  * refusal names what to do, so the agent's next call is the search. After two refusals in a turn the gate steps aside, so an
- * agent that cannot search (the router is down, a skill is unreadable) is never stuck. Subagents, reads, searches and
- * conversational turns are never gated; SKILLROUTER_GATE=0 turns it off.
+ * agent that cannot search (the router is down, a skill is unreadable) is never stuck. Subagents and reads are never gated;
+ * a short or conversational prompt ("continue", "go ahead") is gated only while the session has not searched at all, because it
+ * carries on earlier work; SKILLROUTER_GATE=0 turns it off.
  *
  * Measured on this machine before the gate, over a week: Claude Code made 0 searches and Codex 33, with the same written rule.
  */
@@ -38,24 +39,48 @@ function actionFor(p: any) {
   return null;
 }
 
-/** The hook's answer for one pre-tool event: a host-shaped denial, or "" to let the call through. Never throws. */
-export function gateEvent(agent: AgentId, input: string): string {
+/** The router's search_skills under the host namings (mcp__skillrouter__…, mcp__plugin_…__…, mcp_skillrouter_…, MCP:…). */
+export const ROUTER_SEARCH = /(^|_)skillrouter_{1,2}search_skills$|^MCP:search_skills$/;
+// Loading a skill counts as searching: the router's read_skill, a host's own skill tool, a read of a SKILL.md.
+const SKILL_LOAD_TOOL = /(^|_)skillrouter_{1,2}read_skill$|^MCP:read_skill$|^(?:Skill|activate_skill)$/;
+const FILE_READ_TOOL = /^(?:Read|read_file|view_file)$/;
+const SHELL_SKILL_READ = /\b(?:cat|head|tail|less|more|bat|nl|sed\s+-n)\b[^|;&\n]*SKILL\.md\b/;
+
+/**
+ * A search or a skill load, seen by the gate itself. The post-tool hook would see it too, but Codex asks the user to trust
+ * each hook entry and never runs one that is not trusted yet, so the gate does not wait on another hook to learn that the
+ * agent has done what it asks.
+ */
+function isLookup(p: any): boolean {
+  const tool = typeof p?.tool_name === "string" ? p.tool_name : "";
+  if (ROUTER_SEARCH.test(tool) || SKILL_LOAD_TOOL.test(tool)) return true;
+  const input = p?.tool_input;
+  if (FILE_READ_TOOL.test(tool)) { const f = input?.file_path ?? input?.path; return typeof f === "string" && /(^|[\\/])SKILL\.md$/.test(f); }
+  const command = typeof input === "object" && input ? input.command ?? input.cmd : typeof p?.command === "string" ? p.command : undefined;
+  return typeof command === "string" && SHELL_SKILL_READ.test(command.slice(0, 4096));
+}
+
+/**
+ * The hook's answer for one pre-tool event: a host-shaped denial, or "" to let the call through. Never throws.
+ * `enabled` is the hook's own SKILLROUTER_GATE: the warm service runs this on behalf of many hooks and must not read its own.
+ */
+export function gateEvent(agent: AgentId, input: string, enabled = gateEnabled()): string {
   try {
-    if (!gateEnabled()) return "";
+    if (!enabled) return "";
     const p = JSON.parse(input);
     if (!p || typeof p !== "object" || p.agent_id) return ""; // a subagent works from its own brief
-    if (!isWork(actionFor(p))) return "";
     const session = sessionHash(sessionOf(p));
     if (!session) return "";
     const turn = sessionHash(turnOf(p));
+    if (isLookup(p)) { addSearched(session, turn); return ""; }
+    if (!isWork(actionFor(p))) return "";
     const gated = gatedTurn(session, turn);
     if (!gated) return "";
-    const { searched, denied } = gateProgress(session, gated.start, turn);
-    if (searched || loadedSkills(session, undefined, gated.start).size) return "";
+    if (gateProgress(session, gated.start, turn).searched || loadedSkills(session, undefined, gated.start).size) return "";
     const log = (reason: string) => logUsage({ client: `hook/${agent}`, agent, tool: "gate", reason, session, prompt: turn });
-    if (denied >= GATE_MAX_DENIALS) { if (denied === GATE_MAX_DENIALS) { addDenied(session, turn); log("stepped_aside"); } return ""; }
-    addDenied(session, turn);
-    log("denied");
-    return formatGate(agent);
+    const slot = claimDenial(session, String(turn ?? gated.start), GATE_MAX_DENIALS);
+    if (slot === "denied") { log("denied"); return formatGate(agent); }
+    if (slot === "stepped_aside") log("stepped_aside");
+    return "";
   } catch { return ""; }
 }

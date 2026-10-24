@@ -391,7 +391,7 @@ export async function serve() {
             return out;
         }
         if (mode === "gate")
-            return gateEvent(agent, body);
+            return gateEvent(agent, body, true); // the hook checked its own SKILLROUTER_GATE before asking
         if (mode === "stop")
             return stopEvent(agent, body);
         if (mode === "decision")

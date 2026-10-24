@@ -121,18 +121,20 @@ export function addHook(d: any, event: string, entry: object): string {
 }
 
 // The router's read_skill is mcp__skillrouter__read_skill when installed here and mcp__plugin_…skillrouter__read_skill from the plugin.
-export const CLAUDE_TOOL_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Skill|mcp__.*skillrouter__(?:read_skill|search_skills)";
-// The search gate (gate.ts) runs before work calls only: edits and commands, never reads or searches.
-export const CLAUDE_GATE_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell";
-export const CODEX_GATE_MATCHER = "Bash|apply_patch";
-export const CURSOR_GATE_MATCHER = "Shell|Write|StrReplace|Edit|MultiEdit|ApplyPatch";
-export const GEMINI_GATE_MATCHER = "write_file|replace|run_shell_command";
+export const CLAUDE_TOOL_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Skill|mcp__.*skillrouter__read_skill";
+// The search gate (gate.ts) judges work calls (edits and commands) and also sees searches and skill loads, so it learns about
+// them itself and does not depend on the post-tool hook (Codex runs a hook only once the user has trusted it). Cursor loads a
+// skill by reading its SKILL.md, hence Read there.
+export const CLAUDE_GATE_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Skill|mcp__.*skillrouter__(?:read_skill|search_skills)";
+export const CODEX_GATE_MATCHER = "Bash|apply_patch|mcp__skillrouter__(?:read_skill|search_skills)";
+export const CURSOR_GATE_MATCHER = "Shell|Write|StrReplace|Edit|MultiEdit|ApplyPatch|Read|MCP:(?:read_skill|search_skills)";
+export const GEMINI_GATE_MATCHER = "write_file|replace|run_shell_command|activate_skill|mcp_skillrouter_(?:read_skill|search_skills)";
 // Codex reports shell and exec_command as Bash and file edits as apply_patch.
-export const CODEX_TOOL_MATCHER = "Bash|apply_patch|mcp__skillrouter__(?:read_skill|search_skills)";
+export const CODEX_TOOL_MATCHER = "Bash|apply_patch|mcp__skillrouter__read_skill";
 // Cursor's hook names (Shell, Write, MCP:<tool>) plus its edit tools' own names. Not Read: every match is a process
 // spawn, and the stop check sees SKILL.md reads in Cursor's transcript anyway.
-export const CURSOR_TOOL_MATCHER = "Shell|Write|StrReplace|Edit|MultiEdit|ApplyPatch|MCP:(?:read_skill|search_skills)";
-export const GEMINI_TOOL_MATCHER = "write_file|replace|run_shell_command|activate_skill|mcp_skillrouter_(?:read_skill|search_skills)";
+export const CURSOR_TOOL_MATCHER = "Shell|Write|StrReplace|Edit|MultiEdit|ApplyPatch|MCP:read_skill";
+export const GEMINI_TOOL_MATCHER = "write_file|replace|run_shell_command|activate_skill|mcp_skillrouter_read_skill";
 
 const mcpEntry = (agent: string, prev: any = {}) => ({ ...prev, ...MCP_CMD, env: { ...prev?.env, SKILLROUTER_AGENT: agent } });
 

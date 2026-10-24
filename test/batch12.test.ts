@@ -683,8 +683,16 @@ svc("the launcher serves the search gate through the service, and a search throu
   assert.equal(denied.status, 0, denied.stderr);
   assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
   assert.equal((await status())!.byMode.gate?.count, before + 1, "the gate request went through the service");
-  await query("claude", "tool", JSON.stringify({ session_id: sid, prompt_id: "p1", tool_name: "mcp__skillrouter__search_skills", tool_input: { query: "pytest" }, tool_use_id: "gs1" }));
+  assert.equal(sh(["claude", "gate"], { input: JSON.stringify({ session_id: sid, prompt_id: "p1", tool_name: "mcp__skillrouter__search_skills", tool_input: { query: "pytest" } }) }).stdout, "", "the search itself is let through");
   assert.equal(sh(["claude", "gate"], { input: work }).stdout, "", "after a search the same call goes through");
+  // The kill switch is the hook's own environment: the running service never sees it, and the launcher must still honour it.
+  const sid2 = "gate-svc-2";
+  await query("claude", "-", promptBody(sid2));
+  const work2 = JSON.stringify({ session_id: sid2, prompt_id: "p1", tool_name: "Bash", tool_input: { command: "pytest -q" } });
+  const countBefore = (await status())!.byMode.gate?.count ?? 0;
+  assert.equal(sh(["claude", "gate"], { input: work2, env: { SKILLROUTER_GATE: "0" } }).stdout, "", "SKILLROUTER_GATE=0 reaches past the service");
+  assert.equal((await status())!.byMode.gate?.count ?? 0, countBefore, "and the service was not even asked");
+  assert.match(sh(["claude", "gate"], { input: work2 }).stdout, /deny/, "without it the same call is refused");
   await down();
 });
 

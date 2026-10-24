@@ -132,8 +132,28 @@ export function commandsOf(line) {
         .map((s) => s.trim().replace(WRAPPERS, ""))
         .filter(Boolean);
 }
-// Commands that only look around. A turn of these is exploration, not work worth a decision nudge.
-const READ_ONLY = /^(?:ls|ll|cat|bat|less|more|head|tail|nl|wc|rg|grep|egrep|fgrep|ag|ack|find|fd|tree|pwd|cd|echo|printf|which|type|file|stat|du|df|jq|sort|uniq|cut|tr|diff|true|date|env|whoami|uname|sed\s+-n|git\s+(?:status|log|diff|show|branch|rev-parse|blame|remote|ls-files|grep))\b/;
+// Commands that only look around. A turn of these is exploration, not work worth a decision nudge or a search first.
+const READ_ONLY = /^(?:ls|ll|cat|bat|less|more|head|tail|nl|wc|rg|grep|egrep|fgrep|ag|ack|find|fd|tree|pwd|cd|echo|printf|which|type|file|stat|du|df|jq|uniq|cut|tr|diff|true|date|env|whoami|uname|ps|top|htop|lsof|netstat|ss|uptime|hostname|id|groups|nproc|vm_stat|history|printenv|sw_vers|dig|nslookup|host)\b/;
+// Commands that read unless a flag or subcommand says otherwise; each pattern is the read-only form. Git first loses its global options.
+const GIT_GLOBAL = /^git(?:\s+(?:-C\s+\S+|-c\s+\S+|--no-pager|--git-dir=\S+|--work-tree=\S+|-P))+\s+/;
+const READ_ONLY_FORMS = [
+    /^sed\s+-n\b(?!.*(?:\s-[A-Za-z]*i|--in-place))/, /^sort\b(?!.*(?:\s-[A-Za-z]*o\b|--output))/,
+    /^git\s+(?:status|log|diff|show|rev-parse|blame|ls-files|grep|describe|shortlog|rev-list|merge-base|cat-file|for-each-ref|ls-remote|ls-tree|name-rev|count-objects|whatchanged|check-ignore|var)\b(?!.*--output)/,
+    /^git\s+branch(?:\s+(?:-a|-r|-v|-vv|-l|--all|--remotes|--verbose|--list|--show-current|--contains\s+\S+|--merged|--no-merged|--sort=\S+))*\s*$/,
+    /^git\s+remote(?:\s+(?:-v|--verbose))?\s*$/, /^git\s+remote\s+(?:show|get-url)\b/, /^git\s+(?:stash\s+(?:list|show)|worktree\s+list|config\s+(?:--get\S*|--list|-l))\b/, /^git\s+tag(?:\s*$|\s+(?:-l|--list)\b)/,
+    /^\S+\s+(?:-v|-V|--version|version|--help|-h)\s*$/, /^(?:\[\[?|test)\s/,
+    /^curl\b(?!.*(?:\s-[A-Za-z]*[dFToOX]|--(?:request|data|data-\w+|form|upload-file|output|remote-name|json)\b))/,
+    /^docker\s+(?:ps|images|logs|inspect|info|stats|top|port|history|diff|search)\b/, /^docker\s+(?:network|volume|container|image|compose)\s+(?:ls|ps|logs|inspect|config|list)\b/,
+    /^kubectl\s+(?:get|describe|logs|top|explain|api-resources|api-versions|cluster-info|config\s+(?:view|get-contexts|current-context))\b/,
+    /^gh\s+(?:(?:pr|issue|run|repo|release|workflow|gist|label|project|ruleset|cache|secret|variable|codespace)\s+(?:view|list|status|checks|diff|watch)|auth\s+status|api\s+[^-\s]\S*\s*$)/,
+    /^(?:npm|pnpm|yarn|bun)\s+(?:ls|list|view|info|outdated|why|explain|root|bin|prefix|audit)\b(?!.*\sfix)/, /^npm\s+config\s+(?:get|list)\b/,
+    /^pip3?\s+(?:list|show|freeze|check)\b/, /^uv\s+(?:pip\s+(?:list|show|freeze|tree|check)|tree)\b/, /^cargo\s+(?:tree|metadata|search|locate-project)\b/,
+    /^go\s+(?:list|env|doc)\b/, /^brew\s+(?:list|info|search|outdated|deps|leaves|--prefix)\b/, /^(?:systemctl\s+(?:status|list-\S+|is-\S+|show)|launchctl\s+list|journalctl)\b/,
+];
+const isReadOnly = (command) => {
+    const c = command.replace(/^\(+/, "").replace(GIT_GLOBAL, "git ");
+    return READ_ONLY.test(c) || READ_ONLY_FORMS.some((re) => re.test(c));
+};
 // The same for PowerShell (any case): a whole word, so `gc.sh` or `dir/build.sh` are not it.
 const PS_READ_ONLY = /^(?:get-(?:content|childitem|item|location|command|date)|gci|gc|dir|select-string|sls|set-location|write-(?:output|host)|test-path|resolve-path|measure-object|where-object|select-object|sort-object|format-(?:table|list))(?=\s|$)/i;
 /** Whether an action is work: any edit, or a shell line with at least one command that does more than read. */
@@ -143,7 +163,7 @@ export function isWork(action) {
     if (action.file || action.files?.length)
         return true;
     const commands = action.command ? commandsOf(action.command) : [];
-    return commands.some((c) => !(READ_ONLY.test(c.replace(/^\(+/, "")) || PS_READ_ONLY.test(c.replace(/^\(+/, ""))) || /(?<![2&])>(?!&)/.test(c) || /^find\b.*\s-(?:delete|exec)\b/.test(c));
+    return commands.some((c) => !(isReadOnly(c) || PS_READ_ONLY.test(c.replace(/^\(+/, ""))) || /(?<![2&])>(?!&)/.test(c) || /^find\b.*\s-(?:delete|exec)\b/.test(c));
 }
 /** A command names its ecosystem the way a file extension does: `pnpm test` is JavaScript, `pytest` is Python. */
 function commandLang(command) {

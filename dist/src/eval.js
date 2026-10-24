@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { search, getIndex, duplicateKind } from "./search.js";
-import { isConversational, isSystemText, minRawFor, selectHints } from "./hint.js";
+import { isConversational, isSlashCommand, isSystemText, minRawFor, selectHints } from "./hint.js";
 import { coreIds } from "./core.js";
 import { bareSkill } from "./state.js";
 import { loadVectors } from "./embed.js";
@@ -39,7 +39,7 @@ export async function evaluate(cases, options = {}) {
     for (const c of cases) {
         const hits = await search(c.prompt.slice(0, 1000), 12, { lexicalOnly, prefer });
         // The prompt check skips commands, system turns and very short prompts before searching; so does the eval.
-        const skipped = c.prompt.trim().startsWith("/") || isSystemText(c.prompt) || c.prompt.trim().length < 20;
+        const skipped = isSlashCommand(c.prompt.trim()) || isSystemText(c.prompt) || c.prompt.trim().length < 20;
         const shown = skipped ? [] : selectHints(hits, minRaw, k, { conversational: isConversational(c.prompt) });
         const want = new Set(c.expect.map(bareSkill));
         // An expected skill, or a copy of one (same text under another name): the agent would read the same instructions.

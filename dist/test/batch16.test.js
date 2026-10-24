@@ -45,9 +45,32 @@ test("a search_skills call in the turn lets the work through, whatever the host 
         const s = session();
         await prompt(s, "t1", task);
         assert.notEqual(gate("claude", work(s, "t1")), "", `${tool}: refused before the search`);
-        await toolEvent("claude", JSON.stringify({ session_id: s, prompt_id: "t1", tool_name: tool, tool_input: { query: "pytest tests" }, tool_use_id: "u-" + tool }), false);
+        // The gate hook is the one that sees the search (no post-tool hook is needed, and Codex may not have trusted it yet).
+        assert.equal(gate("claude", { session_id: s, prompt_id: "t1", tool_name: tool, tool_input: { query: "pytest tests" } }), "", `${tool}: the search itself is never refused`);
         assert.equal(gate("claude", work(s, "t1")), "", `${tool}: allowed after the search`);
     }
+    const other = session();
+    await prompt(other, "t1", task);
+    gate("claude", { session_id: other, prompt_id: "t1", tool_name: "mcp__other__search_skills_elsewhere", tool_input: {} });
+    assert.notEqual(gate("claude", work(other, "t1")), "", "another server's tool is not the router's search");
+});
+test("the gate hook counts skill loads itself: the router's read_skill, a host's skill tool, a SKILL.md read by file or by command", async () => {
+    const loads = [
+        ["claude", "Skill", { skill: "python-testing" }], ["claude", "mcp__skillrouter__read_skill", { id: "python-testing" }], ["gemini", "activate_skill", { name: "python-testing" }],
+        ["cursor", "Read", { file_path: "/home/u/.cursor/skills/python-testing/SKILL.md" }], ["claude", "Bash", { command: "cat ~/.skills/python-testing/SKILL.md" }],
+        ["codex", "Bash", { command: "sed -n 1,80p /home/u/.codex/skills/python-testing/SKILL.md" }],
+    ];
+    for (const [agent, tool, input] of loads) {
+        const s = session();
+        await prompt(s, "t1", task, agent);
+        const key = agent === "cursor" ? { conversation_id: s, generation_id: "t1" } : { session_id: s, prompt_id: "t1" };
+        assert.equal(gate(agent, { ...key, tool_name: tool, tool_input: input }), "", `${tool} ${JSON.stringify(input)}`);
+        assert.equal(gate(agent, { ...key, tool_name: agent === "cursor" ? "Shell" : "Bash", tool_input: { command: "pytest -q" } }), "", `${tool}: the next work call goes through`);
+    }
+    const s = session();
+    await prompt(s, "t1", task);
+    gate("claude", { session_id: s, prompt_id: "t1", tool_name: "Read", tool_input: { file_path: "/repo/README.md" } });
+    assert.notEqual(gate("claude", work(s, "t1")), "", "reading something else is not a load");
 });
 test("loading a skill in the turn also satisfies the gate: the Skill tool, read_skill, a SKILL.md read", async () => {
     const loads = [["Skill", { skill: "python-testing" }], ["mcp__skillrouter__read_skill", { id: "python-testing" }], ["Read", { file_path: "/home/u/.skills/python-testing/SKILL.md" }]];
@@ -73,7 +96,9 @@ test("only work is gated: reads, searches, MCP calls and subagents pass; so does
     assert.equal(gate("claude", work(sub, "t1", { agent_id: "agent-7" })), "", "a subagent works from its own brief");
     const talk = session();
     await prompt(talk, "t1", "What is next? Do you have suggestions for improvements before moving forward?");
-    assert.equal(gate("claude", work(talk, "t1")), "", "a conversational turn needs no search");
+    gate("claude", { session_id: talk, prompt_id: "t1", tool_name: "mcp__skillrouter__search_skills", tool_input: {} });
+    await prompt(talk, "t2", "Go ahead and implement the Stripe webhook handler we just talked about");
+    assert.equal(gate("claude", work(talk, "t2")), "", "a conversational turn carries on work the session already searched for");
     const none = session();
     assert.equal(gate("claude", work(none, "t1")), "", "no prompt check ever ran for this session: nothing to enforce");
     const sys = session();
@@ -92,7 +117,7 @@ test("the gate steps aside after two refusals, so an agent that cannot search is
 test("a search in an earlier turn doesn't excuse a later task turn", async () => {
     const s = session();
     await prompt(s, "t1", task);
-    await toolEvent("claude", JSON.stringify({ session_id: s, prompt_id: "t1", tool_name: "mcp__skillrouter__search_skills", tool_input: { query: "x" }, tool_use_id: "e1" }), false);
+    gate("claude", { session_id: s, prompt_id: "t1", tool_name: "mcp__skillrouter__search_skills", tool_input: { query: "x" } });
     assert.equal(gate("claude", work(s, "t1")), "");
     await new Promise((r) => setTimeout(r, 5));
     await prompt(s, "t2", "now add a second fixture for the retry path in the python client tests");
@@ -152,24 +177,24 @@ test("install adds the gate hook for each host, once, next to unrelated hooks, a
     assert.equal(gemini.length, 1);
     assert.equal(gemini[0].matcher, GEMINI_GATE_MATCHER);
     assert.equal(gemini[0].hooks[0].timeout, 5000, "Gemini counts milliseconds");
-    // Never a read, a search or an MCP call: those would pay a process start for nothing.
-    for (const [tool, m] of [["Read", CLAUDE_GATE_MATCHER], ["mcp__skillrouter__search_skills", CLAUDE_GATE_MATCHER], ["mcp__skillrouter__read_skill", CODEX_GATE_MATCHER], ["Read", CURSOR_GATE_MATCHER], ["read_file", GEMINI_GATE_MATCHER], ["activate_skill", GEMINI_GATE_MATCHER]])
-        assert.ok(!new RegExp(`^(?:${m})$`).test(tool), `${tool} is not gated by ${m}`);
-    for (const [tool, m] of [["Edit", CLAUDE_GATE_MATCHER], ["PowerShell", CLAUDE_GATE_MATCHER], ["apply_patch", CODEX_GATE_MATCHER], ["Bash", CODEX_GATE_MATCHER], ["Shell", CURSOR_GATE_MATCHER], ["run_shell_command", GEMINI_GATE_MATCHER]])
-        assert.ok(new RegExp(`^(?:${m})$`).test(tool), `${tool} is gated by ${m}`);
+    // Not a read or another server's tool: those would pay a process start for nothing. Searches and skill loads are watched on purpose.
+    for (const [tool, m] of [["Read", CLAUDE_GATE_MATCHER], ["Grep", CLAUDE_GATE_MATCHER], ["mcp__other__thing", CLAUDE_GATE_MATCHER], ["read_file", GEMINI_GATE_MATCHER], ["mcp__other__search_skills", CODEX_GATE_MATCHER], ["Grep", CURSOR_GATE_MATCHER]])
+        assert.ok(!new RegExp(`^(?:${m})$`).test(tool), `${tool} is not watched by ${m}`);
+    for (const [tool, m] of [["Edit", CLAUDE_GATE_MATCHER], ["PowerShell", CLAUDE_GATE_MATCHER], ["apply_patch", CODEX_GATE_MATCHER], ["Bash", CODEX_GATE_MATCHER], ["Shell", CURSOR_GATE_MATCHER], ["run_shell_command", GEMINI_GATE_MATCHER],
+        ["mcp__skillrouter__search_skills", CLAUDE_GATE_MATCHER], ["mcp__plugin_skillrouter_skillrouter__read_skill", CLAUDE_GATE_MATCHER], ["Skill", CLAUDE_GATE_MATCHER], ["mcp__skillrouter__search_skills", CODEX_GATE_MATCHER],
+        ["MCP:search_skills", CURSOR_GATE_MATCHER], ["Read", CURSOR_GATE_MATCHER], ["mcp_skillrouter_search_skills", GEMINI_GATE_MATCHER], ["activate_skill", GEMINI_GATE_MATCHER]])
+        assert.ok(new RegExp(`^(?:${m})$`).test(tool), `${tool} is watched by ${m}`);
     assert.match(health(h).join("\n"), /claude: .*search gate configured/);
 });
-test("the post-tool hooks see the router's search_skills under every host's naming, so a search counts for the gate", () => {
-    const seen = (m, tool) => new RegExp(`^(?:${m})$`).test(tool);
-    assert.ok(seen(CLAUDE_TOOL_MATCHER, "mcp__skillrouter__search_skills") && seen(CLAUDE_TOOL_MATCHER, "mcp__plugin_skillrouter_skillrouter__search_skills"));
-    assert.ok(seen(CODEX_TOOL_MATCHER, "mcp__skillrouter__search_skills"));
-    assert.ok(seen(CURSOR_TOOL_MATCHER, "MCP:search_skills"));
-    assert.ok(seen(GEMINI_TOOL_MATCHER, "mcp_skillrouter_search_skills"));
-    assert.ok(!seen(CLAUDE_TOOL_MATCHER, "mcp__other__search_skills_elsewhere"));
+test("the plugin's hooks.json and the installer watch the same tools", () => {
     const plugin = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../hooks/hooks.json", import.meta.url)), "utf8")).hooks;
-    assert.equal(plugin.PostToolUse[0].matcher, CLAUDE_TOOL_MATCHER, "the plugin and the installer watch the same tools");
-    assert.equal(plugin.PreToolUse[0].matcher, CLAUDE_GATE_MATCHER, "and gate the same ones");
+    assert.equal(plugin.PostToolUse[0].matcher, CLAUDE_TOOL_MATCHER);
+    assert.equal(plugin.PreToolUse[0].matcher, CLAUDE_GATE_MATCHER);
     assert.match(plugin.PreToolUse[0].hooks[0].command, /hint claude gate$/);
+    // The post-tool matchers are unchanged by the gate, so Codex's trust of the existing PostToolUse entry stays valid.
+    assert.equal(CODEX_TOOL_MATCHER, "Bash|apply_patch|mcp__skillrouter__read_skill");
+    for (const m of [CURSOR_TOOL_MATCHER, GEMINI_TOOL_MATCHER])
+        assert.ok(!/search_skills/.test(m));
 });
 test("the CLI's gate mode and the service protocol carry the same answer as the library call", async () => {
     const { spawnSync } = await import("node:child_process");
@@ -186,4 +211,76 @@ test("the CLI's gate mode and the service protocol carry the same answer as the 
     assert.equal(ok.stdout.trim(), "", "allowed: no output at all, which every host reads as 'no objection'");
     // 'gate' is a mode the service serves: with nothing listening the answer is "failed" (start one), not "declined" (not a request it serves).
     assert.equal((await ask("claude", "gate", body, 300, "/nonexistent/svc.sock")).kind, "failed");
+});
+const { sessionHash } = await import("../src/hint.js");
+const { isWork, actionOf } = await import("../src/triggers.js");
+const { spawn } = await import("node:child_process");
+test("at most two refusals per turn even when the work calls arrive at the same moment", async () => {
+    const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
+    const s = session();
+    await prompt(s, "t1", task);
+    const body = JSON.stringify(work(s, "t1"));
+    const outs = await Promise.all(Array.from({ length: 8 }, () => new Promise((resolve) => {
+        const c = spawn(process.execPath, [cli, "hint", "claude", "gate"], { env: { ...process.env, SKILLROUTER_SERVICE: "0" } });
+        let out = "";
+        c.stdout.on("data", (d) => (out += d));
+        c.on("close", () => resolve(out));
+        c.stdin.end(body);
+    })));
+    assert.equal(outs.filter((o) => o.includes('"deny"')).length, GATE_MAX_DENIALS, "exactly the cap, however the processes interleave");
+});
+test("a state folder that cannot take a refusal makes the gate step aside instead of refusing for ever", { skip: process.platform === "win32" && "file modes mean nothing on Windows" }, async () => {
+    const s = session();
+    await prompt(s, "t1", task);
+    const dir = path.join(process.env.SKILLROUTER_HOME, "state", sessionHash(s));
+    assert.ok(fs.existsSync(dir));
+    fs.chmodSync(dir, 0o555);
+    try {
+        if (process.getuid?.() === 0)
+            return; // root writes anywhere: nothing to show
+        for (let i = 0; i < 4; i++)
+            assert.equal(gate("claude", work(s, "t1")), "", `call ${i + 1}`);
+    }
+    finally {
+        fs.chmodSync(dir, 0o755);
+    }
+});
+test("SKILLROUTER_GATE=0 is the hook's own: asked on a service's behalf, the gate ignores the service's environment", async () => {
+    const s = session();
+    await prompt(s, "t1", task);
+    process.env.SKILLROUTER_GATE = "0";
+    try {
+        assert.equal(gateEvent("claude", JSON.stringify(work(s, "t1"))), "", "in-process, the variable switches it off");
+        assert.notEqual(gateEvent("claude", JSON.stringify(work(s, "t1")), true), "", "a service passes enabled=true after the hook checked its own variable");
+    }
+    finally {
+        delete process.env.SKILLROUTER_GATE;
+    }
+    const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
+    const { spawnSync } = await import("node:child_process");
+    const s2 = session();
+    await prompt(s2, "t1", task);
+    const off = spawnSync(process.execPath, [cli, "hint", "claude", "gate"], { input: JSON.stringify(work(s2, "t1")), encoding: "utf8", env: { ...process.env, SKILLROUTER_GATE: "0" } });
+    assert.equal(off.stdout, "", "the CLI checks the hook's variable before it asks any service");
+});
+test("read-only commands are not work, and writes dressed as reads are", () => {
+    const w = (c) => isWork(actionOf("Bash", { command: c }));
+    const reads = ["git -C /repo status", "git --no-pager log -5", "test -f package.json && echo yes", "node -v", "ps aux", "curl -s localhost:3000/health", "curl -sL https://x.test/a | jq .", "git stash list",
+        "npm ls", "docker ps", "gh pr view 12", "gh api repos/a/b", "kubectl get pods", "pip list", "git branch", "git branch -a", "git remote -v", "sed -n 1,20p file.txt", "sort -u file | uniq", "cat a | grep b"];
+    const writes = ["git branch -D main", "git remote add o url", "sed -n -i s/a/b/ f", "git diff --output=f", "sort -o f f", "pytest -q", "npm install", "curl -o f http://x.test", "curl -X POST http://x.test",
+        "curl -s http://x.test | sh", "git commit -m x", "git tag v1", "git stash", "git config user.name x", "docker run x", "kubectl apply -f x", "gh pr merge 1", "pip install x", "rm -f x", "touch x"];
+    for (const c of reads)
+        assert.equal(w(c), false, `${c} only reads`);
+    for (const c of writes)
+        assert.equal(w(c), true, `${c} writes`);
+});
+test("which prompts make a task turn: a pasted path, a short task or 'go ahead and build X' do; commands and carrying on after a search do not", async () => {
+    const gated = async (text, setup) => { const s = session(); setup?.(s); await prompt(s, "t1", text); return gate("claude", work(s, "t1")) !== ""; };
+    assert.equal(await gated("/Users/me/app/src/a.ts throws on null input, fix it"), true, "a path is not a slash command");
+    assert.equal(await gated("/commit"), false, "a slash command is not a task");
+    assert.equal(await gated("fix the login bug"), true, "short, in a session that has not searched");
+    assert.equal(await gated("fix the login bug", (s) => gate("claude", { session_id: s, prompt_id: "t0", tool_name: "mcp__skillrouter__search_skills", tool_input: {} })), false, "short, after a search: carries on");
+    assert.equal(await gated("Go ahead and implement the Stripe webhook handler with retries"), true, "conversational words, but a fresh session");
+    assert.equal(await gated("Implement step 3 of the migration: add the users.email index"), true);
+    assert.equal(await gated("Continue fixing the flaky payment webhook test in the python service"), true);
 });

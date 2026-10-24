@@ -24,7 +24,7 @@ The previous commit `d686716` passed Windows Node 22, macOS Node 22 and Linux No
 | Antigravity | Current global config | Separately saved standing rule; no hook integration here | Not installed by this adapter | None |
 | OpenClaude / Hermes | Host configuration | Separately saved standing rule | No hook integration here | None |
 
-The gate fails open on every host: a crashed or timed-out gate hook lets the call through. It prints nothing when it allows, never an explicit allow, so it cannot skip a host's own approval prompts.
+The gate fails open on every host: a crashed or timed-out gate hook lets the call through. It prints nothing when it allows, never an explicit allow, so it cannot skip a host's own approval prompts. Known limits: a prompt under 20 characters or one that points back at the conversation ("continue", "go ahead") is a task turn only until the session's first search, because it carries on earlier work; a read-only command (`git status`, `docker ps`, `gh pr view`) is not work, and the list of those is finite; with both the plugin and a standalone install active, two gate hooks answer one call and use both refusals at once. Codex runs a hook only after the user trusts it in `/hooks`; the gate hook learns about searches itself, so trusting the PreToolUse entry is enough.
 
 The installer preserves host approval controls. It does not write standing instructions into user instruction files; see [persistent routing instructions](INSTALL.md#persistent-routing-instructions). Antigravity uses `~/.gemini/config/mcp_config.json`; the legacy router entry can be migrated without copying unrelated servers. Cloud-only assistants may require a distinct bridge and are not covered by these local adapters.
 
