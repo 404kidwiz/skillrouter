@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { search, getIndex, duplicateKind } from "./search.js";
-import { isSystemText, minRawFor, selectHints } from "./hint.js";
+import { isConversational, isSystemText, minRawFor, selectHints } from "./hint.js";
 import { coreIds } from "./core.js";
 import { bareSkill } from "./state.js";
 import { loadVectors } from "./embed.js";
@@ -46,14 +46,14 @@ export async function evaluate(cases: EvalCase[], options: { lexicalOnly?: boole
   const lexicalOnly = options.lexicalOnly || !vectors || vectors.indexBuiltAt !== index.builtAt;
   const minRaw = options.minRaw ?? minRawFor(index.skills.length);
   const byId = new Map(index.skills.map((s) => [s.id, s]));
-  const k = options.k ?? 4;
+  const k = options.k ?? 3;
   const prefer = coreIds();
   const rows: EvalRow[] = [];
   for (const c of cases) {
     const hits = await search(c.prompt.slice(0, 1000), 12, { lexicalOnly, prefer });
     // The prompt check skips commands, system turns and very short prompts before searching; so does the eval.
     const skipped = c.prompt.trim().startsWith("/") || isSystemText(c.prompt) || c.prompt.trim().length < 20;
-    const shown = skipped ? [] : selectHints(hits, minRaw, k);
+    const shown = skipped ? [] : selectHints(hits, minRaw, k, { conversational: isConversational(c.prompt) });
     const want = new Set(c.expect.map(bareSkill));
     // An expected skill, or a copy of one (same text under another name): the agent would read the same instructions.
     const ok = (id: string) => want.has(bareSkill(id)) || c.expect.some((e) => { const a = byId.get(e), b = byId.get(id); return !!a && !!b && duplicateKind(a, b, null) === "copy"; });

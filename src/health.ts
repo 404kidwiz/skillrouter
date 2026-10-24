@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { HOME, AGENTS, type AgentId } from "./paths.js";
+import { HOME, AGENTS, antigravityConfigPaths, type AgentId } from "./paths.js";
 import { loadIndex } from "./index.js";
 import { isRouterHook } from "./install.js";
 import { readLog } from "./report.js";
@@ -48,9 +48,9 @@ export function mcpOnlyConfiguration(target: "openclaude" | "antigravity" | "her
     try { return hermesSpec(fs.readFileSync(file(".hermes", "config.yaml"), "utf8")) ? "configured (connection unverified)" : "missing"; }
     catch { return "missing"; }
   }
-  const cfg = json(target === "openclaude" ? file(".openclaude.json") : file(".gemini", "antigravity", "mcp_config.json"));
+  const cfg = json(target === "openclaude" ? file(".openclaude.json") : antigravityConfigPaths(home).current);
   const entry = cfg.data?.mcpServers?.skillrouter;
-  return entry?.disabled === true ? "disabled" : entry && typeof entry.command === "string" ? "configured (connection unverified)" : cfg.status;
+  return entry?.disabled === true || (target === "antigravity" && entry?.enabled === false) ? "disabled" : entry && typeof entry.command === "string" ? "configured (connection unverified)" : cfg.status;
 }
 
 /** Where each host keeps its after-tool (trigger) and end-of-turn (decision nudge) hooks. OpenCode has triggers only. */
@@ -73,6 +73,22 @@ function actionHooks(agent: AgentId, home: string): string {
   } catch { return ""; } // reported by configuration()
 }
 
+/**
+ * What the semantic layer did in real prompt checks: vectors on disk mean nothing if every hook fell back to BM25.
+ * (On this machine, 2026-10-24, 80 of 142 hints ran with the layer in error for a day before anyone noticed.)
+ */
+export function semanticLine(rows: { tool?: unknown; reason?: unknown; sem?: unknown; sem_error?: unknown }[]): string {
+  const checks = rows.filter((r) => r.tool === "hint" && (r.reason === "shown" || r.reason === "no_match"));
+  if (!checks.length) return "Semantic layer in prompt checks (7 days): no prompt checks recorded";
+  const by = new Map<string, number>();
+  for (const r of checks) { const k = typeof r.sem === "string" ? r.sem : "off"; by.set(k, (by.get(k) ?? 0) + 1); }
+  const parts = [...by.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(", ");
+  const lastError = [...checks].reverse().find((r) => typeof r.sem_error === "string")?.sem_error;
+  const bad = (by.get("error") ?? 0) + (by.get("timeout") ?? 0) + (by.get("stale") ?? 0);
+  const verdict = bad > checks.length / 2 ? " — most checks fell back to BM25 alone; hints were far less precise" : "";
+  return `Semantic layer in prompt checks (7 days): ${parts}${verdict}${lastError ? `; last error: ${lastError}` : ""}`;
+}
+
 /** The warm service: running (pid, uptime, requests), not running (starts on the first hook), or switched off. */
 function serviceLine(): string {
   if (process.env.SKILLROUTER_SERVICE === "0") return "off (SKILLROUTER_SERVICE=0); hooks run on their own";
@@ -93,9 +109,9 @@ export function health(home = HOME): string[] {
     : `${vec.ids.length} skills`;
   const out = ["", `Index: ${!index ? "missing or invalid" : !Number.isFinite(age) ? "invalid timestamp" : `${index.skills.length} skills; ${Math.max(0, age).toFixed(1)} hours old${age > 168 ? " (stale: over 7 days)" : ""}`}`,
     `Vectors: ${vectors}`,
-    `Service: ${serviceLine()}`,
-    "Per-agent health (observations from last 7 days):"];
+    `Service: ${serviceLine()}`];
   const rows = readLog(7);
+  out.push(semanticLine(rows), "Per-agent health (observations from last 7 days):");
   for (const agent of AGENTS) {
     const extra = actionHooks(agent, home);
     const config = configuration(agent, home);

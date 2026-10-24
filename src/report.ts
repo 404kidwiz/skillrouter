@@ -7,7 +7,7 @@ import { bareSkill } from "./state.js";
 import { readVerdicts, suppressAfter, suppressedByAgent } from "./verdicts.js";
 
 export interface Row { ts: string; client: string; tool: string; skill?: string; found?: boolean;
-  hits?: [string, number, ...unknown[]][]; agent?: string; session?: string; hint_id?: string; reason?: string; via?: string; trigger?: string;
+  hits?: [string, number, ...unknown[]][]; sem?: string; sem_error?: string; agent?: string; session?: string; hint_id?: string; reason?: string; via?: string; trigger?: string;
   accepted?: string[]; declined?: string[]; prompt?: string }
 
 export function validRow(value: unknown): value is Row {
@@ -86,9 +86,15 @@ export function report(days = 7, rows = readLog(days)): string {
     const followed = shown.filter((h) => [...reads, ...loads].some((r) => followsHint(h, r)));
     const syntheticFollowed = shown.filter((h) => !followed.includes(h) && synthetic.some((r) => followsHint(h, r)));
     const uncorrelated = shown.filter((h) => !h.hint_id && !(h.session && h.agent));
+    const checks = hints.filter((h) => h.tool === "hint" && (h.reason === "shown" || h.reason === "no_match"));
+    const checksShown = checks.filter((h) => h.reason === "shown");
     out.push("", `Hints: ${shown.length}/${hints.length} hook invocations showed hints; ${followed.length}/${shown.length} shown hints have a correlated organic successful load within 30 minutes` +
       (syntheticFollowed.length ? ` (${syntheticFollowed.length} more were followed only by synthetic probe loads)` : "") + ".",
+      `Prompt checks: ${checksShown.length}/${checks.length} showed a hint (the rest found nothing confident enough); ${checksShown.reduce((n, h) => n + (h.hits?.length ?? 0), 0)} skills suggested in all.`,
       `Unattributable legacy hints: ${uncorrelated.length}.`);
+    const sem = new Map<string, number>();
+    for (const h of checks) { const k = typeof h.sem === "string" ? h.sem : "off"; sem.set(k, (sem.get(k) ?? 0) + 1); }
+    if (checks.length) out.push(`Semantic layer during those checks: ${[...sem.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(", ")}${(sem.get("error") ?? 0) + (sem.get("timeout") ?? 0) + (sem.get("stale") ?? 0) > checks.length / 2 ? " (mostly BM25 alone: run skillrouter doctor)" : ""}.`);
     const triggers = shown.filter((h) => h.tool === "trigger");
     if (triggers.length) out.push(`Action triggers: ${triggers.length} fired (${[...new Set(triggers.map((t) => t.trigger))].join(", ")}); ${triggers.filter((h) => followed.includes(h)).length} followed by a load.`);
   }

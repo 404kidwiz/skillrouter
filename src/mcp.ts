@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createHash } from "node:crypto";
@@ -7,7 +8,7 @@ import { coreIds } from "./core.js";
 
 /** Two tools, ~500 tokens of schema: the whole library behind one door. */
 export async function serveMcp(): Promise<void> {
-  const server = new McpServer({ name: "skillrouter", version: "0.1.0" });
+  const server = new McpServer({ name: "skillrouter", version: JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version });
   const context = () => ({ agent: process.env.SKILLROUTER_AGENT,
     session: process.env.SKILLROUTER_SESSION_ID ? createHash("sha256").update(process.env.SKILLROUTER_SESSION_ID).digest("hex") : undefined });
   const client = () => {

@@ -40,7 +40,7 @@ test("formatHint speaks each agent's dialect and stays silent when empty", () =>
   assert.equal(JSON.parse(formatHint("cursor", "x")).additional_context, "x");
 });
 
-test("index + trim round trip in a scratch home", async () => {
+test("index discovers isolated scratch-home skills", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "skillrouter-"));
   process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
   const { buildIndex } = await import("../src/index.js");

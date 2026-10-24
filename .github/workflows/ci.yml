@@ -16,15 +16,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node: [20, 22]
-        include:
-          # The hooks are developed on macOS; one run there catches platform-only breakage.
-          - os: macos-latest
-            node: 22
-          # Hooks, launcher and installer run on Windows; the warm service does not yet, so its tests skip there.
-          - os: windows-latest
-            node: 22
     steps:
       - uses: actions/checkout@v4
 
@@ -51,3 +44,6 @@ jobs:
 
       - name: Routing eval on the bundled fixture (lexical; no model download in CI)
         run: node dist/src/cli.js eval --ci
+
+      - name: Clean plugin and npm artifact smoke tests
+        run: npm run smoke:release

@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { SR_DIR } from "./paths.js";
 import { renameSyncRetry } from "./platform.js";
 // Optional semantic layer: MiniLM vectors for every skill's name + description, stored as one
@@ -12,11 +14,39 @@ const META_FILE = path.join(SR_DIR, "embeddings.json");
 /** The files the vectors live in, for anything that watches them for changes. */
 export const VECTOR_FILES = [META_FILE, VEC_FILE];
 let pipe = null; // the promise, so concurrent first calls load the model once
+/** Why the last embedding attempt failed, for doctor and the usage log; cleared by a success. */
+export let lastEmbedError;
+/**
+ * The ES entry of an installed package, by its real path. Node can reach a package through a link (pnpm's layout, a
+ * linked checkout) and, in some processes on Node 26, import it under the link path, where it cannot see its own
+ * dependencies beside it in the store ("Cannot find package 'onnxruntime-common'"). The real path always can.
+ */
+export function packageEntry(name, from = import.meta.url) {
+    const req = createRequire(from);
+    let dir = path.dirname(fs.realpathSync(req.resolve(name)));
+    const manifest = () => { try {
+        return JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+    }
+    catch {
+        return null;
+    } };
+    let pkg = manifest();
+    while (pkg?.name !== name) {
+        const up = path.dirname(dir);
+        if (up === dir)
+            throw new Error(`${name}: package root not found`);
+        dir = up;
+        pkg = manifest();
+    }
+    const pick = (x) => typeof x === "string" ? x : x && typeof x === "object" ? (pick(x.node) ?? pick(x.import) ?? pick(x.default)) : undefined;
+    const entry = pick(pkg.exports?.["."] ?? pkg.exports) ?? pkg.module ?? pkg.main ?? "index.js";
+    return pathToFileURL(path.join(dir, entry)).href;
+}
 /** Embed texts with the local model. `allowRemote` permits the one-time download (index time only, never in a hook). */
 export async function embed(texts, allowRemote = false) {
     pipe ??= (async () => {
-        const mod = await import("@huggingface/transformers").catch(() => {
-            throw new Error("Embeddings need @huggingface/transformers installed next to skillrouter (npm i @huggingface/transformers).");
+        const mod = await import(packageEntry("@huggingface/transformers")).catch((e) => {
+            throw new Error(`Embeddings need @huggingface/transformers installed next to skillrouter (npm i @huggingface/transformers): ${String(e?.message ?? e).split("\n")[0].slice(0, 160)}`);
         });
         mod.env.cacheDir = MODELS_DIR;
         mod.env.allowRemoteModels = allowRemote;
@@ -25,11 +55,13 @@ export async function embed(texts, allowRemote = false) {
     const p = pipe;
     try {
         const out = await (await p)(texts, { pooling: "mean", normalize: true });
+        lastEmbedError = undefined;
         return out.tolist();
     }
     catch (e) {
         if (pipe === p)
             pipe = null;
+        lastEmbedError = String(e?.message ?? e).split("\n")[0].slice(0, 200);
         throw e;
     }
 }
@@ -95,8 +127,8 @@ export async function semanticScores(query, budgetMs = 800, indexBuiltAt) {
         const q = await Promise.race([embed([query]), new Promise((r) => { timer = setTimeout(() => r(null), budgetMs); timer.unref(); })]);
         return q ? { scores: cosines(q[0], v), status: "on" } : { scores: null, status: "timeout" };
     }
-    catch {
-        return { scores: null, status: "error" };
+    catch (e) {
+        return { scores: null, status: "error", error: String(e?.message ?? e).split("\n")[0].slice(0, 200) };
     }
     finally {
         clearTimeout(timer);

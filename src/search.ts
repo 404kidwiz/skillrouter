@@ -7,7 +7,7 @@ import { bareSkill } from "./state.js";
 import { loadVectors, semanticScores, type Vectors } from "./embed.js";
 
 /** `similar`: skills folded into this one by meaning alone, named so a distinct sibling (reply / reply-all) is never lost. */
-export interface Hit { skill: SkillEntry; score: number; raw: number; matched: number; cos?: number; similar?: string[] }
+export interface Hit { skill: SkillEntry; score: number; raw: number; matched: number; /** matched words rare in the library (absent on hits built by hand) */ specific?: number; cos?: number; similar?: string[] }
 
 /**
  * `known`: skills (bare names) already shown or loaded; they are left out, and so are their duplicates.
@@ -43,6 +43,7 @@ export async function search(query: string, k = 5, options: SearchOptions = {}):
   const scores = new Map(lexical.map((h) => [h.id, h.score]));
   const raws = new Map(lexical.map((h) => [h.id, h.raw]));
   const matched = new Map(lexical.map((h) => [h.id, h.matched]));
+  const specific = new Map(lexical.map((h) => [h.id, h.specific]));
   const sem = options.semantic !== undefined ? options.semantic : options.lexicalOnly ? null : (await semanticScores(query, 800, index.builtAt)).scores;
   if (sem) {
     const top = [...sem.entries()].sort((a, b) => b[1] - a[1]).slice(0, k * 2);
@@ -92,7 +93,7 @@ export async function search(query: string, k = 5, options: SearchOptions = {}):
   }
   return kept.map(({ skill, score, ref, similar }) => ({ skill, score: Math.round(score * 1000) / 1000, raw: Math.round((raws.get(ref) ?? 0) * 100) / 100,
     // A skill missing from the vectors keeps cos undefined, so the lexical gate still judges it.
-    matched: matched.get(ref) ?? 0, cos: sem?.has(ref) ? Math.round(sem.get(ref)! * 1000) / 1000 : undefined,
+    matched: matched.get(ref) ?? 0, specific: specific.get(ref) ?? 0, cos: sem?.has(ref) ? Math.round(sem.get(ref)! * 1000) / 1000 : undefined,
     ...(similar.length ? { similar: similar.slice(0, 3) } : {}) }));
 }
 

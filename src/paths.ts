@@ -10,6 +10,14 @@ export const LIBRARY_DIR = path.join(SR_DIR, "library");
 export const CORE_DIR = path.join(SR_DIR, "core");
 export const BACKUP_DIR = path.join(SR_DIR, "backups");
 
+/** Current Antigravity CLI/IDE config, plus former locations used only to migrate this router's entry. */
+export function antigravityConfigPaths(home = HOME): { current: string; legacy: string[] } {
+  return {
+    current: path.join(home, ".gemini", "config", "mcp_config.json"),
+    legacy: ["antigravity", "antigravity-ide"].map((dir) => path.join(home, ".gemini", dir, "mcp_config.json")),
+  };
+}
+
 export type AgentId = "claude" | "codex" | "cursor" | "gemini" | "opencode";
 export const AGENTS: AgentId[] = ["claude", "codex", "cursor", "gemini", "opencode"];
 

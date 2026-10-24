@@ -42,6 +42,8 @@ export function expand(tokens) {
 }
 /** Bump when `tokenize` changes; an index built by an older one is re-stemmed at load. */
 export const TOKENIZER_VERSION = 2;
+/** Document-frequency share under which a term counts as specific (calibrated on a 4,500-skill library, 2026-10-24). */
+export const SPECIFIC_DF = 0.02;
 export class BM25 {
     k1;
     b;
@@ -61,20 +63,31 @@ export class BM25 {
         }
         this.avgLen = this.docs.reduce((s, d) => s + d.len, 0) / Math.max(1, this.docs.length);
     }
-    /** score = relative to the best hit (0..1); raw = BM25 sum; matched = distinct query terms found in the doc. */
+    /**
+     * A term in under 2% of the library names a topic; "test", "fix", "skill" or "review" are in far more and name nothing.
+     * In a small library a term in one or two skills (a skill and its copy) is specific whatever share that is.
+     */
+    isSpecific(term) { const df = this.df.get(term) ?? 0; return df <= 2 || df / Math.max(1, this.docs.length) < SPECIFIC_DF; }
+    /**
+     * score = relative to the best hit (0..1); raw = BM25 sum; matched = distinct query terms found in the doc;
+     * specific = how many of those are rare in the library (see isSpecific): the words that make a match mean something.
+     */
     search(query, k = 5) {
         const original = [...new Set(tokenize(query))];
         const q = expand(original);
         const n = this.docs.length;
         const out = [];
         for (const d of this.docs) {
-            let s = 0, matched = 0, inName = 0;
+            let s = 0, matched = 0, inName = 0, specific = 0;
             for (const t of q) {
                 const f = d.tf.get(t);
                 if (!f)
                     continue;
-                if (original.includes(t))
-                    matched++; // synonyms score but don't count as a match the prompt made itself
+                if (original.includes(t)) {
+                    matched++;
+                    if (this.isSpecific(t))
+                        specific++;
+                } // synonyms score but don't count as a match the prompt made itself
                 const idf = Math.log(1 + (n - (this.df.get(t) ?? 0) + 0.5) / ((this.df.get(t) ?? 0) + 0.5));
                 // A synonym is a weaker signal than the prompt's own word.
                 s += (original.includes(t) ? 1 : 0.6) * idf * (f * (this.k1 + 1)) / (f + this.k1 * (1 - this.b + (this.b * d.len) / this.avgLen));
@@ -85,11 +98,11 @@ export class BM25 {
             if (inName)
                 s *= 1 + 0.25 * Math.min(inName, 3);
             if (s > 0)
-                out.push({ id: d.id, score: s, matched });
+                out.push({ id: d.id, score: s, matched, specific });
         }
         out.sort((a, b) => b.score - a.score);
         // Normalize to 0..1 against the best hit so thresholds mean the same thing across queries.
         const top = out[0]?.score ?? 1;
-        return out.slice(0, k).map((h) => ({ id: h.id, score: h.score / top, raw: h.score, matched: h.matched }));
+        return out.slice(0, k).map((h) => ({ id: h.id, score: h.score / top, raw: h.score, matched: h.matched, specific: h.specific }));
     }
 }

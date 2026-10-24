@@ -13,6 +13,8 @@ const USAGE = `skillrouter — a big skill library without the context bloat
                                           don't link a core skill for agents that already have it (e.g. via a plugin)
   skillrouter trim [agents] [--apply] [--keep NAME]...
                                           move everything except core out of agent folders (dry run by default)
+  skillrouter restore <manifest.json> [--apply]
+                                          restore what trim removed, skill by skill (dry run; skips and lists skills changed since)
   skillrouter install <agent>...         wire MCP + hooks: claude codex cursor gemini opencode; MCP only: openclaude antigravity hermes
   skillrouter eval [-v] [--ci]           routing quality on the bundled fixture (what CI runs)
   skillrouter eval --live [file] [--lexical] [-v] [--ci]
@@ -179,11 +181,35 @@ async function main(argv) {
             const s = trim(agentsFrom(args), apply, keep);
             console.log(`${apply ? "Applied" : "Dry run"}: move ${s.moved} folders, re-link ${s.linked} links, drop ${s.dangling} broken links, keep ${s.kept}, ${s.conflicts} same-name conflicts kept under library/.conflicts`);
             if (apply) {
+                console.log("Restore manifest: " + s.manifest);
                 console.log("Backups:\n  " + s.backups.join("\n  "));
                 console.log("Next: skillrouter index && skillrouter core sync");
             }
             else
                 console.log("Nothing changed. Re-run with --apply.");
+            break;
+        }
+        case "restore": {
+            const { restore } = await import("./restore.js");
+            const path = await import("node:path");
+            const apply = flag(args, "--apply");
+            if (args.length !== 1 || !args[0] || args[0].startsWith("-"))
+                throw new Error("usage: skillrouter restore <manifest.json> [--apply]");
+            const s = restore(args[0], apply);
+            console.log(`${apply ? "Applied" : "Dry run"}: ${s.missing} missing entries, ${s.unchanged} unchanged, ${s.restored} restored across ${s.sources.length} agent folders.`);
+            if (s.kept)
+                console.log(`Left alone: ${s.kept} entr${s.kept === 1 ? "y" : "ies"} trim kept in place (your later edits or deletions of them stand).`);
+            if (s.conflicts.length) {
+                // Every changed skill, not just the first: each is kept exactly as it is now, and the rest is restored.
+                console.log(`${apply ? "Skipped" : "Will skip"} ${s.conflicts.length} skill${s.conflicts.length === 1 ? "" : "s"} that changed since the trim (current version kept, nothing overwritten):`);
+                for (const c of s.conflicts)
+                    console.log(`  ${path.join(c.source, c.name)}  (differs: ${c.paths.slice(0, 3).join(", ")}${c.paths.length > 3 ? `, and ${c.paths.length - 3} more` : ""})`);
+                console.log("To restore one of them, move the current copy aside and run restore again.");
+            }
+            if (!apply)
+                console.log("Nothing changed. Re-run with --apply.");
+            else
+                console.log("Restored to original agent folders. Re-run skillrouter index if needed.");
             break;
         }
         case "install": {

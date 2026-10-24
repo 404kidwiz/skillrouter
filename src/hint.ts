@@ -31,7 +31,17 @@ export const turnOf = (p: any): unknown => p?.prompt_id ?? p?.turn_id ?? p?.gene
 /** Host- and harness-generated turns (notifications, subagent hand-backs, command echoes) are not the user's task. */
 export function isSystemText(prompt: string): boolean {
   // The decision nudge itself comes back as a prompt (Cursor's follow-up, Gemini's retry, Codex's continuation).
-  return /^(?:<task-notification>|<system-reminder>|\[SYSTEM NOTIFICATION|<local-command-|<command-name>|<agent-message|Another Claude session sent a message|Caveat: The messages below|skillrouter: this turn did real work)/.test(prompt.trim());
+  return /^(?:<task-notification>|<system-reminder>|\[SYSTEM NOTIFICATION|<local-command-|<command-name>|<agent-message|Another Claude session sent a message|Caveat: The messages below|# Files mentioned by the user|skillrouter: this turn did real work)/.test(prompt.trim());
+}
+
+/**
+ * A prompt that points back at the conversation rather than describing work: "what's next", "continue", "do suggestion 2",
+ * "go ahead with your recommendations", "fix both". Its words name the conversation, not a task, so a skill match on
+ * them is a coincidence unless the meaning is unmistakable (see selectHints). Measured 2026-10-24 on 57 real prompts:
+ * 20 were of this kind, and the hints they got were accepted once.
+ */
+export function isConversational(prompt: string): boolean {
+  return /\b(what'?s next|next steps?|continue|carry on|go ahead|move forward|proceed|your (recommendations?|suggestions?|plan|proposal|review|findings)|(suggestion|item|step|option|recommendation|point|phase|stage)s? \d|the (first|second|third|last) one|as (discussed|planned|above|before|suggested)|do (it|that|this|all|both|them)|yes[,.]? (build|do|go|fix|implement|proceed|start)|fix (both|these|those|it|that|them)|sounds? good|looks? good|that works)\b/i.test(prompt);
 }
 
 /**
@@ -46,14 +56,14 @@ export function minRawFor(skills: number): number {
 }
 
 /** Reads the hook JSON on stdin, prints the agent-specific hook output. Never blocks a prompt. */
-export async function hint(agent: AgentId, input: string, minRaw?: number, k = 4): Promise<string> {
+export async function hint(agent: AgentId, input: string, minRaw?: number, k = 3): Promise<string> {
   const started = performance.now();
   const hint_id = randomUUID();
   let payload: Record<string, unknown> = {};
   let semStatus: string | undefined;
   const record = (reason: string, hits: Hit[] = []) => logUsage({
     client: `hook/${agent}`, agent, tool: "hint", hint_id, reason, session: sessionHash(sessionOf(payload)), prompt: sessionHash(turnOf(payload)),
-    sem: semStatus, duration_ms: Math.round(performance.now() - started), hits: hits.map((h) => [h.skill.id, h.score, h.raw, h.cos ?? null]),
+    sem: semStatus, ...(payload.sem_error ? { sem_error: payload.sem_error } : {}), duration_ms: Math.round(performance.now() - started), hits: hits.map((h) => [h.skill.id, h.score, h.raw, h.cos ?? null]),
   });
   try {
     const parsed = JSON.parse(input);
@@ -79,7 +89,8 @@ export async function hint(agent: AgentId, input: string, minRaw?: number, k = 4
     const loaded = loadedSkills(session, undefined); // already in context this session: not hinted again
     core = coreIds();
     // Loaded skills and those agents keep declining (verdicts.json) are not offered.
-    hits = selectHints(await search(query, 12, { semantic: sem.scores, known: new Set([...loaded, ...suppressed(agent)]), prefer: core }), minRaw, k);
+    if (sem.status === "error") payload = { ...payload, sem_error: sem.error };
+    hits = selectHints(await search(query, 12, { semantic: sem.scores, known: new Set([...loaded, ...suppressed(agent)]), prefer: core }), minRaw, k, { conversational: isConversational(prompt) });
   } catch {
     record(fs.existsSync(INDEX_FILE) ? "index_error" : "missing_index");
     return formatHint(agent, "");
@@ -92,22 +103,37 @@ export async function hint(agent: AgentId, input: string, minRaw?: number, k = 4
 }
 
 /**
- * Which candidates become a hint. With the semantic layer: a skill passes on strong meaning alone
- * (cosine >= 0.45) or on words and meaning together (cosine >= 0.20 and cosine + raw/100 >= 0.52);
- * calibrated 2026-10-23 on 16 labeled prompts, it drops every labeled junk hit but one name collision.
- * Without it: the lexical gate. Either way only described skills, near the best one, at most k.
+ * Which candidates become a hint. A hint costs context on every prompt, so only a confident match is shown; the
+ * agent's own search_skills remains the path for everything weaker.
+ *
+ * With the semantic layer, a skill passes on meaning alone (cosine >= 0.5), or on meaning plus words that mean
+ * something (cosine >= 0.4 with two or more specific words matched and the lexical floor). A conversational prompt
+ * ("what's next", "do suggestion 2") passes only on unmistakable meaning (cosine >= 0.55): its words name the
+ * conversation, not a task. Without the layer: the lexical floor, two matched words, one of them specific; nothing on
+ * a conversational prompt. Candidates stay within a margin of the best one (0.12 in cosine, 15% in BM25), at most k.
+ *
+ * Calibrated 2026-10-24 on 57 real prompts from this machine's hosts (48 got a hint before, 15 after; hints on
+ * prompts that needed none fell from 29 to 9) and the bundled fixture (recall and precision unchanged).
  */
-export function selectHints(hits: Hit[], minRaw: number, k: number): Hit[] {
+export function selectHints(hits: Hit[], minRaw: number, k: number, options: { conversational?: boolean } = {}): Hit[] {
   const described = hits.filter((h) => h.skill.description.trim().length >= 20);
   const semantic = described.some((h) => h.cos !== undefined);
+  const specific = (h: Hit) => h.specific ?? h.matched; // (a hit built without the count: every matched word counts)
+  const lexical = (h: Hit) => h.matched >= 2 && h.raw >= minRaw && specific(h) >= 1;
+  if (!semantic) {
+    if (options.conversational) return [];
+    const passing = described.filter(lexical).sort((a, b) => b.raw - a.raw);
+    const top = passing[0]?.raw ?? 0;
+    return passing.filter((h) => h.raw >= 0.85 * top).slice(0, k);
+  }
   // A hit without a vector (new since the last embedding run) is judged by the lexical gate, on a comparable scale.
-  const strength = (h: Hit) => (!semantic ? h.raw : h.cos !== undefined ? h.cos + h.raw / 100 : h.raw / 100 + 0.25);
+  const strength = (h: Hit) => (h.cos !== undefined ? h.cos : Math.min(0.5, h.raw / 100 + 0.25));
   const passes = (h: Hit) => h.cos === undefined
-    ? h.matched >= 2 && h.raw >= minRaw
-    : h.cos >= 0.45 || (h.cos >= 0.2 && h.matched >= 1 && strength(h) >= 0.52);
+    ? lexical(h) && !options.conversational
+    : options.conversational ? h.cos >= 0.55 : h.cos >= 0.5 || (h.cos >= 0.4 && specific(h) >= 2 && h.raw >= minRaw);
   const passing = described.filter(passes).sort((a, b) => strength(b) - strength(a));
   const top = passing[0] ? strength(passing[0]) : 0;
-  return passing.filter((h) => strength(h) >= (semantic ? 0.8 : 0.85) * top).slice(0, k);
+  return passing.filter((h) => strength(h) >= top - 0.12).slice(0, k);
 }
 
 /** The hint the model reads: a required decision, each candidate's trigger, and the exact way to load it. */

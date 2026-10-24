@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { HOME, SR_DIR, AGENTS, type AgentId } from "./paths.js";
+import { HOME, SR_DIR, AGENTS, antigravityConfigPaths, type AgentId } from "./paths.js";
 import { PERL_CLIENT, socketPath } from "./service-client.js";
 import { NO_WINDOW, fwd, hookPrefix, launcherFile, parseJson, renameSyncRetry, windowsLauncher, type Platform } from "./platform.js";
 
@@ -191,9 +191,23 @@ export function install(agent: InstallTarget, home = HOME, platform: Platform = 
     case "openclaude":
       out.push(patchJson(path.join(home, ".openclaude.json"), (d) => { (d.mcpServers ??= {}).skillrouter = { type: "stdio", ...mcpEntry(agent, d.mcpServers.skillrouter) }; return "skillrouter MCP set (no hooks on this host)"; }));
       break;
-    case "antigravity":
-      out.push(patchJson(path.join(home, ".gemini", "antigravity", "mcp_config.json"), (d) => { (d.mcpServers ??= {}).skillrouter = mcpEntry(agent, d.mcpServers.skillrouter); return "skillrouter MCP set (no hooks on this host)"; }));
+    case "antigravity": {
+      const config = antigravityConfigPaths(home);
+      out.push(patchJson(config.current, (d) => {
+        let previous = d.mcpServers?.skillrouter;
+        let migrated: string | undefined;
+        // Never copy unrelated servers or replace a current entry with stale legacy settings.
+        if (previous === undefined) for (const file of config.legacy) {
+          try {
+            const entry = parseJson(fs.readFileSync(file, "utf8"))?.mcpServers?.skillrouter;
+            if (entry && typeof entry === "object" && !Array.isArray(entry)) { previous = entry; migrated = file; break; }
+          } catch { /* missing/invalid legacy files aren't authoritative */ }
+        }
+        (d.mcpServers ??= {}).skillrouter = mcpEntry(agent, previous);
+        return `skillrouter MCP set (no hooks on this host)${migrated ? `; migrated router settings from ${migrated} (legacy file retained)` : ""}`;
+      }));
       break;
+    }
     case "hermes":
       out.push(installHermes(home));
       break;

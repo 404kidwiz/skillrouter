@@ -30,8 +30,9 @@ test("system-generated turns are never treated as the user's task", () => {
 });
 test("semantic gate: strong meaning passes alone; words need meaning too; junk with matching words is dropped", () => {
     const h = (id, raw, matched, cos) => ({ skill: { id, name: id, description: "Use when doing a specific kind of work", path: "/p", root: "/r", tokens: [] }, score: 1, raw, matched, cos });
-    const picked = selectHints([h("strong-meaning", 5, 0, 0.6), h("words-and-meaning", 30, 3, 0.31), h("name-collision", 26, 2, 0.12), h("weak", 15, 2, 0.25)], 20, 4).map((x) => x.skill.id);
-    assert.deepEqual(picked, ["strong-meaning", "words-and-meaning"]);
+    const picked = selectHints([h("strong-meaning", 5, 0, 0.6), h("words-and-meaning", 30, 3, 0.52), h("words-weak-meaning", 30, 3, 0.31), h("name-collision", 26, 2, 0.12), h("weak", 15, 2, 0.25)], 20, 4).map((x) => x.skill.id);
+    assert.deepEqual(picked, ["strong-meaning", "words-and-meaning"], "matching words without meaning (0.31) are a collision, not a hint");
+    assert.deepEqual(selectHints([h("strong-meaning", 5, 0, 0.6), h("words-and-meaning", 30, 3, 0.52)], 20, 4, { conversational: true }).map((x) => x.skill.id), ["strong-meaning"], "a prompt about the conversation needs unmistakable meaning");
     // Without vectors, the lexical gate applies.
     const lex = (id, raw) => ({ skill: { id, name: id, description: "Use when doing a specific kind of work", path: "/p", root: "/r", tokens: [] }, score: 1, raw, matched: 2 });
     assert.deepEqual(selectHints([lex("a", 30), lex("b", 10)], 20, 4).map((x) => x.skill.id), ["a"]);

@@ -245,18 +245,30 @@ export function ping(sock = socketPath(), timeoutMs = 400) {
         if (process.platform === "win32" && !key)
             return resolve("dead");
         const nonce = randomBytes(16).toString("hex");
+        let head = Buffer.alloc(0);
         const c = net.connect(sock);
         const timer = setTimeout(() => finish("hung"), timeoutMs);
         c.on("error", () => finish("dead"));
         c.on("connect", () => c.write(key ? `${PROTOCOL} - hello ${nonce}\n` : `${PROTOCOL} - status 0\n`));
         c.on("data", (d) => {
-            const line = d.toString("latin1").split("\n")[0];
+            if (done)
+                return;
+            // A write may arrive in any number of chunks. Bound only the header, not the status body after it.
+            const nl = d.indexOf(10);
+            const part = nl < 0 ? d : d.subarray(0, nl);
+            if (head.length + part.length > 128)
+                return finish("dead");
+            head = Buffer.concat([head, part]);
+            if (nl < 0)
+                return;
+            const line = head.toString("latin1");
             if (!key)
-                return finish(line.startsWith("OK ") ? "alive" : "dead");
+                return finish(/^OK \d{1,9}$/.test(line) ? "alive" : "dead");
             const m = /^HELLO ([0-9a-f]{64})$/.exec(line);
             finish(m && timingSafeEqual(Buffer.from(m[1]), Buffer.from(serverProof(key, nonce))) ? "alive" : "dead");
         });
         c.on("end", () => finish("dead"));
+        c.on("close", () => finish("dead"));
     });
 }
 /** What `doctor` can say without a round trip: the pid and snapshot the service keeps under run/. */

@@ -3,7 +3,7 @@ import { parseJson } from "./platform.js";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { HOME } from "./paths.js";
+import { HOME, antigravityConfigPaths } from "./paths.js";
 import { INSTALL_TARGETS, type InstallTarget } from "./install.js";
 
 export interface McpSpec { command: string; args: string[]; env: Record<string, string>; disabled?: boolean }
@@ -59,7 +59,7 @@ export function mcpSpec(target: InstallTarget, home = HOME): McpSpec | null {
     case "gemini": return norm(json(f(".gemini", "settings.json"))?.mcpServers?.skillrouter);
     case "opencode": return norm(json(f(".config", "opencode", "opencode.json"))?.mcp?.skillrouter);
     case "openclaude": return norm(json(f(".openclaude.json"))?.mcpServers?.skillrouter);
-    case "antigravity": return norm(json(f(".gemini", "antigravity", "mcp_config.json"))?.mcpServers?.skillrouter);
+    case "antigravity": return norm(json(antigravityConfigPaths(home).current)?.mcpServers?.skillrouter);
     case "codex": { const t = read(f(".codex", "config.toml")); return t === null ? null : codexSpec(t); }
     case "hermes": { const y = read(f(".hermes", "config.yaml")); return y === null ? null : hermesSpec(y); }
   }

@@ -16,15 +16,19 @@ Only a small core of skills is preloaded in this session. The full library is be
 
 skillrouter attaches "Skill check (skillrouter)" notes: on the user's prompt, and mid-task when what you do (editing tests, a Dockerfile, a migration; running docker, kubectl, git rebase) points at a skill. Judge each candidate by its "when" line; load the ones that fit exactly as the note says, copying its `hint_id` into `read_skill` so reporting can credit the hint. If a turn did real work after a note without loading a skill or writing the `Skills:` line, the Stop hook sends it back once to decide. A load is not evidence that the skill was used.
 
-## Maintenance commands (run with Bash)
+## Maintenance commands (run with the host shell)
+
+Use the installed `skillrouter` binary. For an unpublished source checkout without a global binary, run `node /absolute/path/to/skillrouter/dist/src/cli.js` with the same arguments; do not fetch an unpublished package with npx.
 
 | Need | Command |
 |---|---|
-| See what each agent preloads and what it costs | `npx -y skillrouter doctor` |
-| Rebuild the index after adding skills | `npx -y skillrouter index` |
-| Review the core list / add / remove | `npx -y skillrouter core list` / `core add <id>` / `core remove <id>` |
-| Promote often-read skills to core | `npx -y skillrouter core suggest` then `core add …` then `core sync` |
-| Move the long tail out of agent folders (dry run first) | `npx -y skillrouter trim` then `trim --apply` |
-| Usage and whether hints helped | `npx -y skillrouter report 7` |
+| See what each agent preloads and what it costs | `skillrouter doctor` |
+| Rebuild the index after adding skills | `skillrouter index` |
+| Review the core list / add / remove | `skillrouter core list` / `core add <id>` / `core remove <id>` |
+| Promote often-read skills to core | `skillrouter core suggest` then `core add …` then `core sync` |
+| Move the long tail out of agent folders (dry run first) | `skillrouter trim` then `trim --apply` |
+| Usage and whether hints helped | `skillrouter report 7` |
 
-`trim --apply` tars each folder into `~/.skillrouter/backups/` first and writes a RESTORE file; nothing is deleted except broken symlinks. Always show the dry-run numbers and get a yes before `--apply`.
+`trim --apply` tars each folder into `~/.skillrouter/backups/` first and writes a JSON restore manifest; nothing is deleted except broken symlinks. Always show the dry-run numbers and get a yes before `--apply`.
+
+Restore from the JSON manifest with `skillrouter restore "<manifest.json>"` (dry run), then `--apply` only when authorized. It brings back what trim removed, skill by skill, keeps identical files, and skips and lists skills that changed since the trim; it never overwrites. Do not delete agent folders to restore.
