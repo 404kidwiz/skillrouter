@@ -5,7 +5,7 @@ import { INDEX_FILE } from "./paths.js";
 import { getIndex, logUsage, search } from "./search.js";
 import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
-import { addShown, bareSkill, loadedSkills, markTurn } from "./state.js";
+import { addGateTask, addShown, bareSkill, loadedSkills, markTurn } from "./state.js";
 import { endorsed, suppressed } from "./verdicts.js";
 const EVENT = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
 const TOOL_EVENT = { gemini: "AfterTool" }; // claude/codex: PostToolUse
@@ -86,6 +86,9 @@ export async function hint(agent, input, minRaw, k = 3) {
         record("skipped_short_prompt");
         return formatHint(agent, "");
     }
+    // A prompt that describes work is a task turn: the search gate (gate.ts) holds its first work call until the agent has searched.
+    if (!isConversational(prompt))
+        addGateTask(session, sessionHash(turnOf(payload)));
     let hits = [];
     let core = new Set();
     try {

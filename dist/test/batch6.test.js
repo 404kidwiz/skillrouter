@@ -171,7 +171,7 @@ test("install wires tool and end-of-turn hooks per host, idempotently, keeping u
         for (const a of ["codex", "cursor", "gemini", "opencode"])
             install(a, h);
     const codex = JSON.parse(fs.readFileSync(path.join(h, ".codex", "hooks.json"), "utf8")).hooks;
-    assert.deepEqual(Object.keys(codex).sort(), ["PostToolUse", "Stop", "UserPromptSubmit"]);
+    assert.deepEqual(Object.keys(codex).sort(), ["PostToolUse", "PreToolUse", "Stop", "UserPromptSubmit"]);
     assert.equal(codex.PostToolUse.length, 1);
     assert.equal(codex.PostToolUse[0].matcher, CODEX_TOOL_MATCHER);
     assert.match(codex.Stop[0].hooks[0].command, /skillrouter-hint(?:\.mjs)?['"] codex stop$/);

@@ -16,7 +16,7 @@ const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const { saveIndex, buildIndexFrom } = await import("../src/index.js");
 const { tokenize } = await import("../src/bm25.js");
-const { evaluate, readCases, checkThresholds, addCase, DEFAULT_THRESHOLDS } = await import("../src/eval.js");
+const { evaluate, formatEval, readCases, checkThresholds, addCase, DEFAULT_THRESHOLDS } = await import("../src/eval.js");
 const { minRawFor } = await import("../src/hint.js");
 const { search } = await import("../src/search.js");
 process.on("exit", () => fs.rmSync(home, { recursive: true, force: true }));
@@ -63,6 +63,17 @@ test("evaluate: metrics per case, copies of an expected skill count, short promp
   // Thresholds judge a summary; this 3-skill index is too small for the precision floor itself to be meaningful.
   assert.deepEqual(checkThresholds({ ...summary, hintPrecision: 1 }), []);
   assert.match(checkThresholds({ ...summary, hintPrecision: 1, top1: 0.5, falseHints: 0.5 }).join("\n"), /top1 50% is below[\s\S]*falseHints 50% is above/);
+});
+
+test("evaluate names expected ids the index does not have, and tolerates a ~n copy suffix", async () => {
+  const cases = [
+    { prompt: "write pytest tests with fixtures and mocking for the python service", expect: ["python-testing~2"] },
+    { prompt: "add a Dockerfile with a multi-stage build for the service", expect: ["docker-pattern"] },
+  ];
+  const res = await evaluate(cases, { lexicalOnly: true });
+  assert.deepEqual(res.unknownIds, ["docker-pattern"]);
+  assert.match(formatEval(res), /Not in the index[^\n]*docker-pattern/);
+  assert.doesNotMatch(formatEval(await evaluate(cases.slice(0, 1), { lexicalOnly: true })), /Not in the index/);
 });
 
 test("eval add labels a prompt for the live set", () => {

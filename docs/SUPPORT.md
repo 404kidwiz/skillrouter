@@ -14,15 +14,17 @@ The previous commit `d686716` passed Windows Node 22, macOS Node 22 and Linux No
 
 ## Host capabilities
 
-| Host | MCP search/read | Automatic prompt hint | Action hints / final decision |
-| --- | --- | --- | --- |
-| Claude Code | Installed server or plugin | Yes | Both |
-| Codex | Installed server | Yes, after normal hook trust | Both |
-| Cursor | Installed server | Interactive mode | Both interactive; headless behavior differs |
-| Gemini CLI | Installed server | Yes | Both; final nudge retries the answer |
-| OpenCode | Installed server | Plugin message hook | Action hints; no final nudge |
-| Antigravity | Current global config | Separately saved standing rule; no hook integration here | Not installed by this adapter |
-| OpenClaude / Hermes | Host configuration | Separately saved standing rule | No hook integration here |
+| Host | MCP search/read | Automatic prompt hint | Action hints / final decision | Search gate (before the first work call) |
+| --- | --- | --- | --- | --- |
+| Claude Code | Installed server or plugin | Yes | Both | `PreToolUse` |
+| Codex | Installed server | Yes, after normal hook trust | Both | `PreToolUse`, trusted once like the other hooks |
+| Cursor | Installed server | Interactive mode | Both interactive; headless behavior differs | `preToolUse` |
+| Gemini CLI | Installed server | Yes | Both; final nudge retries the answer | `BeforeTool` |
+| OpenCode | Installed server | Plugin message hook | Action hints; no final nudge | None: the plugin API has no blocking step here |
+| Antigravity | Current global config | Separately saved standing rule; no hook integration here | Not installed by this adapter | None |
+| OpenClaude / Hermes | Host configuration | Separately saved standing rule | No hook integration here | None |
+
+The gate fails open on every host: a crashed or timed-out gate hook lets the call through. It prints nothing when it allows, never an explicit allow, so it cannot skip a host's own approval prompts.
 
 The installer preserves host approval controls. It does not write standing instructions into user instruction files; see [persistent routing instructions](INSTALL.md#persistent-routing-instructions). Antigravity uses `~/.gemini/config/mcp_config.json`; the legacy router entry can be migrated without copying unrelated servers. Cloud-only assistants may require a distinct bridge and are not covered by these local adapters.
 

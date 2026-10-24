@@ -140,6 +140,6 @@ test("install wires PostToolUse and Stop for Claude next to existing hooks", () 
     assert.equal(d.Stop.length, 2);
     assert.equal(d.PostToolUse.length, 2);
     assert.match(JSON.stringify(d.Stop), /echo mine/);
-    assert.match(d.PostToolUse[1].matcher, /mcp__\.\*skillrouter__read_skill/);
+    assert.match(d.PostToolUse[1].matcher, /mcp__\.\*skillrouter__\(\?:read_skill\|search_skills\)/);
     assert.match(d.Stop[1].hooks[0].command, /skillrouter-hint(?:\.mjs)?['"] claude stop$/);
 });

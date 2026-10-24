@@ -8,7 +8,7 @@ import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
 import { formatHint, hintText, sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, commandsOf, isWork, matchTriggers, parsedInput, shellCommand, type Action } from "./triggers.js";
-import { addLoaded, addNudge, addShown, addTool, bareSkill, claim, claimed, consumeNudge, firstUse, lastNudge, loadedSkills, release, shownAlts, shownFor, turnStats, turnWindow } from "./state.js";
+import { addLoaded, addNudge, addSearched, addShown, addTool, bareSkill, claim, claimed, consumeNudge, firstUse, lastNudge, loadedSkills, release, shownAlts, shownFor, turnStats, turnWindow } from "./state.js";
 import { addVerdict, suppressed } from "./verdicts.js";
 import { SHELL_TOOLS, fwd } from "./platform.js";
 
@@ -70,6 +70,8 @@ export function skillReadIn(script: string): string | null {
 // The router's read_skill under each host's MCP naming: mcp__skillrouter__read_skill, mcp__plugin_skillrouter_skillrouter__read_skill,
 // mcp_skillrouter_read_skill (Gemini), skillrouter_read_skill (OpenCode), MCP:read_skill (Cursor). Other servers' read_skill don't count.
 const ROUTER_READ = /(^|_)skillrouter_{1,2}read_skill$|^MCP:read_skill$/;
+/** The router's search_skills under the same host namings; a search counts for the search gate. */
+export const ROUTER_SEARCH = /(^|_)skillrouter_{1,2}search_skills$|^MCP:search_skills$/;
 
 /**
  * The skill a tool call loads, on any host: Claude's Skill tool, the router's read_skill (also inside
@@ -115,6 +117,7 @@ export async function toolEvent(agent: AgentId, input: string, inWorker: boolean
     logUsage({ client: `hook/${agent}`, agent, tool: "skill_load", via: load.via,
       skill: load.skill, hint_id: parsedInput(p?.tool_input)?.hint_id, session, sub, prompt: turn });
   }
+  if (!inWorker && once && ROUTER_SEARCH.test(tool)) addSearched(session, turn, sub);
   // `cat …/SKILL.md && pytest` is a load and work: keep going.
   if (inWorker) {
     const claimed: string[] = Array.isArray(p?._claimed) ? p._claimed : [];

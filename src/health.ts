@@ -53,12 +53,12 @@ export function mcpOnlyConfiguration(target: "openclaude" | "antigravity" | "her
   return entry?.disabled === true || (target === "antigravity" && entry?.enabled === false) ? "disabled" : entry && typeof entry.command === "string" ? "configured (connection unverified)" : cfg.status;
 }
 
-/** Where each host keeps its after-tool (trigger) and end-of-turn (decision nudge) hooks. OpenCode has triggers only. */
-const ACTION_HOOKS: Record<AgentId, { file: string[]; tool: string; stop?: string }> = {
-  claude: { file: [".claude", "settings.json"], tool: "PostToolUse", stop: "Stop" },
-  codex: { file: [".codex", "hooks.json"], tool: "PostToolUse", stop: "Stop" },
-  cursor: { file: [".cursor", "hooks.json"], tool: "postToolUse", stop: "stop" },
-  gemini: { file: [".gemini", "settings.json"], tool: "AfterTool", stop: "AfterAgent" },
+/** Where each host keeps its after-tool (trigger), end-of-turn (decision nudge) and before-tool (search gate) hooks. OpenCode has triggers only. */
+const ACTION_HOOKS: Record<AgentId, { file: string[]; tool: string; stop?: string; gate?: string }> = {
+  claude: { file: [".claude", "settings.json"], tool: "PostToolUse", stop: "Stop", gate: "PreToolUse" },
+  codex: { file: [".codex", "hooks.json"], tool: "PostToolUse", stop: "Stop", gate: "PreToolUse" },
+  cursor: { file: [".cursor", "hooks.json"], tool: "postToolUse", stop: "stop", gate: "preToolUse" },
+  gemini: { file: [".gemini", "settings.json"], tool: "AfterTool", stop: "AfterAgent", gate: "BeforeTool" },
   opencode: { file: [".config", "opencode", "plugins", "skillrouter-hints.js"], tool: "tool.execute.after" },
 };
 
@@ -69,7 +69,7 @@ function actionHooks(agent: AgentId, home: string): string {
     if (agent === "opencode") return `; triggers ${fs.readFileSync(file, "utf8").includes(spec.tool) ? "configured" : "missing (rerun install opencode)"}; no decision nudge on this host`;
     const d = parseJson(fs.readFileSync(file, "utf8"));
     const has = (ev: string) => Array.isArray(d?.hooks?.[ev]) && d.hooks[ev].some(isRouterHook);
-    return `; triggers ${has(spec.tool) ? "configured" : "missing"}; decision nudge ${has(spec.stop!) ? "configured" : "missing"}`;
+    return `; triggers ${has(spec.tool) ? "configured" : "missing"}; decision nudge ${has(spec.stop!) ? "configured" : "missing"}; search gate ${has(spec.gate!) ? "configured" : "missing"}`;
   } catch { return ""; } // reported by configuration()
 }
 

@@ -121,13 +121,18 @@ export function addHook(d: any, event: string, entry: object): string {
 }
 
 // The router's read_skill is mcp__skillrouter__read_skill when installed here and mcp__plugin_…skillrouter__read_skill from the plugin.
-export const CLAUDE_TOOL_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Skill|mcp__.*skillrouter__read_skill";
+export const CLAUDE_TOOL_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Skill|mcp__.*skillrouter__(?:read_skill|search_skills)";
+// The search gate (gate.ts) runs before work calls only: edits and commands, never reads or searches.
+export const CLAUDE_GATE_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell";
+export const CODEX_GATE_MATCHER = "Bash|apply_patch";
+export const CURSOR_GATE_MATCHER = "Shell|Write|StrReplace|Edit|MultiEdit|ApplyPatch";
+export const GEMINI_GATE_MATCHER = "write_file|replace|run_shell_command";
 // Codex reports shell and exec_command as Bash and file edits as apply_patch.
-export const CODEX_TOOL_MATCHER = "Bash|apply_patch|mcp__skillrouter__read_skill";
+export const CODEX_TOOL_MATCHER = "Bash|apply_patch|mcp__skillrouter__(?:read_skill|search_skills)";
 // Cursor's hook names (Shell, Write, MCP:<tool>) plus its edit tools' own names. Not Read: every match is a process
 // spawn, and the stop check sees SKILL.md reads in Cursor's transcript anyway.
-export const CURSOR_TOOL_MATCHER = "Shell|Write|StrReplace|Edit|MultiEdit|ApplyPatch|MCP:read_skill";
-export const GEMINI_TOOL_MATCHER = "write_file|replace|run_shell_command|activate_skill|mcp_skillrouter_read_skill";
+export const CURSOR_TOOL_MATCHER = "Shell|Write|StrReplace|Edit|MultiEdit|ApplyPatch|MCP:(?:read_skill|search_skills)";
+export const GEMINI_TOOL_MATCHER = "write_file|replace|run_shell_command|activate_skill|mcp_skillrouter_(?:read_skill|search_skills)";
 
 const mcpEntry = (agent: string, prev: any = {}) => ({ ...prev, ...MCP_CMD, env: { ...prev?.env, SKILLROUTER_AGENT: agent } });
 
@@ -144,6 +149,7 @@ export function install(agent: InstallTarget, home = HOME, platform: Platform = 
       out.push(patchJson(path.join(home, ".claude", "settings.json"), (d) => [
         addHook(d, "UserPromptSubmit", { hooks: [{ type: "command", command: `${bin} claude`, timeout: 5 }] }),
         // Action triggers + skill-load logging, and the once-per-turn decision nudge.
+        addHook(d, "PreToolUse", { matcher: CLAUDE_GATE_MATCHER, hooks: [{ type: "command", command: `${bin} claude gate`, timeout: 5 }] }),
         addHook(d, "PostToolUse", { matcher: CLAUDE_TOOL_MATCHER, hooks: [{ type: "command", command: `${bin} claude tool`, timeout: 5 }] }),
         addHook(d, "Stop", { hooks: [{ type: "command", command: `${bin} claude stop`, timeout: 5 }] }),
       ].join(", ")));
@@ -152,6 +158,7 @@ export function install(agent: InstallTarget, home = HOME, platform: Platform = 
     case "codex":
       out.push(patchJson(path.join(home, ".codex", "hooks.json"), (d) => [
         addHook(d, "UserPromptSubmit", { hooks: [{ type: "command", command: `${bin} codex`, timeout: 5 }] }),
+        addHook(d, "PreToolUse", { matcher: CODEX_GATE_MATCHER, hooks: [{ type: "command", command: `${bin} codex gate`, timeout: 5 }] }),
         addHook(d, "PostToolUse", { matcher: CODEX_TOOL_MATCHER, hooks: [{ type: "command", command: `${bin} codex tool`, timeout: 5 }] }),
         addHook(d, "Stop", { hooks: [{ type: "command", command: `${bin} codex stop`, timeout: 5 }] }),
       ].join(", ")));
@@ -161,6 +168,7 @@ export function install(agent: InstallTarget, home = HOME, platform: Platform = 
     case "cursor":
       out.push(patchJson(path.join(home, ".cursor", "hooks.json"), (d) => [
         addHook(d, "beforeSubmitPrompt", { command: `${bin} cursor` }),
+        addHook(d, "preToolUse", { command: `${bin} cursor gate`, matcher: CURSOR_GATE_MATCHER, timeout: 5 }),
         addHook(d, "postToolUse", { command: `${bin} cursor tool`, matcher: CURSOR_TOOL_MATCHER, timeout: 5 }),
         // One follow-up at most (Cursor's default allows 5); skillrouter also never nudges a turn that is itself a follow-up.
         addHook(d, "stop", { command: `${bin} cursor stop`, timeout: 5, loop_limit: 1 }),
@@ -171,6 +179,7 @@ export function install(agent: InstallTarget, home = HOME, platform: Platform = 
       out.push(patchJson(path.join(home, ".gemini", "settings.json"), (d) => {
         const h = [
           addHook(d, "BeforeAgent", { hooks: [{ type: "command", command: `${bin} gemini`, timeout: 5000 }] }),
+          addHook(d, "BeforeTool", { matcher: GEMINI_GATE_MATCHER, hooks: [{ type: "command", command: `${bin} gemini gate`, timeout: 5000 }] }),
           addHook(d, "AfterTool", { matcher: GEMINI_TOOL_MATCHER, hooks: [{ type: "command", command: `${bin} gemini tool`, timeout: 5000 }] }),
           addHook(d, "AfterAgent", { hooks: [{ type: "command", command: `${bin} gemini stop`, timeout: 5000 }] }),
         ].join(", ");

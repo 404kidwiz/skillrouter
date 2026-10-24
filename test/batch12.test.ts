@@ -672,6 +672,22 @@ svc("a lock or failure marker stamped in the future doesn't block starting", asy
   fs.rmSync(path.join(runDir(), "svc.off"), { force: true });
 });
 
+svc("the launcher serves the search gate through the service, and a search through the same service opens it", { skip: !hasPerl2 && "needs sh and perl" }, async () => {
+  writeLauncher(process.execPath, cli, launcherPath);
+  await up();
+  const sid = "gate-svc-1";
+  assert.match((await query("claude", "-", promptBody(sid)))!, /python-testing/);
+  const work = JSON.stringify({ session_id: sid, prompt_id: "p1", tool_name: "Bash", tool_input: { command: "pytest -q" } });
+  const before = (await status())!.byMode.gate?.count ?? 0;
+  const denied = sh(["claude", "gate"], { input: work });
+  assert.equal(denied.status, 0, denied.stderr);
+  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal((await status())!.byMode.gate?.count, before + 1, "the gate request went through the service");
+  await query("claude", "tool", JSON.stringify({ session_id: sid, prompt_id: "p1", tool_name: "mcp__skillrouter__search_skills", tool_input: { query: "pytest" }, tool_use_id: "gs1" }));
+  assert.equal(sh(["claude", "gate"], { input: work }).stdout, "", "after a search the same call goes through");
+  await down();
+});
+
 svc("OpenCode's hook gives up on a hung service sooner than the others", { skip: !hasPerl2 && "needs sh and perl" }, async () => {
   writeLauncher(process.execPath, cli, launcherPath);
   const time = (agent: string) => { const t0 = Date.now(); const r = sh([agent], { input: promptBody("oc-" + agent), env: { SKILLROUTER_SERVICE_TRIED: "" } }); return { ms: Date.now() - t0, ok: /python-testing|^$/.test(r.stdout) }; };

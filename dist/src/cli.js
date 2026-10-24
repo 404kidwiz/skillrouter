@@ -25,7 +25,7 @@ const USAGE = `skillrouter — a big skill library without the context bloat
   skillrouter suppress [keep|unkeep|reset] [id]...
                                           skills held back after repeated declines; keep exempts one, reset forgets counts
   skillrouter mcp                        stdio MCP server (search_skills, read_skill)
-  skillrouter hint <agent> [tool|stop]   hooks: prompt check (default), PostToolUse triggers, Stop decision
+  skillrouter hint <agent> [tool|stop|gate]  hooks: prompt check (default), PostToolUse triggers, Stop decision, PreToolUse search gate
   skillrouter service [status|start|stop|restart]
                                           the warm background service hooks talk to (starts itself; SKILLROUTER_SERVICE=0 turns it off)
   skillrouter serve [--start]            run the service in the foreground (--start: make sure one is running, then return)
@@ -81,6 +81,10 @@ async function main(argv) {
                     if (answer.kind === "failed")
                         startServiceSoon(); // not reachable: start one for the next hook (not after a mere decline)
                 }
+            }
+            if (mode === "gate") {
+                const { gateEvent } = await import("./gate.js");
+                return finish(gateEvent(agent, input), worker);
             }
             if (mode === "stop") {
                 const { stopEvent } = await import("./events.js");

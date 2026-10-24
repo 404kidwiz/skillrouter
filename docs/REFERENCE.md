@@ -154,6 +154,7 @@ Hooks can restart a stopped service. Disable service use in the relevant process
 | `SKILLROUTER_AGENT` | Usage attribution for an MCP process |
 | `SKILLROUTER_SESSION_ID` | Optional session correlation; hashed before logging |
 | `SKILLROUTER_SERVICE=0` | Disable warm-service use for that process |
+| `SKILLROUTER_GATE=0` | Turn the search gate off (it holds the first edit or command of a task turn until the agent has searched or loaded a skill) |
 
 Advanced tuning:
 

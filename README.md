@@ -140,6 +140,7 @@ The illustration is a metaphor; this diagram is the workflow. Search returns IDs
 | Task-driven discovery | Short search phrases instead of browsing thousands of names |
 | Core + library | A deliberate preload budget, with the rest available on demand |
 | Hooks and standing rules | A reminder to look for relevant instructions at useful moments |
+| Search gate | On a task turn the first edit or command is held until the agent has searched the library once (Claude Code, Codex, Cursor, Gemini) |
 | Usage and evaluation | Evidence for tuning routing and choosing your core |
 | Backed-up trimming | Preview changes, preserve archives, and restore what trim removed, skill by skill |
 
@@ -151,10 +152,10 @@ These rows describe the repository's adapters. A configured adapter is not proof
 
 | Agent | Install target | Adapter installs | Important limit |
 | --- | --- | --- | --- |
-| Claude Code | `claude` | MCP + prompt/tool/stop hooks | Choose standalone or plugin; preserve normal trust |
-| Codex | `codex` | MCP + prompt/tool/stop hooks | Activation depends on host support and trust |
-| Cursor | `cursor` | MCP + prompt/tool/stop hooks | Prompt and stop behavior is for interactive sessions |
-| Gemini CLI | `gemini` | MCP + agent/tool hooks | Final nudge can cause a response retry |
+| Claude Code | `claude` | MCP + prompt/tool/stop hooks + search gate | Choose standalone or plugin; preserve normal trust |
+| Codex | `codex` | MCP + prompt/tool/stop hooks + search gate | Activation depends on host support and trust; each new hook needs trusting once |
+| Cursor | `cursor` | MCP + prompt/tool/stop hooks + search gate | Prompt and stop behavior is for interactive sessions |
+| Gemini CLI | `gemini` | MCP + agent/tool hooks + search gate | Final nudge can cause a response retry |
 | OpenCode | `opencode` | MCP + message/tool plugin | No final decision nudge |
 | Antigravity | `antigravity` | MCP at the current config path | Add a standing routing rule separately |
 | OpenClaude | `openclaude` | MCP | Add a standing routing rule separately |

@@ -6,7 +6,7 @@ import type { AgentId } from "./paths.js";
 import { getIndex, logUsage, search, type Hit } from "./search.js";
 import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
-import { addShown, bareSkill, loadedSkills, markTurn } from "./state.js";
+import { addGateTask, addShown, bareSkill, loadedSkills, markTurn } from "./state.js";
 import { endorsed, suppressed } from "./verdicts.js";
 
 const EVENT: Partial<Record<AgentId, string>> = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
@@ -78,6 +78,8 @@ export async function hint(agent: AgentId, input: string, minRaw?: number, k = 3
   if (prompt.startsWith("/")) { record("skipped_command"); return formatHint(agent, ""); }
   if (isSystemText(prompt)) { record("skipped_system"); return formatHint(agent, ""); }
   if (prompt.length < 20) { record("skipped_short_prompt"); return formatHint(agent, ""); }
+  // A prompt that describes work is a task turn: the search gate (gate.ts) holds its first work call until the agent has searched.
+  if (!isConversational(prompt)) addGateTask(session, sessionHash(turnOf(payload)));
   let hits: Hit[] = [];
   let core = new Set<string>();
   try {

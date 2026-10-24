@@ -9,6 +9,7 @@ import { getIndex, logUsage, resetIndexCache } from "./search.js";
 import { VECTOR_FILES, embed, loadVectors, resetVectors } from "./embed.js";
 import { hint } from "./hint.js";
 import { decisionEvent, releaseTriggerClaims, stopEvent, toolEvent } from "./events.js";
+import { gateEvent } from "./gate.js";
 import { HELLO, MAX_EVENT_BYTES, MAX_PROMPT_BYTES, PROTOCOL, ensureKey, keyReplaced, ping, pipeName, runDir, serverProof, socketPath, stateDirPrivate, status } from "./service-client.js";
 import { IS_WIN, NO_WINDOW, powershellPath, renameSyncRetry } from "./platform.js";
 /**
@@ -258,7 +259,7 @@ function codeStamp() {
         return "-";
     }
 }
-const HEADER = new RegExp(`^${PROTOCOL} (${AGENTS.join("|")}|-) (-|tool|stop|decision|status|shutdown|hang) (\\d{1,8})$`);
+const HEADER = new RegExp(`^${PROTOCOL} (${AGENTS.join("|")}|-) (-|tool|stop|decision|gate|status|shutdown|hang) (\\d{1,8})$`);
 export async function serve() {
     if (!stateDirPrivate()) {
         logUsage({ client: "skillrouter-service", tool: "service", reason: "state_dir_not_private" });
@@ -389,6 +390,8 @@ export async function serve() {
             pending.spawn = undefined;
             return out;
         }
+        if (mode === "gate")
+            return gateEvent(agent, body);
         if (mode === "stop")
             return stopEvent(agent, body);
         if (mode === "decision")

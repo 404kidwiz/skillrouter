@@ -40,7 +40,7 @@ export function readCases(file: string): EvalCase[] {
   return out;
 }
 
-export async function evaluate(cases: EvalCase[], options: { lexicalOnly?: boolean; minRaw?: number; k?: number } = {}): Promise<{ rows: EvalRow[]; summary: EvalSummary }> {
+export async function evaluate(cases: EvalCase[], options: { lexicalOnly?: boolean; minRaw?: number; k?: number } = {}): Promise<{ rows: EvalRow[]; summary: EvalSummary; unknownIds: string[] }> {
   const { index } = getIndex();
   const vectors = loadVectors();
   const lexicalOnly = options.lexicalOnly || !vectors || vectors.indexBuiltAt !== index.builtAt;
@@ -72,7 +72,10 @@ export async function evaluate(cases: EvalCase[], options: { lexicalOnly?: boole
   const pos = rows.filter((r) => r.expect.length), neg = rows.filter((r) => !r.expect.length);
   const rate = (xs: EvalRow[], f: (r: EvalRow) => boolean | null) => (xs.length ? xs.filter(f).length / xs.length : 1);
   const shownPos = pos.flatMap((r) => r.shown.map((id) => r.expect.map(bareSkill).includes(bareSkill(id))));
-  return { rows, summary: {
+  // A mistyped or since-removed id makes a positive that can never pass; say so instead of counting it as a miss.
+  const real = new Set(index.skills.map((s) => bareSkill(s.id)));
+  const unknownIds = [...new Set(cases.flatMap((c) => c.expect).filter((id) => !real.has(bareSkill(id))))];
+  return { rows, unknownIds, summary: {
     mode: lexicalOnly ? "lexical" : "semantic", cases: rows.length, positives: pos.length, negatives: neg.length,
     top1: rate(pos, (r) => r.top1 === true), top3: rate(pos, (r) => r.top3 === true), hintRecall: rate(pos, (r) => r.recall === true),
     hintPrecision: shownPos.length ? shownPos.filter(Boolean).length / shownPos.length : 1,
@@ -82,11 +85,12 @@ export async function evaluate(cases: EvalCase[], options: { lexicalOnly?: boole
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 
-export function formatEval({ rows, summary: s }: { rows: EvalRow[]; summary: EvalSummary }, verbose = false): string {
+export function formatEval({ rows, summary: s, unknownIds = [] }: { rows: EvalRow[]; summary: EvalSummary; unknownIds?: string[] }, verbose = false): string {
   const out = [
     `Eval (${s.mode}): ${s.cases} prompts, ${s.positives} expecting a skill, ${s.negatives} expecting none.`,
     `  top-1 ${pct(s.top1)}   top-3 ${pct(s.top3)}   hint recall ${pct(s.hintRecall)}   hint precision ${pct(s.hintPrecision)}   false hints ${pct(s.falseHints)}   copies shown ${s.copiesShown}`,
   ];
+  if (unknownIds.length) out.push(`  Not in the index (a case expecting only these cannot pass): ${unknownIds.slice(0, 8).join(", ")}${unknownIds.length > 8 ? `, and ${unknownIds.length - 8} more` : ""}`);
   const misses = rows.filter((r) => r.top1 === false || r.recall === false || r.falseHint === true || r.copies > 0);
   const show = verbose ? rows : misses;
   if (show.length) out.push(verbose ? "All cases:" : "Misses:");

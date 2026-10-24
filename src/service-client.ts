@@ -146,7 +146,7 @@ export const MAX_SERVICE_BYTES = 1_000_000;
 export function ask(agent: string, mode: string, body: string, timeoutMs = 700, sock = socketPath()): Promise<Answer> {
   const bytes = Buffer.byteLength(body);
   const m = mode || "-";
-  if (!/^(?:-|tool|stop|decision)$/.test(m) || bytes > MAX_SERVICE_BYTES || (m === "-" && bytes > MAX_PROMPT_BYTES)) return Promise.resolve({ kind: "declined" });
+  if (!/^(?:-|tool|stop|decision|gate)$/.test(m) || bytes > MAX_SERVICE_BYTES || (m === "-" && bytes > MAX_PROMPT_BYTES)) return Promise.resolve({ kind: "declined" });
   return exchange(`${PROTOCOL} ${agent} ${m} ${bytes}\n`, body, timeoutMs, sock);
 }
 
@@ -360,7 +360,7 @@ eval {
            : (defined $ENV{HOME} && length $ENV{HOME}) ? "$ENV{HOME}/.skillrouter" : $dir;
   my $same = $want eq $dir;
   my $small = length($body) <= 1_000_000 && ($mode ne "-" || length($body) <= 262144);
-  my $known = $mode =~ /\A(?:-|tool|stop|decision)\z/ && defined $hook[0] && $hook[0] =~ /\A[a-z]+\z/;
+  my $known = $mode =~ /\A(?:-|tool|stop|decision|gate)\z/ && defined $hook[0] && $hook[0] =~ /\A[a-z]+\z/;
   if ($same && $small && $known) {
     if (-S $sock) {
       my $rc = ask();

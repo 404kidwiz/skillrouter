@@ -7,9 +7,17 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js\" hint claude gate", "timeout": 5 }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Skill|mcp__.*skillrouter__read_skill",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Skill|mcp__.*skillrouter__(?:read_skill|search_skills)",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js\" hint claude tool", "timeout": 5 }
         ]

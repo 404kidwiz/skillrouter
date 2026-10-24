@@ -142,6 +142,34 @@ export function turnWindow(session: string | undefined, turn: string): { start?:
   return { start: marks[i].ts, end: marks.slice(i + 1).find((r) => r.ts > marks[i].ts)?.ts ?? Infinity };
 }
 
+/**
+ * The search gate's state (see gate.ts). A "task" row is written by the prompt check when the turn's prompt describes work
+ * (not a command, system text or a reply about the conversation); "searched" rows are search_skills calls; "denied" rows
+ * count how often the gate has stopped a work call in the turn.
+ */
+export function addGateTask(session: string | undefined, turn?: string): void { append(session, "gate.jsonl", { kind: "task", turn }); }
+export function addSearched(session: string | undefined, turn?: string, sub?: string): void { append(session, "gate.jsonl", { kind: "searched", turn, sub }); }
+export function addDenied(session: string | undefined, turn?: string): void { append(session, "gate.jsonl", { kind: "denied", turn }); }
+
+/**
+ * Where the current turn started if it is a task turn the gate applies to, else undefined: the turn's marker (the one with
+ * this turn id, else the latest) is followed by a task row. A later conversational prompt leaves the earlier task row
+ * before its own marker, so it is not gated.
+ */
+export function gatedTurn(session: string | undefined, turn?: string): { start: number } | undefined {
+  const marks = rows(session, "turns.jsonl");
+  const mark = (turn && marks.filter((r) => r.turn === turn).pop()) || marks.pop();
+  if (!mark) return undefined;
+  const task = rows(session, "gate.jsonl").some((r) => r.kind === "task" && r.ts >= mark.ts && (!turn || !r.turn || r.turn === turn));
+  return task ? { start: mark.ts } : undefined;
+}
+
+/** Whether the main thread searched since `since`, and how often the gate has denied a call since then. */
+export function gateProgress(session: string | undefined, since: number, turn?: string): { searched: boolean; denied: number } {
+  const g = rows(session, "gate.jsonl").filter((r) => r.ts >= since && (!turn || !r.turn || r.turn === turn)); // (ids, where the host has them: two turns can share a millisecond)
+  return { searched: g.some((r) => r.kind === "searched" && !r.sub), denied: g.filter((r) => r.kind === "denied").length };
+}
+
 /** When this turn started (its marker, else the latest one) and how many main-thread tool calls it made. */
 export function turnStats(session: string | undefined, turn?: string): { start?: number; tools: number } {
   const marks = rows(session, "turns.jsonl");
