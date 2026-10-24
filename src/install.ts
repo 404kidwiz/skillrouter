@@ -61,11 +61,11 @@ exec ${quote(node)} ${quote(cli)} hint "$@"
 export function writeLauncher(node = NODE, cli = CLI, launcher = LAUNCHER, platform: Platform = process.platform): string {
   fs.mkdirSync(path.dirname(launcher), { recursive: true });
   if (platform === "win32") {
-    // No shell script, no Perl, no warm service yet: a module `node` runs that hands the hook to the CLI in the same process.
+    // No shell script and no Perl: a module `node` runs that hands the hook to the CLI in the same process, whose Node client asks the service.
     const file = launcherFile(launcher, "win32");
     fs.writeFileSync(file + ".tmp", windowsLauncher(cli));
     renameSyncRetry(file + ".tmp", file);
-    return `${file}: runs ${cli} (node from PATH; no warm service on Windows yet)`;
+    return `${file}: runs ${cli} (node from PATH; warm service over a named pipe)`;
   }
   const perlClient = path.join(path.dirname(launcher), "skillrouter-client.pl");
   const dir = path.dirname(path.dirname(launcher));

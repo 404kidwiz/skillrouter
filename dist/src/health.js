@@ -6,7 +6,7 @@ import { isRouterHook } from "./install.js";
 import { readLog } from "./report.js";
 import { hermesSpec } from "./live.js";
 import { loadVectors, vectorsExist } from "./embed.js";
-import { serviceEnabled, serviceSnapshot, serviceSupported } from "./service-client.js";
+import { serviceEnabled, serviceSnapshot, stateDirPrivate } from "./service-client.js";
 import { parseJson } from "./platform.js";
 function json(file) {
     try {
@@ -84,10 +84,10 @@ function actionHooks(agent, home) {
 }
 /** The warm service: running (pid, uptime, requests), not running (starts on the first hook), or switched off. */
 function serviceLine() {
-    if (!serviceSupported())
-        return "not available on Windows yet; hooks run on their own";
-    if (!serviceEnabled())
+    if (process.env.SKILLROUTER_SERVICE === "0")
         return "off (SKILLROUTER_SERVICE=0); hooks run on their own";
+    if (!serviceEnabled() && !stateDirPrivate())
+        return "off on Windows: the state folder is outside your profile, where other users could read the service's key; hooks run on their own";
     const s = serviceSnapshot();
     if (!s.running)
         return "not running (starts itself on the next hook; `skillrouter service start` to start it now)";

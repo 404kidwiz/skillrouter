@@ -94,7 +94,7 @@ Search is BM25 over name + description (weighted) + the start of the body. On a 
 
 ## The warm service
 
-Every hook used to start Node, and a prompt check also parsed the 8 MB index and loaded the embedding model: about 430 ms per prompt and 50 to 75 ms per tool call. `skillrouter` now keeps one background process per user that holds the index, the BM25 tables and the model in memory and answers hooks over an owner-only Unix socket (`~/.skillrouter/run/svc.sock`):
+Every hook used to start Node, and a prompt check also parsed the 8 MB index and loaded the embedding model: about 430 ms per prompt and 50 to 75 ms per tool call. `skillrouter` now keeps one background process per user that holds the index, the BM25 tables and the model in memory and answers hooks over an owner-only Unix socket (on Windows a named pipe that hooks only trust once it proves it holds a secret key) (`~/.skillrouter/run/svc.sock`):
 
 | Hook | Before | With the service |
 |---|---|---|
@@ -156,10 +156,10 @@ Hooks, the installer, the MCP server, `core`, `trim` and the triggers run on Win
 - `core` and `trim` link folders with junctions, which need neither admin rights nor Developer Mode.
 - Config writes retry for a moment when antivirus or the search indexer has a file open, and no spawned process flashes a console window.
 - Claude's PowerShell tool, and Codex's `powershell -Command` and `cmd /c` wrappers, are understood by triggers and skill-load detection. Config files saved with a BOM still load.
-- The warm service is not available yet, so each prompt check starts Node itself, as it did on macOS before the service (about 400 ms there). `skillrouter service` says so.
+- The warm service works on Windows too, over a named pipe. Windows lets any local user list pipe names, so a name proves nothing: before a hook sends anything it sends a random nonce, and the service must answer with an HMAC of it under a key kept in `~/.skillrouter/run/svc.key`. Anything else listening on that pipe gets only the nonce and counts as no service. The key is only private inside your profile folder, so the service stays off when `SKILLROUTER_HOME` points outside it, and `doctor` says so. `service stop` is a request over the pipe, since Windows has no signals; a service that stops answering is ended only after PowerShell, run by its full path, confirms the process is a skillrouter service. A service that dies within a minute of starting without cleaning up pauses automatic restarts for five minutes; `service start` ignores the pause. On a GitHub Windows runner with 447 skills a hook took about 215 ms without the service and 98 ms with it, 62 ms of which is starting Node, which a hook cannot avoid because Windows has no Perl client. A real library of thousands of skills makes the no-service time longer and leaves the service time about the same.
 - An install path containing `$`, a backtick or `%` is refused, because the shells that run hooks would expand it. Point `SKILLROUTER_HOME` at another folder.
 
-CI runs the test suite on `windows-latest`, except the warm-service tests, which are POSIX-only. Nobody has run each agent by hand on a Windows PC yet, so expect rough edges and report them.
+CI runs the test suite on `windows-latest`, including the service tests that use a real named pipe; only the tests that need `sh`, Perl, signals or file modes are skipped there. If a host kills background processes when a hook ends, the service cannot stay up; hooks keep working without it, and the pause above stops every hook from trying to start one. Nobody has run each agent by hand on a Windows PC yet, so expect rough edges and report them.
 
 ## Limits
 
@@ -169,7 +169,7 @@ CI runs the test suite on `windows-latest`, except the warm-service tests, which
 - Antigravity has no hooks, so it only gets the MCP server and the `AGENTS.md`-style instruction.
 - `trim` leaves plugin-format folders (`.claude-plugin/plugin.json`) and dot-entries alone and never touches a folder that is itself a symlink.
 - Hermes Agent has its own skill system; use its `skills.disabled` list instead of `trim`.
-- On Windows the warm service is off (it needs named pipes), so prompt checks are slower; a PowerShell command split across lines with backticks can read as extra commands to the decision nudge.
+- On Windows a PowerShell command split across lines with backticks can read as extra commands to the decision nudge.
 
 ## Development
 

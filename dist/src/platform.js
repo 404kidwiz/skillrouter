@@ -62,6 +62,16 @@ export function linkDir(target, link, impl = fs, platform = process.platform) {
 export const parseJson = (text) => JSON.parse(text.replace(/^\uFEFF/, ""));
 /** The shell tools of every host: Bash, Shell (Cursor), shell/exec_command (Codex), run_shell_command (Gemini), PowerShell (Windows). */
 export const SHELL_TOOLS = /^(Bash|Shell|shell|run_shell_command|exec_command|PowerShell|powershell|pwsh)$/i;
+/** Windows PowerShell by its full path: a bare name is looked up in the current folder first, and hooks and `service stop` run anywhere. */
+export function powershellPath(env = process.env, exists = fs.existsSync) {
+    const root = env.SystemRoot || env.windir;
+    if (root) {
+        const p = `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+        if (exists(p))
+            return p;
+    }
+    return "powershell.exe";
+}
 /** Windows's own tar (bsdtar) lives in System32; a GNU tar earlier on PATH (Git Bash) mistakes `C:` for a remote host. */
 export function tarCommand(platform = process.platform, env = process.env, exists = fs.existsSync) {
     if (platform === "win32" && env.SystemRoot) {

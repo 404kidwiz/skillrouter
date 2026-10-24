@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { AGENTS, SR_DIR } from "./paths.js";
 // Everything else is imported where used: hooks run on every prompt and tool call, so they load only what they need.
-const NO_SERVICE = "The warm service is not available on Windows yet. Hooks run on their own and work the same, just a little slower.";
 const USAGE = `skillrouter — a big skill library without the context bloat
 
   skillrouter doctor [--live] [agents]   what each agent preloads today and what it costs; --live starts each configured MCP server
@@ -38,16 +37,21 @@ function opt(args, name) { const out = []; for (let i = args.indexOf(name); i >=
     args.splice(i, 2);
 } return out; }
 function agentsFrom(args) { const a = args.filter((x) => AGENTS.includes(x)); return a.length ? a : AGENTS; }
-/** Write and exit: a worker must not linger on pending work (a slow model load) after its answer is out. */
+/**
+ * Write and exit: a worker must not linger on pending work (a slow model load) after its answer is out. On Windows every
+ * hook leaves at once: a connect to a busy pipe waits in a thread (up to 30 s) that Node cannot cancel, and the host
+ * waits for the process, not for its output.
+ */
 function finish(out, exit) {
+    const leave = exit || process.platform === "win32";
     return new Promise((resolve) => {
         if (!out) {
-            if (exit)
+            if (leave)
                 process.exit(0);
             resolve();
             return;
         }
-        process.stdout.write(out + "\n", () => { if (exit)
+        process.stdout.write(out + "\n", () => { if (leave)
             process.exit(0); resolve(); });
     });
 }
@@ -250,11 +254,6 @@ async function main(argv) {
             break;
         }
         case "serve": {
-            const { serviceSupported } = await import("./service-client.js");
-            if (!serviceSupported()) {
-                console.log(NO_SERVICE);
-                break;
-            }
             const svc = await import("./service.js");
             if (args.includes("--start"))
                 await svc.ensureStarted();
@@ -265,11 +264,7 @@ async function main(argv) {
         case "service": {
             const fs = await import("node:fs");
             const path = await import("node:path");
-            const { runDir, serviceSupported } = await import("./service-client.js");
-            if (!serviceSupported()) {
-                console.log(NO_SERVICE);
-                break;
-            }
+            const { runDir } = await import("./service-client.js");
             const svc = await import("./service.js");
             const sub = args[0] ?? "status";
             if (sub === "status") {
@@ -293,7 +288,7 @@ async function main(argv) {
                     fs.rmSync(path.join(runDir(), "svc.off"), { force: true });
                 }
                 catch { /* none */ } // a deliberate start clears the failure pause
-                if (!(await svc.ensureStarted())) {
+                if (!(await svc.ensureStarted(true))) {
                     console.log(`Could not start the service: ${runDir()} is not writable. Hooks keep working without it.`);
                     process.exitCode = 1;
                     break;

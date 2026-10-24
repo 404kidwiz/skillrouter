@@ -9,11 +9,12 @@ import { getIndex, logUsage, resetIndexCache } from "./search.js";
 import { VECTOR_FILES, embed, loadVectors, resetVectors } from "./embed.js";
 import { hint } from "./hint.js";
 import { decisionEvent, releaseTriggerClaims, stopEvent, toolEvent } from "./events.js";
-import { MAX_EVENT_BYTES, MAX_PROMPT_BYTES, PROTOCOL, ping, runDir, socketPath, status, type ServiceStatus } from "./service-client.js";
+import { HELLO, MAX_EVENT_BYTES, MAX_PROMPT_BYTES, PROTOCOL, ensureKey, keyReplaced, ping, pipeName, runDir, serverProof, socketPath, stateDirPrivate, status, type ServiceStatus } from "./service-client.js";
+import { IS_WIN, NO_WINDOW, powershellPath, renameSyncRetry } from "./platform.js";
 
 /**
  * The warm service: one background process per user that keeps the index, the BM25 tables and the embedding model
- * loaded and answers hook requests over a Unix socket, so a prompt check costs about 15 ms instead of 450.
+ * loaded and answers hook requests over a Unix socket (a named pipe on Windows), so a prompt check costs about 15 ms instead of 450.
  * Every hook still works without it: any failure, refusal or timeout makes the caller run the hook itself.
  *
  * - Starts itself (the launcher spawns `serve --start` when it finds no service) and exits after SKILLROUTER_SERVICE_IDLE_MIN
@@ -38,7 +39,23 @@ const alive = (pid: number) => { try { process.kill(pid, 0); return Number.isInt
 
 /** A skillrouter service command line: `… cli.js serve` or the npm bin `… skillrouter serve` (not the `serve --start` starter). */
 export function isServiceCommand(cmd: string): boolean {
-  return /(?:^|[\/\s])(?:cli\.js|skillrouter)\s+serve\s*$/.test(cmd.trim());
+  return /(?:^|[\\/\s"])(?:cli\.js|skillrouter)"?\s+serve\s*$/.test(cmd.trim()); // (Windows: backslashes, and a quoted path when it has spaces)
+}
+
+/**
+ * Windows has no `ps`. The command line and age of a process come from WMI through PowerShell (about half a second, and
+ * only asked on the recovery path: a wedged service, or `service stop` finding the pipe gone). The pid is a checked integer.
+ */
+export function windowsProcessQuery(pid: number): string {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error("bad pid");
+  // Plain pipeline output (no .NET calls a locked-down PowerShell would refuse) and UTC on both sides (a DST change must not skew the age).
+  return `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}'; if ($p) { '{0}|{1}' -f [int]((Get-Date).ToUniversalTime() - $p.CreationDate.ToUniversalTime()).TotalSeconds, $p.CommandLine }`;
+}
+/** `<seconds>|<command line>` from windowsProcessQuery. */
+export function parseWindowsProcess(out: string): { command: string; elapsedSec: number } | null {
+  const bar = out.indexOf("|");
+  const sec = Number(out.slice(0, bar));
+  return bar > 0 && Number.isFinite(sec) ? { command: out.slice(bar + 1).trim(), elapsedSec: sec } : null;
 }
 
 /** `ps` elapsed time `[[dd-]hh:]mm:ss` in seconds. */
@@ -48,7 +65,11 @@ export function parseEtime(s: string): number {
 }
 
 /** A process's command line and age: from `ps` (macOS, procps), else /proc (Linux without a usable ps). */
-function processInfo(pid: number): { command: string; elapsedSec: number } | null {
+export function processInfo(pid: number): { command: string; elapsedSec: number } | null {
+  if (IS_WIN) {
+    try { return parseWindowsProcess(execFileSync(powershellPath(), ["-NoProfile", "-NonInteractive", "-Command", windowsProcessQuery(pid)], { encoding: "utf8", timeout: 10000, ...NO_WINDOW })); }
+    catch { return null; }
+  }
   try {
     const out = execFileSync("ps", ["-ww", "-p", String(pid), "-o", "etime=", "-o", "command="], { encoding: "utf8", timeout: 2000 }).trim();
     const m = /^(\S+)\s+(.*)$/.exec(out);
@@ -114,16 +135,17 @@ function lockStale(): boolean {
 export const dropLock = () => { if (lockOwner() === process.pid) try { fs.rmSync(files().lock, { recursive: true, force: true }); } catch { /* gone */ } };
 const lockFresh = () => lockAge() >= -1000 && lockAge() < LOCK_FRESH_MS && !lockStale();
 
-/** A wedged service holds the socket and answers nothing: kill it by its pidfile, if the pid is really ours. */
-function killStale(): void {
+/** A wedged service holds the socket and answers nothing: kill it by its pidfile, if the pid is really ours. Returns the pid it killed. */
+function killStale(): number | null {
   try {
     const pid = Number(fs.readFileSync(files().pid, "utf8"));
-    if (pid !== process.pid && alive(pid) && isOurService(pid)) process.kill(pid, "SIGKILL");
+    if (pid !== process.pid && alive(pid) && isOurService(pid)) { process.kill(pid, "SIGKILL"); return pid; }
   } catch { /* nothing to kill */ }
+  return null;
 }
 
 /** `serve --start`: make sure one is running. Cheap and safe to call from every failing hook; the real work is detached. */
-export async function ensureStarted(): Promise<boolean> {
+export async function ensureStarted(deliberate = false): Promise<boolean> {
   // The stamp that let this starter run is spent whatever it decides next (a stamp left behind would block the next start).
   try { fs.rmdirSync(path.join(runDir(), "svc.starting")); } catch { /* none */ }
   try {
@@ -131,9 +153,17 @@ export async function ensureStarted(): Promise<boolean> {
     if (lockFresh()) return true;
     if ((await ping(socketPath(), 300)) === "alive") return true;
     fs.mkdirSync(runDir(), { recursive: true, mode: 0o700 });
+    // A service that came up and was gone within a minute without cleaning up (the pid file is still there) was killed, perhaps
+    // by a host that ends everything a hook started: pause instead of starting one, loading the index, for every hook.
+    if (IS_WIN && !deliberate) { // (`service start` is someone asking for one: always)
+      try {
+        const young = Date.now() - fs.statSync(files().pid).mtimeMs;
+        if (young >= 0 && young < 60_000 && !alive(Number(fs.readFileSync(files().pid, "utf8")))) { fs.writeFileSync(files().off, String(Date.now())); logUsage({ client: "skillrouter-service", tool: "service", reason: "died_young" }); return false; }
+      } catch { /* no pid file: it stopped cleanly or never ran */ }
+    }
     try { if (fs.statSync(files().err).size > 100 * 1024) fs.truncateSync(files().err, 0); } catch { /* none yet */ }
     const err = fs.openSync(files().err, "a");
-    const child = spawn(process.execPath, [process.argv[1], "serve"], { detached: true, stdio: ["ignore", "ignore", err], cwd: os.homedir(), env: process.env });
+    const child = spawn(process.execPath, [process.argv[1], "serve"], { detached: true, stdio: ["ignore", "ignore", err], cwd: os.homedir(), env: process.env, ...NO_WINDOW });
     child.unref();
     fs.closeSync(err);
     return true;
@@ -150,13 +180,19 @@ function codeStamp(): string {
 const HEADER = new RegExp(`^${PROTOCOL} (${AGENTS.join("|")}|-) (-|tool|stop|decision|status|shutdown|hang) (\\d{1,8})$`);
 
 export async function serve(): Promise<void> {
-  const sock = socketPath();
+  if (!stateDirPrivate()) { logUsage({ client: "skillrouter-service", tool: "service", reason: "state_dir_not_private" }); return; } // (Windows) see service-client.ts
   if (!takeLock()) return; // another process is already starting one
+  let key: string | null = null; // (Windows) proves to clients that this is the service, and names the pipe
+  if (IS_WIN) {
+    try { key = ensureKey(); }
+    catch (e) { dropLock(); try { fs.writeFileSync(files().off, String(Date.now())); } catch { /* best effort */ } logUsage({ client: "skillrouter-service", tool: "service", reason: "key_unreadable", error: String((e as Error)?.message ?? e).slice(0, 200) }); return; }
+  }
+  const sock = key ? pipeName(key) : socketPath();
   if (process.env.SKILLROUTER_SERVICE_FAULT !== "skip-recovery") { // (test fault: go straight to listening)
     const found = await ping(sock, 400);
     if (found === "alive") { dropLock(); return; }
     if (found === "hung") killStale();
-    try { fs.unlinkSync(sock); } catch { /* none */ }
+    if (!IS_WIN) try { fs.unlinkSync(sock); } catch { /* none */ } // a pipe has no file: it goes with its process
   }
 
   const startedAt = new Date();
@@ -184,7 +220,7 @@ export async function serve(): Promise<void> {
       let mine = false;
       try { mine = fs.readFileSync(files().pid, "utf8") === String(process.pid); } catch { /* none */ }
       if (mine) {
-        try { if (fs.statSync(sock).ino === sockIno) fs.unlinkSync(sock); } catch { /* gone or not ours */ }
+        if (!IS_WIN) try { if (fs.statSync(sock).ino === sockIno) fs.unlinkSync(sock); } catch { /* gone or not ours */ }
         for (const f of [files().pid, files().snapshot]) try { fs.rmSync(f, { force: true }); } catch { /* gone */ }
       }
     }
@@ -231,9 +267,9 @@ export async function serve(): Promise<void> {
     let skills = 0, vectors = "off";
     try { skills = getIndex().index.skills.length; const v = loadVectors(); vectors = v ? `${v.ids.length}` : "off"; } catch { /* no index */ }
     return { pid: process.pid, startedAt: startedAt.toISOString(), lastRequestAt: stats.lastAt?.toISOString() ?? null, requests: stats.requests, fallbacks: stats.fallbacks,
-      byMode: modes, rssMB: Math.round(process.memoryUsage().rss / 1048576), skills, vectors, idleMin: Math.round(idleMs / 6000) / 10, socket: sock, version: pkgVersion() };
+      byMode: modes, rssMB: Math.round(process.memoryUsage().rss / 1048576), skills, vectors, idleMin: Math.round(idleMs / 6000) / 10, socket: IS_WIN ? "named pipe" : sock, version: pkgVersion() };
   };
-  const writeSnapshot = () => { if (closing) return; try { fs.writeFileSync(files().snapshot + ".tmp", JSON.stringify(snapshot())); fs.renameSync(files().snapshot + ".tmp", files().snapshot); } catch { /* best effort */ } };
+  const writeSnapshot = () => { if (closing) return; try { fs.writeFileSync(files().snapshot + ".tmp", JSON.stringify(snapshot())); renameSyncRetry(files().snapshot + ".tmp", files().snapshot); } catch { /* best effort */ } };
 
   /** Send a reply and close; a client that lingers without closing is dropped shortly, so it can't hold a slot or block idle exit. */
   const reply = (c: net.Socket, data: string) => { try { c.end(data); } catch { /* gone */ } setTimeout(() => c.destroy(), 1000).unref(); };
@@ -300,7 +336,10 @@ export async function serve(): Promise<void> {
       if (started) return;
       if (!header) {
         head = Buffer.concat([head, d]);
-        const nl = head.indexOf(10);
+        let nl = head.indexOf(10);
+        // (Windows) a client that wants proof of who it is talking to opens with a nonce; the request follows once it has it.
+        const hello = key && nl >= 0 ? HELLO.exec(head.subarray(0, nl).toString("latin1")) : null;
+        if (hello) { c.write(`HELLO ${serverProof(key!, hello[1])}\n`); head = head.subarray(nl + 1); nl = head.indexOf(10); }
         if (nl < 0) { if (head.length > 128) c.destroy(); return; }
         const m = HEADER.exec(head.subarray(0, nl).toString("latin1"));
         const len = m ? Number(m[3]) : -1;
@@ -317,19 +356,33 @@ export async function serve(): Promise<void> {
 
   server.on("error", (e) => {
     // Another service won the race to this socket: it is fine, and its socket and pid file are not ours to touch.
-    if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") { dropLock(); process.exit(0); }
+    if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
+      // (Windows) A pipe's name lingers for a moment after the service that held it is stopped (`service restart`, an install,
+      // an idle exit just before): wait for it instead of taking it for someone else's. Nothing to unlink there, so it is only a wait.
+      if (IS_WIN && ++listenTries < 15) { setTimeout(() => server.listen(sock), 100); return; }
+      // Another service won the race: fine. But if what holds the name does not answer as a service (a stuck one we could
+      // not kill, or someone else), every hook would start another of us: pause starting instead.
+      void ping(sock, 400).then((state) => {
+        if (state !== "alive") { try { fs.writeFileSync(files().off, String(Date.now())); } catch { /* best effort */ } logUsage({ client: "skillrouter-service", tool: "service", reason: "name_taken" }); }
+        dropLock(); process.exit(0);
+      });
+      return;
+    }
     try { fs.writeFileSync(files().off, String(Date.now())); } catch { /* best effort */ }
     logUsage({ client: "skillrouter-service", tool: "service", reason: "listen_failed", error: String((e as Error)?.message ?? e).slice(0, 200) });
     cleanup();
     process.exit(1);
   });
 
-  const oldMask = process.umask(0o177); // the socket is created owner-only, never briefly wider
+  let listenTries = 0;
+  const oldMask = IS_WIN ? 0 : process.umask(0o177); // the socket is created owner-only, never briefly wider
   await new Promise<void>((resolve) => server.listen(sock, resolve));
-  process.umask(oldMask);
+  if (!IS_WIN) process.umask(oldMask);
   owned = true;
-  try { sockIno = fs.statSync(sock).ino; } catch { /* checked again at cleanup */ }
-  try { fs.chmodSync(sock, 0o600); } catch { /* already 0600 */ }
+  if (!IS_WIN) {
+    try { sockIno = fs.statSync(sock).ino; } catch { /* checked again at cleanup */ }
+    try { fs.chmodSync(sock, 0o600); } catch { /* already 0600 */ }
+  }
   fs.writeFileSync(files().pid, String(process.pid), { mode: 0o600 });
   try { fs.rmSync(files().off, { force: true }); } catch { /* none */ }
   dropLock();
@@ -337,12 +390,14 @@ export async function serve(): Promise<void> {
 
   // Idle exit, the periodic snapshot `doctor` reads, and signals.
   const tick = setInterval(() => {
-    if (active === 0 && Date.now() - lastTouch > idleMs) shutdown("idle");
+    // Hooks find a Windows service through its key file: if that is gone or replaced, nobody can reach this one any more.
+    if (key && keyReplaced(key)) shutdown("key_changed");
+    else if (active === 0 && Date.now() - lastTouch > idleMs) shutdown("idle");
     else writeSnapshot();
   }, Math.min(30000, Math.max(100, idleMs / 4)));
   tick.unref();
   writeSnapshot();
-  for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(sig, () => shutdown(sig));
+  for (const sig of ["SIGTERM", "SIGINT", "SIGHUP", ...(IS_WIN ? ["SIGBREAK" as const] : [])]) process.on(sig, () => shutdown(sig)); // (Windows delivers only SIGINT and SIGBREAK; `service stop` uses a request)
   process.on("uncaughtException", (e) => {
     logUsage({ client: "skillrouter-service", tool: "service", reason: "crashed", error: String(e?.message ?? e).slice(0, 200) });
     // A service that dies soon after starting would be restarted by every hook: pause starting it for a few minutes.
@@ -366,17 +421,32 @@ export async function stopService(): Promise<boolean> {
   const state = await ping(sock, 400);
   if (state === "alive") {
     await new Promise<void>((resolve) => { const c = net.connect(sock); c.resume(); /* an unread socket never reports its close */ c.on("connect", () => c.write(`${PROTOCOL} - shutdown 0\n`)); c.on("close", () => resolve()); c.on("error", () => resolve()); setTimeout(resolve, 1500).unref(); });
-    for (let i = 0; i < 20 && fs.existsSync(sock); i++) await new Promise((r) => setTimeout(r, 50));
+    // A pipe has no file to wait for: it is gone when nothing answers on it.
+    for (let i = 0; i < 20 && !(IS_WIN ? (await ping(sock, 200)) === "dead" : !fs.existsSync(sock)); i++) await new Promise((r) => setTimeout(r, 50));
     return true;
   }
-  if (state === "hung") { killStale(); try { fs.unlinkSync(sock); } catch { /* gone */ } return true; }
-  try { fs.unlinkSync(sock); } catch { /* none */ }
+  if (state === "hung") {
+    const killed = killStale();
+    if (!IS_WIN) { try { fs.unlinkSync(sock); } catch { /* gone */ } return true; }
+    if (killed !== null) forgetFiles(killed); // (not when the kill was refused: the pid file is all that can find it later)
+    return killed !== null;
+  }
+  if (!IS_WIN) try { fs.unlinkSync(sock); } catch { /* none */ }
   // The socket file is gone but the process may live on (deleted by hand, a wiped run dir): stop it by its pid file.
   try {
     const pid = Number(fs.readFileSync(files().pid, "utf8"));
-    if (pid !== process.pid && alive(pid) && isOurService(pid)) { process.kill(pid, "SIGTERM"); return true; }
+    if (pid !== process.pid && alive(pid) && isOurService(pid)) { process.kill(pid, "SIGTERM"); if (IS_WIN) forgetFiles(pid); return true; }
   } catch { /* no pid file */ }
   return false;
+}
+
+/** Windows ends a process outright, so its own cleanup never runs: remove the pid file and snapshot it leaves (only if they are its). */
+function forgetFiles(pid?: number): void {
+  try {
+    const recorded = fs.readFileSync(files().pid, "utf8");
+    if (pid !== undefined && recorded !== String(pid)) return;
+    for (const f of [files().pid, files().snapshot]) fs.rmSync(f, { force: true });
+  } catch { /* none */ }
 }
 
 export { status };

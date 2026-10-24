@@ -2,13 +2,14 @@ import fs from "node:fs";
 import net from "node:net";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import os from "node:os";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { SR_DIR } from "./paths.js";
 /**
  * The warm service's client side: everything a hook needs to ask it a question. Kept free of the router's own
  * modules (index, search, model) so importing it costs a few milliseconds, not the work the service exists to avoid.
  *
- * Protocol (one request per connection, owner-only Unix socket):
+ * Protocol (one request per connection, an owner-only Unix socket, or a named pipe on Windows):
  *   request   SR1 <agent|-> <mode|-> <bytes>\n<body>        mode: - (prompt check) tool stop decision status shutdown
  *   response  OK <bytes>\n<output>   the hook's output ("" when it has none)   |   FALLBACK\n   run the hook yourself
  * The reply carries its length so a client stops reading when it has it: waiting for the server's close is not
@@ -18,22 +19,98 @@ export const PROTOCOL = "SR1";
 export const MAX_PROMPT_BYTES = 256 * 1024;
 export const MAX_EVENT_BYTES = 8 * 1024 * 1024;
 export const runDir = (dir = SR_DIR) => path.join(dir, "run");
-/** The service speaks over a Unix socket and is started with POSIX tools; Windows hooks run on their own until it gets named pipes. */
-export const serviceSupported = (platform = process.platform) => platform !== "win32";
-export const serviceEnabled = (platform = process.platform) => serviceSupported(platform) && process.env.SKILLROUTER_SERVICE !== "0";
 /**
- * Where the socket lives. Unix socket paths are limited to about 104 bytes, so a long state directory (a temp
- * folder, a deep home) gets a short per-user path under /tmp keyed by the directory; the owner is checked on use.
+ * Windows has no Unix sockets, so the service listens on a named pipe. Two things make that safe:
+ *
+ * - Anyone can list pipe names, so a name proves nothing, and a local user could claim the pipe while no service is running
+ *   (after an idle exit, a crash, a reboot) and have our hooks hand them prompts and print their answers into the agent's
+ *   context. So the service proves who it is: before a client sends any request it sends a nonce, and the service answers
+ *   with an HMAC of it under a key that only lives in run/svc.key. An impostor cannot, and gets nothing but the nonce.
+ * - Who may connect at all is the pipe's default access list: the owner, SYSTEM and administrators can write to it, and
+ *   everyone else can only read, which lets them hold connection slots but never send a request.
+ *
+ * The key is only private if its folder is, and Windows ignores file modes: inside the user's profile the folder's access
+ * list keeps other users out, anywhere else (a SKILLROUTER_HOME on C:\) it may not, so there the service stays off.
+ * The pipe's name is derived from the key (one way), so listing pipes reveals nothing about it.
  */
-export function socketPath(dir = SR_DIR) {
+const KEY = /^[0-9a-f]{64}$/;
+const PIPE = /^\\\\\.\\pipe\\skillrouter-[0-9a-f]{32}$/;
+const keyFile = (dir) => path.join(runDir(dir), "svc.key");
+const hmac = (key, msg) => createHmac("sha256", Buffer.from(key, "hex")).update(msg).digest("hex");
+export const pipeName = (key) => `\\\\.\\pipe\\skillrouter-${hmac(key, "pipe").slice(0, 32)}`;
+/** What the service answers to a client's nonce. */
+export const serverProof = (key, nonce) => hmac(key, `server:${nonce}`);
+export const HELLO = /^SR1 - hello ([0-9a-f]{32})$/;
+/** Whether this state folder is one only this user can read. Only Windows needs to ask (see above); elsewhere modes do it. */
+export function stateDirPrivate(dir = SR_DIR, platform = process.platform, home = os.homedir()) {
+    if (platform !== "win32")
+        return true;
+    const rel = path.win32.relative(home, dir);
+    return rel === "" || (!rel.startsWith("..") && !path.win32.isAbsolute(rel));
+}
+export const serviceEnabled = () => process.env.SKILLROUTER_SERVICE !== "0" && stateDirPrivate();
+export function readKey(dir = SR_DIR) {
+    try {
+        const k = fs.readFileSync(keyFile(dir), "utf8").trim();
+        return KEY.test(k) ? k : null;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * The service calls this (while it holds the start lock): its key, made on first use. A key that cannot be read right
+ * now (an antivirus scan has the file) throws instead of being replaced, since a new key would strand a running service.
+ */
+export function ensureKey(dir = SR_DIR) {
+    try {
+        const k = fs.readFileSync(keyFile(dir), "utf8").trim();
+        if (KEY.test(k))
+            return k;
+    }
+    catch (e) {
+        if (e.code !== "ENOENT")
+            throw e;
+    }
+    fs.mkdirSync(runDir(dir), { recursive: true, mode: 0o700 });
+    const key = randomBytes(32).toString("hex");
+    fs.writeFileSync(keyFile(dir), key, { mode: 0o600 });
+    return key;
+}
+/** Whether the key file is gone or holds another key. A file that is merely unreadable at the moment is not a change. */
+export function keyReplaced(expected, dir = SR_DIR) {
+    try {
+        const k = fs.readFileSync(keyFile(dir), "utf8").trim();
+        return KEY.test(k) && k !== expected;
+    }
+    catch (e) {
+        return e.code === "ENOENT";
+    }
+}
+/**
+ * Where the service listens. On POSIX a Unix socket: its paths are limited to about 104 bytes, so a long state directory
+ * (a temp folder, a deep home) gets a short per-user path under /tmp keyed by the directory; the owner is checked on use.
+ * On Windows the named pipe, or "" while there is no key (no service has ever started here) or the folder is not private:
+ * nothing safe to talk to.
+ */
+export function socketPath(dir = SR_DIR, platform = process.platform, home = os.homedir()) {
+    if (platform === "win32") {
+        const k = stateDirPrivate(dir, platform, home) ? readKey(dir) : null;
+        return k ? pipeName(k) : "";
+    }
     const p = path.join(runDir(dir), "svc.sock");
     if (Buffer.byteLength(p) <= 100)
         return p;
     const uid = typeof process.getuid === "function" ? process.getuid() : 0;
     return `/tmp/skillrouter-${uid}-${createHash("sha256").update(dir).digest("hex").slice(0, 12)}.sock`;
 }
-/** Only talk to a socket this user owns: a path in a shared folder could be squatted by someone else. */
-export function ownedByMe(file) {
+/**
+ * Only talk to a socket this user owns: a path in a shared folder could be squatted by someone else. A pipe has no owner
+ * to look up (and a stat would connect to it), so its secret name is the proof: it must be one we derived from the token.
+ */
+export function ownedByMe(file, platform = process.platform) {
+    if (platform === "win32")
+        return PIPE.test(file);
     try {
         return typeof process.getuid !== "function" || fs.statSync(file).uid === process.getuid();
     }
@@ -46,6 +123,12 @@ function exchange(header, body, timeoutMs, sock) {
     return new Promise((resolve) => {
         if (!ownedByMe(sock))
             return resolve({ kind: "failed" });
+        // On Windows nothing is sent until the server has proved it holds the key: the nonce goes first and is all an impostor sees.
+        const key = process.platform === "win32" ? readKey() : null;
+        if (process.platform === "win32" && !key)
+            return resolve({ kind: "failed" });
+        const nonce = randomBytes(16).toString("hex");
+        let proven = !key;
         let buf = Buffer.alloc(0);
         let done = false;
         const finish = (v) => { if (done)
@@ -53,9 +136,25 @@ function exchange(header, body, timeoutMs, sock) {
         const c = net.connect(sock);
         const timer = setTimeout(() => finish({ kind: "failed" }), timeoutMs);
         c.on("error", () => finish({ kind: "failed" }));
-        c.on("connect", () => c.write(header + body));
+        c.on("connect", () => c.write(key ? `${PROTOCOL} - hello ${nonce}\n` : header + body));
         c.on("data", (d) => {
             buf = Buffer.concat([buf, d]);
+            if (!proven) {
+                const at = buf.indexOf(10);
+                if (at < 0) {
+                    if (buf.length > 128)
+                        finish({ kind: "failed" });
+                    return;
+                }
+                const m = /^HELLO ([0-9a-f]{64})$/.exec(buf.subarray(0, at).toString("latin1"));
+                if (!m || !timingSafeEqual(Buffer.from(m[1]), Buffer.from(serverProof(key, nonce))))
+                    return finish({ kind: "failed" });
+                proven = true;
+                buf = buf.subarray(at + 1);
+                c.write(header + body);
+                if (!buf.length)
+                    return;
+            }
             const nl = buf.indexOf(10);
             if (nl < 0) {
                 if (buf.length > 64)
@@ -95,8 +194,6 @@ export async function query(agent, mode, body, timeoutMs = 700, sock = socketPat
  * (a fresh run/svc.lock) or starting keeps failing (a recent run/svc.off). The starter itself checks again.
  */
 export function startServiceSoon(dir = SR_DIR) {
-    if (!serviceSupported())
-        return;
     try {
         // Recent means 0 to N ms old: a file from the future (the clock was stepped back) does not count.
         const recent = (f, ms) => { try {
@@ -138,16 +235,27 @@ export async function status(timeoutMs = 1000, sock = socketPath()) {
 /** `dead`: nothing listening. `hung`: accepted the connection but never answered. `alive`: answered. */
 export function ping(sock = socketPath(), timeoutMs = 400) {
     return new Promise((resolve) => {
-        if (!fs.existsSync(sock))
-            return resolve("dead");
+        if (process.platform === "win32" ? !ownedByMe(sock) : !fs.existsSync(sock))
+            return resolve("dead"); // (a pipe is found by connecting)
         let done = false;
         const finish = (v) => { if (done)
             return; done = true; clearTimeout(timer); c.destroy(); resolve(v); };
+        // On Windows "alive" means the server proved it holds the key; a squatter's answer counts as nothing being there.
+        const key = process.platform === "win32" ? readKey() : null;
+        if (process.platform === "win32" && !key)
+            return resolve("dead");
+        const nonce = randomBytes(16).toString("hex");
         const c = net.connect(sock);
         const timer = setTimeout(() => finish("hung"), timeoutMs);
         c.on("error", () => finish("dead"));
-        c.on("connect", () => c.write(`${PROTOCOL} - status 0\n`));
-        c.on("data", (d) => finish(d.toString("latin1").startsWith("OK ") ? "alive" : "dead"));
+        c.on("connect", () => c.write(key ? `${PROTOCOL} - hello ${nonce}\n` : `${PROTOCOL} - status 0\n`));
+        c.on("data", (d) => {
+            const line = d.toString("latin1").split("\n")[0];
+            if (!key)
+                return finish(line.startsWith("OK ") ? "alive" : "dead");
+            const m = /^HELLO ([0-9a-f]{64})$/.exec(line);
+            finish(m && timingSafeEqual(Buffer.from(m[1]), Buffer.from(serverProof(key, nonce))) ? "alive" : "dead");
+        });
         c.on("end", () => finish("dead"));
     });
 }

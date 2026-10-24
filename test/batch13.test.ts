@@ -14,7 +14,7 @@ const platform = await import("../src/platform.js");
 const { install, isRouterHook, writeLauncher, CLAUDE_TOOL_MATCHER } = await import("../src/install.js");
 const { actionOf, isWork, matchTriggers } = await import("../src/triggers.js");
 const { skillLoadOf, skillReadIn } = await import("../src/events.js");
-const { serviceEnabled, serviceSupported } = await import("../src/service-client.js");
+const { serviceEnabled } = await import("../src/service-client.js");
 const { fwd, hookPrefix, launcherFile, linkDir, parseJson, renameSyncRetry, tarCommand, windowsLauncher, SHELL_TOOLS } = platform;
 
 // Windows branches take the platform as a parameter, so they run (and are checked) on every OS.
@@ -48,7 +48,7 @@ test("install on Windows writes the module launcher, no Perl or shell script, an
   const bin = path.join(h, ".skillrouter", "bin");
   assert.ok(fs.existsSync(path.join(bin, "skillrouter-hint.mjs")));
   assert.deepEqual(fs.readdirSync(bin), ["skillrouter-hint.mjs"]);
-  assert.match(lines[0], /skillrouter-hint\.mjs: runs .*no warm service on Windows yet/);
+  assert.match(lines[0], /skillrouter-hint\.mjs: runs .*warm service over a named pipe/);
   const settings = JSON.parse(fs.readFileSync(path.join(h, ".claude", "settings.json"), "utf8"));
   const prefix = `node "${fwd(path.join(bin, "skillrouter-hint.mjs"))}"`;
   assert.equal(settings.hooks.UserPromptSubmit[0].hooks[0].command, `${prefix} claude`);
@@ -192,17 +192,13 @@ test("loads of a SKILL.md are recognised through Windows paths and PowerShell re
   assert.equal(skillLoadOf("Read", { file_path: "C:\\s\\..\\SKILL.md" }), null);
 });
 
-test("the warm service is off on Windows whatever the environment says", () => {
-  assert.equal(serviceSupported("win32"), false);
-  assert.equal(serviceSupported("darwin"), true);
-  assert.equal(serviceEnabled("win32"), false);
+test("the warm service is on everywhere unless SKILLROUTER_SERVICE=0", () => {
   const before = process.env.SKILLROUTER_SERVICE;
   try {
     delete process.env.SKILLROUTER_SERVICE;
-    assert.equal(serviceEnabled("win32"), false);
-    assert.equal(serviceEnabled("linux"), true);
+    assert.equal(serviceEnabled(), true);
     process.env.SKILLROUTER_SERVICE = "0";
-    assert.equal(serviceEnabled("linux"), false);
+    assert.equal(serviceEnabled(), false);
   } finally {
     if (before === undefined) delete process.env.SKILLROUTER_SERVICE; else process.env.SKILLROUTER_SERVICE = before;
   }

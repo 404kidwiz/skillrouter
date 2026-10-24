@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "skillrouter-b12-"));
 process.env.HOME = home;
+process.env.USERPROFILE = home; // Windows reads this, not HOME, for os.homedir()
 process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 fs.mkdirSync(process.env.SKILLROUTER_HOME, { recursive: true });
 delete process.env.SKILLROUTER_SERVICE; // the test script turns it off for the other files; this file tests it
@@ -18,13 +19,18 @@ const SR = process.env.SKILLROUTER_HOME;
 const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 const { saveIndex } = await import("../src/index.js");
 const { tokenize } = await import("../src/bm25.js");
-const { socketPath, runDir, query, ping, status, ownedByMe, serviceEnabled, serviceSnapshot, PERL_CLIENT } = await import("../src/service-client.js");
+const { socketPath, runDir, query, ping, status, ownedByMe, serviceEnabled, serviceSnapshot, ensureKey, serverProof, readKey, PERL_CLIENT } = await import("../src/service-client.js");
 const { stopService, takeLock } = await import("../src/service.js");
 const { hint, sessionHash } = await import("../src/hint.js");
 const { toolEvent, stopEvent } = await import("../src/events.js");
 const { writeLauncher } = await import("../src/install.js");
 const { health } = await import("../src/health.js");
 const { addShown, markTurn } = await import("../src/state.js");
+// Windows runs the transport-agnostic half of this file (named pipe instead of a Unix socket). What needs sh, Perl, signals,
+// file modes or a socket file to delete is skipped there; batch14 covers the Windows-only parts.
+const WIN = process.platform === "win32";
+const winSkip = (why) => WIN && `POSIX only: ${why}`;
+const sockExists = async () => WIN ? (await ping(socketPath(), 200)) !== "dead" : fs.existsSync(socketPath()); // a pipe is found by connecting
 const procs = [];
 process.on("exit", () => {
     // Any service still running on this test's state folder (one a launcher or the Node client started in the background) goes too.
@@ -49,7 +55,11 @@ process.on("exit", () => {
         process.kill(pid, "SIGKILL");
     }
     catch { /* none */ }
-    fs.rmSync(home, { recursive: true, force: true });
+    try {
+        fs.rmSync(home, { recursive: true, force: true });
+    }
+    catch { /* a Windows process still dying holds its folder */ }
+    ;
     try {
         fs.unlinkSync(socketPath());
     }
@@ -76,7 +86,7 @@ function startService(env = {}) {
 }
 const aliveNow = async () => (await ping(socketPath(), 300)) === "alive";
 async function up(env) { const p = startService(env); assert.ok(await waitFor(aliveNow), "the service came up"); return p; }
-async function down() { await stopService(); await waitFor(async () => !fs.existsSync(socketPath()), 4000); }
+async function down() { await stopService(); await waitFor(async () => !(await sockExists()), 4000); }
 const settle = async () => {
     await sleep(300);
     const end = Date.now() + 2000;
@@ -98,7 +108,7 @@ function svc(name, a, b) {
 const pidOf = () => Number(fs.readFileSync(path.join(runDir(), "svc.pid"), "utf8"));
 const mask = (s) => s.replace(/hint_id=\\?"[0-9a-f-]{36}\\?"/g, "hint_id=X");
 const promptBody = (session, text = "write pytest tests for the api client and fix the failing python fixtures") => JSON.stringify({ session_id: session, prompt_id: "p1", prompt: text });
-test("socket path: inside the state dir when short, a short per-user path under /tmp when long", () => {
+test("socket path: inside the state dir when short, a short per-user path under /tmp when long", { skip: winSkip("Unix socket paths") }, () => {
     assert.equal(socketPath("/home/u/.skillrouter"), "/home/u/.skillrouter/run/svc.sock");
     const long = "/var/folders/ld/wrzpdvw10j9fy9hts8t3z39w0000gn/T/skillrouter-some-long-test-directory/.skillrouter";
     const p = socketPath(long);
@@ -145,7 +155,7 @@ svc("it reloads when the index changes on disk, without restarting", async () =>
 svc("it exits when idle and cleans up after itself", async () => {
     const p = await up({ SKILLROUTER_SERVICE_IDLE_MIN: "0.01" });
     assert.ok(await waitFor(() => p.exitCode !== null, 6000), "exited on its own");
-    assert.ok(!fs.existsSync(socketPath()) && !fs.existsSync(path.join(runDir(), "svc.pid")), "socket and pid file removed");
+    assert.ok(!(await sockExists()) && !fs.existsSync(path.join(runDir(), "svc.pid")), "socket and pid file removed");
 });
 svc("it restarts itself when its own code changes", async () => {
     const code = path.join(home, "code");
@@ -158,7 +168,7 @@ svc("it restarts itself when its own code changes", async () => {
     assert.notEqual(await query("claude", "-", promptBody("cc-2")), null, "the request that notices the change is still answered");
     assert.ok(await waitFor(() => p.exitCode !== null, 4000), "then it exits, so the next hook starts the new code");
 });
-svc("SIGTERM cleans up; SIGKILL leaves a stale socket that the next start replaces", async () => {
+svc("SIGTERM cleans up; SIGKILL leaves a stale socket that the next start replaces", { skip: winSkip("signals and a socket file") }, async () => {
     const p = await up();
     p.kill("SIGTERM");
     assert.ok(await waitFor(() => p.exitCode !== null || p.signalCode !== null));
@@ -184,7 +194,7 @@ svc("a wedged service is killed and replaced", async () => {
     assert.equal(await ping(socketPath(), 300), "hung");
     spawnSync(process.execPath, [cli, "serve", "--start"], { env: { ...process.env, SKILLROUTER_SERVICE_FAULT: "" } });
     assert.ok(await waitFor(async () => (await aliveNow()) && pidOf() !== oldPid, 10000), "a new service took over");
-    assert.ok(await waitFor(() => wedged.signalCode !== null), "the wedged one was killed");
+    assert.ok(await waitFor(() => wedged.exitCode !== null || wedged.signalCode !== null), "the wedged one was killed");
     assert.match((await query("claude", "-", promptBody("wd-1"))), /python-testing/);
     await down();
 });
@@ -216,7 +226,7 @@ svc("hostile or broken clients can't hurt it: garbage, oversize, stalls, floods"
     assert.equal(await raw("x".repeat(500)), "", "a header that never ends is dropped without a reply");
     assert.equal(await raw("SR1 claude - 50\nonly-ten", 1200), "", "a body that stalls is dropped after the receive timeout");
     assert.equal(await raw(Buffer.from([0xff, 0xfe, 0x00, 0x0a, 0x80])), "FALLBACK\n", "binary junk");
-    await Promise.all(Array.from({ length: 150 }, () => raw("SR1 claude - 5000\nshort", 100)));
+    await Promise.all(Array.from({ length: WIN ? 80 : 150 }, () => raw("SR1 claude - 5000\nshort", 100))); // (a Windows client that finds every pipe instance busy waits for one: fewer, still past the cap of 64)
     const during = await Promise.all(Array.from({ length: 10 }, () => raw("SR1 claude - 5000\nshort", 1500)));
     assert.ok(during.every((r) => r === "" || r === "FALLBACK\n"), "past the connection cap the extras are told to fall back, never left hanging");
     await sleep(600); // the stalled ones time out (400 ms here) and free their slots
@@ -259,8 +269,8 @@ svc("doctor and the service commands report its state", async () => {
     assert.match(health().join("\n"), /Service: off/);
     delete process.env.SKILLROUTER_SERVICE;
 });
-const hasPerl = spawnSync("perl", ["-e", "1"]).status === 0;
-svc("the launcher: falls back and starts the service when there is none, then uses it", { skip: !hasPerl && "perl not installed" }, async () => {
+const hasPerl = !WIN && spawnSync("perl", ["-e", "1"]).status === 0; // the launcher is sh + Perl: POSIX only
+svc("the launcher: falls back and starts the service when there is none, then uses it", { skip: !hasPerl && "needs sh and perl" }, async () => {
     const launcher = path.join(SR, "bin", "skillrouter-hint");
     writeLauncher(process.execPath, cli, launcher);
     assert.ok(fs.existsSync(path.join(SR, "bin", "skillrouter-client.pl")));
@@ -285,7 +295,7 @@ svc("the launcher: falls back and starts the service when there is none, then us
     assert.match(call("ln-4").stdout, /python-testing/, "no perl client file: Node answers (through the service or itself)");
     await down();
 });
-svc("the launcher: a wedged service costs one slow call, then it is replaced", { skip: !hasPerl && "perl not installed" }, async () => {
+svc("the launcher: a wedged service costs one slow call, then it is replaced", { skip: !hasPerl && "needs sh and perl" }, async () => {
     const launcher = path.join(SR, "bin", "skillrouter-hint");
     writeLauncher(process.execPath, cli, launcher);
     const wedged = await up({ SKILLROUTER_SERVICE_FAULT: "hang" });
@@ -309,12 +319,31 @@ const launcherPath = path.join(SR, "bin", "skillrouter-hint");
 const sh = (args, opts = {}) => spawnSync("sh", [launcherPath, ...args], { input: opts.input, env: { ...process.env, ...opts.env }, encoding: "utf8" });
 const fake = async (onConn) => {
     fs.mkdirSync(runDir(), { recursive: true, mode: 0o700 });
+    if (WIN)
+        ensureKey(); // the pipe's name comes from the key
     try {
         fs.unlinkSync(socketPath());
     }
     catch { /* none */ }
     const conns = new Set();
-    const s = net.createServer((c) => { conns.add(c); c.on("error", () => { }); c.on("close", () => conns.delete(c)); onConn(c); });
+    const s = net.createServer((c) => {
+        conns.add(c);
+        c.on("error", () => { });
+        c.on("close", () => conns.delete(c));
+        if (!WIN)
+            return onConn(c);
+        // On Windows a real service first proves itself to the client with an HMAC of its nonce; a fake that stands in for one does the same.
+        c.once("data", (first) => {
+            const m = /^SR1 - hello ([0-9a-f]{32})\n/.exec(first.toString("latin1"));
+            if (m) {
+                c.write(`HELLO ${serverProof(readKey(), m[1])}\n`);
+                first = first.subarray(m[0].length);
+            }
+            onConn(c);
+            if (first.length)
+                c.emit("data", first);
+        });
+    });
     s.conns = conns;
     await new Promise((r) => s.listen(socketPath(), r));
     return s;
@@ -332,7 +361,7 @@ const closeFake = async (s) => {
     }
     catch { /* gone */ }
 };
-svc("the launcher never hangs on stdin: a pipe that stays open, or no stdin at all", { skip: !hasPerl && "perl not installed" }, async () => {
+svc("the launcher never hangs on stdin: a pipe that stays open, or no stdin at all", { skip: !hasPerl && "needs sh and perl" }, async () => {
     writeLauncher(process.execPath, cli, launcherPath);
     for (const env of [{}, { SKILLROUTER_SERVICE: "0" }]) {
         const t0 = Date.now();
@@ -348,7 +377,7 @@ svc("the launcher never hangs on stdin: a pipe that stays open, or no stdin at a
     assert.equal(closed.status, 0);
     assert.ok(Date.now() - t1 < 3000, "a closed stdin is not a hang either");
 });
-svc("the launcher survives a Perl client that cannot run, and a Perl that is not there", { skip: !hasPerl && "perl not installed" }, async () => {
+svc("the launcher survives a Perl client that cannot run, and a Perl that is not there", { skip: !hasPerl && "needs sh and perl" }, async () => {
     writeLauncher(process.execPath, cli, launcherPath);
     const client = path.join(SR, "bin", "skillrouter-client.pl");
     fs.writeFileSync(client, "this is not perl (\n");
@@ -358,7 +387,7 @@ svc("the launcher survives a Perl client that cannot run, and a Perl that is not
     fs.writeFileSync(client, PERL_CLIENT);
     assert.match(sh(["claude"], { input: promptBody("pb-3"), env: { PATH: "/usr/bin/nonexistent" } }).stdout || "", /^$|python-testing/, "no perl on PATH");
 });
-svc("a misbehaving server costs bounded time and the hook still answers (hung, partial, garbage, FALLBACK)", { skip: !hasPerl && "perl not installed" }, async () => {
+svc("a misbehaving server costs bounded time and the hook still answers (hung, partial, garbage, FALLBACK)", { skip: !hasPerl && "needs sh and perl" }, async () => {
     writeLauncher(process.execPath, cli, launcherPath);
     const cases = [
         ["never replies", () => { }, 3200],
@@ -380,7 +409,7 @@ svc("a misbehaving server costs bounded time and the hook still answers (hung, p
             await down(); // a starter may have replaced the fake with a real service
     }
 });
-svc("through the launcher every host's output equals the standalone output, for prompt, tool and stop events", { skip: !hasPerl && "perl not installed" }, async () => {
+svc("through the launcher every host's output equals the standalone output, for prompt, tool and stop events", { skip: !hasPerl && "needs sh and perl" }, async () => {
     writeLauncher(process.execPath, cli, launcherPath);
     await up();
     const agents = ["claude", "codex", "cursor", "gemini", "opencode"];
@@ -406,7 +435,7 @@ svc("through the launcher every host's output equals the standalone output, for 
     assert.ok((await status()).requests >= agents.length * 5, "most of these went through the service");
     await down();
 });
-svc("big payloads and another state dir bypass the service; the launcher answers itself", { skip: !hasPerl && "perl not installed" }, async () => {
+svc("big payloads and another state dir bypass the service; the launcher answers itself", { skip: !hasPerl && "needs sh and perl" }, async () => {
     writeLauncher(process.execPath, cli, launcherPath);
     await up();
     const before = (await status()).requests;
@@ -436,7 +465,7 @@ svc("a stale lock and several starters at once never orphan a healthy service", 
         const live = children.filter((p) => p.exitCode === null && p.signalCode === null);
         assert.equal(live.length, 1, `round ${round}: exactly one survives`);
         assert.equal(live[0].pid, pidOf(), `round ${round}: and it is the one named in the pid file`);
-        assert.ok(fs.existsSync(socketPath()) && !fs.existsSync(path.join(runDir(), "svc.off")), `round ${round}: socket present, no failure pause`);
+        assert.ok((await sockExists()) && !fs.existsSync(path.join(runDir(), "svc.off")), `round ${round}: socket present, no failure pause`);
         assert.match((await query("claude", "-", promptBody("sl-" + round))), /python-testing/);
         await down();
     }
@@ -448,14 +477,14 @@ svc("a service that loses the race for the socket leaves the winner's socket and
     fs.writeFileSync(path.join(runDir(), "svc.pid"), String(process.pid));
     const loser = startService({ SKILLROUTER_SERVICE_FAULT: "skip-recovery" });
     assert.ok(await waitFor(() => loser.exitCode !== null, 6000), "it gave up");
-    assert.ok(fs.existsSync(socketPath()), "the socket is still there");
+    assert.ok(await sockExists(), "the socket is still there");
     assert.equal(fs.readFileSync(path.join(runDir(), "svc.pid"), "utf8"), String(process.pid), "the pid file is untouched");
     assert.ok(!fs.existsSync(path.join(runDir(), "svc.off")), "losing a race is not a failure to pause for");
     assert.equal(await query("claude", "-", "{}"), "", "the winner still answers");
     await closeFake(winner);
     fs.rmSync(path.join(runDir(), "svc.pid"), { force: true });
 });
-svc("only a real skillrouter service is ever killed: pid checks", async () => {
+svc("only a real skillrouter service is ever killed: pid checks", { skip: winSkip("sleep and a hung socket file; batch14 checks the Windows process query") }, async () => {
     assert.ok(isServiceCommand("node /a/b/dist/src/cli.js serve"));
     assert.ok(isServiceCommand("/usr/bin/node /usr/local/bin/skillrouter serve"));
     assert.ok(!isServiceCommand("node /a/b/dist/src/cli.js serve --start"));
@@ -482,17 +511,17 @@ svc("only a real skillrouter service is ever killed: pid checks", async () => {
     await closeFake(hung).catch(() => { });
     await down();
 });
-svc("without Perl the Node client restarts a dead service by itself", async () => {
+svc("without Perl the Node client restarts a dead service by itself", { skip: winSkip("on Windows a service killed within a minute pauses restarts; batch14 covers it") }, async () => {
     const p = await up();
     p.kill("SIGKILL");
-    assert.ok(await waitFor(() => p.signalCode !== null));
+    assert.ok(await waitFor(() => p.exitCode !== null || p.signalCode !== null));
     assert.equal(await ping(socketPath(), 300), "dead", "stale socket left behind");
     const r = spawnSync(process.execPath, [cli, "hint", "claude"], { input: promptBody("nh-1"), env: process.env, encoding: "utf8" });
     assert.match(r.stdout, /python-testing/, "the hook still answered");
     assert.ok(await waitFor(aliveNow, 10000), "and a new service is coming up for the next one");
     await down();
 });
-svc("an unwritable state dir makes starting quietly give up, never a stack trace", { skip: process.getuid?.() === 0 && "running as root" }, () => {
+svc("an unwritable state dir makes starting quietly give up, never a stack trace", { skip: (process.getuid?.() === 0 && "running as root") || winSkip("file modes") }, () => {
     const ro = path.join(home, "ro-home");
     fs.mkdirSync(path.join(ro, ".skillrouter"), { recursive: true });
     fs.chmodSync(path.join(ro, ".skillrouter"), 0o555);
@@ -505,7 +534,7 @@ svc("an unwritable state dir makes starting quietly give up, never a stack trace
     assert.equal(svc.status, 1);
     fs.chmodSync(path.join(ro, ".skillrouter"), 0o755);
 });
-svc("a client that already left gets no work done for it", async () => {
+svc("a client that already left gets no work done for it", { skip: winSkip("SIGSTOP") }, async () => {
     const p = await up();
     process.kill(p.pid, "SIGSTOP"); // the service can't read while the clients come and go
     for (let i = 0; i < 4; i++) {
@@ -527,8 +556,8 @@ svc("installing stops a running service so the next hook starts the new code", a
 // Whatever a launcher or the Node client started in the background goes away after the tests that use them (svc()),
 // and at exit (below). File-level after/afterEach hooks would also fire while a name-filtered test is still running.
 // ---- second QA review --------------------------------------------------------------------------------------------
-const hasPerl2 = spawnSync("perl", ["-e", "1"]).status === 0;
-svc("a service that stopped reading can't hang a hook, whatever the body size", { skip: !hasPerl2 && "perl not installed" }, async () => {
+const hasPerl2 = !WIN && spawnSync("perl", ["-e", "1"]).status === 0;
+svc("a service that stopped reading can't hang a hook, whatever the body size", { skip: !hasPerl2 && "needs sh and perl" }, async () => {
     writeLauncher(process.execPath, cli, launcherPath);
     const srv = await fake(() => { });
     for (const kb of [20, 100, 400, 900]) {
@@ -573,7 +602,7 @@ svc("a request the service had to abandon gives its trigger back, so the hook ru
     assert.equal(typeof first, "object", "the rule is claimable again");
     assert.match((await toolEvent("claude", first.spawn, true)), /you worked on tests/, "and the hook run again shows its hint");
 });
-svc("a replaced service's files survive the old one exiting", async () => {
+svc("a replaced service's files survive the old one exiting", { skip: winSkip("deletes the socket file and uses SIGTERM") }, async () => {
     const a = await up();
     for (const f of ["svc.sock", "svc.pid", "svc.json"])
         fs.rmSync(path.join(runDir(), f), { force: true });
@@ -611,7 +640,7 @@ svc("only a known mode is ever sent to the service; declines don't count as fail
     await up();
     assert.equal((await ask("claude", "-", "{}")).kind, "ok");
 });
-svc("the launcher's exit codes: Node's become 0 or 1, and a service request in a status mode never reaches the service", { skip: !hasPerl2 && "perl not installed" }, async () => {
+svc("the launcher's exit codes: Node's become 0 or 1, and a service request in a status mode never reaches the service", { skip: !hasPerl2 && "needs sh and perl" }, async () => {
     const fakeNode = path.join(home, "fake-node.sh");
     for (const [code, want] of [[0, 0], [1, 1], [3, 1], [255, 1]]) {
         fs.writeFileSync(fakeNode, `#!/bin/sh\ncat >/dev/null\necho out\nexit ${code}\n`, { mode: 0o755 });
@@ -627,7 +656,7 @@ svc("the launcher's exit codes: Node's become 0 or 1, and a service request in a
     assert.doesNotMatch(r.stdout, /"pid"/, "the service's status JSON is not a hook answer");
     assert.equal((await status()).requests, before, "unknown modes are run by the hook itself");
 });
-svc("a hook run under another HOME (no SKILLROUTER_HOME) is not answered from this service's state", { skip: !hasPerl2 && "perl not installed" }, async () => {
+svc("a hook run under another HOME (no SKILLROUTER_HOME) is not answered from this service's state", { skip: !hasPerl2 && "needs sh and perl" }, async () => {
     writeLauncher(process.execPath, cli, launcherPath);
     await up();
     const before = (await status()).requests;
@@ -664,13 +693,16 @@ svc("shutting down gives back the rules of requests still in flight", async () =
     const ev = JSON.stringify({ session_id: "gw-2", prompt_id: "p1", cwd: "/repo", tool_use_id: "tu-gw2", tool_name: "Bash", tool_input: { command: "docker build ." } });
     const pending = query("claude", "tool", ev, 3000);
     await sleep(250);
-    p.kill("SIGTERM");
+    if (WIN)
+        void stopService();
+    else
+        p.kill("SIGTERM"); // Windows ends a process outright, so only the request can ask for a clean exit
     assert.equal(await pending, null);
     assert.ok(await waitFor(() => p.exitCode !== null || p.signalCode !== null));
     const first = await toolEvent("claude", ev, false);
     assert.equal(typeof first, "object", "the trigger was not lost with the service");
 });
-svc("`service stop` finds a service whose socket file is gone", async () => {
+svc("`service stop` finds a service whose socket file is gone", { skip: winSkip("deletes the socket file") }, async () => {
     const p = await up();
     fs.unlinkSync(socketPath());
     assert.equal(await ping(socketPath(), 200), "dead");
@@ -693,7 +725,7 @@ svc("a lock or failure marker stamped in the future doesn't block starting", asy
     assert.ok(await waitFor(aliveNow, 10000), "serve --start went ahead despite a future-dated failure marker");
     fs.rmSync(path.join(runDir(), "svc.off"), { force: true });
 });
-svc("OpenCode's hook gives up on a hung service sooner than the others", { skip: !hasPerl2 && "perl not installed" }, async () => {
+svc("OpenCode's hook gives up on a hung service sooner than the others", { skip: !hasPerl2 && "needs sh and perl" }, async () => {
     writeLauncher(process.execPath, cli, launcherPath);
     const srv = await fake(() => { });
     const time = (agent) => { const t0 = Date.now(); const r = sh([agent], { input: promptBody("oc-" + agent), env: { SKILLROUTER_SERVICE_TRIED: "" } }); return { ms: Date.now() - t0, ok: /python-testing|^$/.test(r.stdout) }; };
@@ -704,7 +736,7 @@ svc("OpenCode's hook gives up on a hung service sooner than the others", { skip:
     assert.ok(oc.ms < cl.ms - 200 && oc.ms < 1500, `opencode ${oc.ms} ms vs claude ${cl.ms} ms`);
     await closeFake(srv);
 });
-svc("a cold burst of hooks starts one service, and tool calls are counted once", { skip: !hasPerl2 && "perl not installed" }, async () => {
+svc("a cold burst of hooks starts one service, and tool calls are counted once", { skip: !hasPerl2 && "needs sh and perl" }, async () => {
     writeLauncher(process.execPath, cli, launcherPath);
     assert.equal(await ping(socketPath(), 200), "dead");
     fs.rmSync(path.join(runDir(), "svc.starting"), { recursive: true, force: true });
