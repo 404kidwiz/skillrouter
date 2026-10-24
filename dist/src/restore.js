@@ -256,7 +256,8 @@ export function restore(file, apply = false) {
         for (const [backup, items] of archives) {
             const into = path.join(stageRoot, String(n++)); // resolved: the link check below compares real paths
             fs.mkdirSync(into);
-            const tar = spawnSync(tarCommand(), ["-xf", path.join(path.dirname(file), backup.archive), "-C", into], { ...NO_WINDOW, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8" });
+            // Relative archive path, run from the staging folder: tar's arguments stay ASCII whatever the home folder is called (see trim).
+            const tar = spawnSync(tarCommand(), ["-xf", path.relative(into, path.join(path.dirname(file), backup.archive))], { ...NO_WINDOW, cwd: into, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8" });
             if (tar.error)
                 throw new Error(`Could not run tar to read ${backup.archive}: ${tar.error.message}`);
             const base = path.join(into, path.basename(backup.source));

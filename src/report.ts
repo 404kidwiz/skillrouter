@@ -4,7 +4,7 @@ import { AGENT_SKILL_DIRS, AGENTS, USAGE_LOG } from "./paths.js";
 import { health } from "./health.js";
 import { parseFrontmatter } from "./index.js";
 import { bareSkill } from "./state.js";
-import { readVerdicts, suppressAfter, suppressedByAgent } from "./verdicts.js";
+import { readVerdicts, suppressAfter, suppressedByAgent, endorsed, endorseAfter } from "./verdicts.js";
 
 export interface Row { ts: string; client: string; tool: string; skill?: string; found?: boolean;
   hits?: [string, number, ...unknown[]][]; sem?: string; sem_error?: string; agent?: string; session?: string; hint_id?: string; reason?: string; via?: string; trigger?: string;
@@ -129,6 +129,11 @@ function verdictLines(verdicts: Row[]): string[] {
     out.push(`Held back from ${agent}'s checks (declined in ${suppressAfter()}+ sessions, accepted under 10%; search_skills still finds them): ` +
       ids.slice(0, 12).map((id) => `${id} (${v.agents[agent][id].accepted}/${v.agents[agent][id].shown})`).join(", ") + (ids.length > 12 ? ` and ${ids.length - 12} more` : "") +
       ". Exempt one: skillrouter suppress keep <id>.");
+  }
+  for (const agent of Object.keys(v.agents).sort()) {
+    const ids = [...endorsed(agent, v)];
+    if (ids.length) out.push(`Endorsed on ${agent} (accepted in ${endorseAfter()}+ turns and at least half the time; shown on a lower bar): ` +
+      ids.slice(0, 12).map((id) => `${id} (${v.agents[agent][id].accepted}/${v.agents[agent][id].shown})`).join(", ") + (ids.length > 12 ? ` and ${ids.length - 12} more` : "") + ".");
   }
   return out;
 }

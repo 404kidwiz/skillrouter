@@ -49,7 +49,9 @@ export function trim(agents: AgentId[], apply: boolean, keep: string[] = []): Tr
     if (apply) {
       const tar = path.join(BACKUP_DIR, `${path.basename(path.dirname(dir))}-${path.basename(dir)}-${stamp}.tar`.replace(/^\./, ""));
       const entries = backupEntries(dir);
-      execFileSync(tarCommand(), ["-cf", tar, "-C", path.dirname(dir), path.basename(dir)], NO_WINDOW);
+      // Run from the backup folder with relative paths: Windows's tar.exe reads its arguments through the ANSI code page,
+      // and a home folder with a non-ASCII name ("Jürgen") would be mangled; the folder it runs in is passed intact.
+      execFileSync(tarCommand(), ["-cf", path.basename(tar), "-C", path.relative(BACKUP_DIR, path.dirname(dir)) || ".", path.basename(dir)], { ...NO_WINDOW, cwd: BACKUP_DIR });
       const removed = plan.filter((e) => e.lst).map((e) => e.name).filter((name) => entries.some((e) => e.path === name));
       manifest.backups.push({ archive: path.basename(tar), source: path.resolve(dir), sha256: hashFile(tar), removed, entries });
       // Persist recovery information before the first move, including when a later folder or move fails.

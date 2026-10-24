@@ -105,3 +105,27 @@ test("doctor and report say whether the semantic layer really ran in prompt chec
   const r = report(7, rows);
   assert.match(r, /Prompt checks: 8\/9 showed a hint/); assert.match(r, /Semantic layer during those checks: error 8, on 1 \(mostly BM25 alone/);
 });
+
+test("a skill a host keeps accepting is endorsed, and passes the hint gate on a lower bar", async () => {
+  const { addVerdict, endorsed, readVerdicts } = await import("../src/verdicts.js");
+  for (let i = 0; i < 3; i++) addVerdict("codex", ["qa-only~2"], ["klaviyo-automation"]);
+  addVerdict("codex", [], ["qa-only"]); // one decline: still accepted 3 of 4 times
+  addVerdict("claude", ["qa-only"], []); // another host: its own history
+  const v = readVerdicts();
+  assert.deepEqual([...endorsed("codex", v)], ["qa-only"], "three accepted turns, at least half the time");
+  assert.deepEqual([...endorsed("claude", v)], [], "one acceptance is not a habit");
+  addVerdict("codex", [], ["qa-only"]); addVerdict("codex", [], ["qa-only"]); addVerdict("codex", [], ["qa-only"]);
+  assert.deepEqual([...endorsed("codex", readVerdicts())], [], "accepted 3 of 7 now: under half, the bar is back to normal");
+  process.env.SKILLROUTER_ENDORSE_AFTER = "0";
+  assert.deepEqual([...endorsed("codex", v)], [], "0 turns it off");
+  delete process.env.SKILLROUTER_ENDORSE_AFTER;
+
+  const h = (id: string, raw: number, matched: number, specific: number, cos?: number) => ({ skill: { id, name: id, description: "Use when doing a specific kind of work", path: "/p", root: "/r", tokens: [] }, score: 1, raw, matched, specific, cos });
+  const ids = (hits: ReturnType<typeof h>[], o?: { conversational?: boolean; trusted?: Set<string> }) => selectHints(hits, 20, 3, o).map((x) => x.skill.id);
+  const automation = [h("klaviyo-automation", 49, 8, 3, 0.38), h("qa-only~2", 43, 8, 2, 0.24), h("sdk", 34, 9, 0, 0.28)]; // the real Site Integrity Guard prompt, as scored
+  assert.deepEqual(ids(automation), [], "unknown skills: nothing confident enough");
+  assert.deepEqual(ids(automation, { trusted: new Set(["qa-only"]) }), ["qa-only~2"], "the skill this host keeps accepting comes back; the junk does not");
+  assert.deepEqual(ids([h("best", 10, 1, 0, 0.7), h("habit", 10, 1, 0, 0.42)], { trusted: new Set(["habit"]) }), ["best", "habit"], "an endorsed skill is not held to the margin");
+  assert.deepEqual(ids([h("habit", 10, 1, 0, 0.42)], { conversational: true, trusted: new Set(["habit"]) }), [], "but 'do suggestion 2' still needs 0.45 even from it");
+  assert.deepEqual(ids([h("habit", 30, 2, 0)], { trusted: new Set(["habit"]) }), ["habit"], "lexical only: no specific word needed from an endorsed skill");
+});

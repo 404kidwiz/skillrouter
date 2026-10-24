@@ -5,8 +5,8 @@ import { INDEX_FILE } from "./paths.js";
 import { getIndex, logUsage, search } from "./search.js";
 import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
-import { addShown, loadedSkills, markTurn } from "./state.js";
-import { suppressed } from "./verdicts.js";
+import { addShown, bareSkill, loadedSkills, markTurn } from "./state.js";
+import { endorsed, suppressed } from "./verdicts.js";
 const EVENT = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
 const TOOL_EVENT = { gemini: "AfterTool" }; // claude/codex: PostToolUse
 /** The host's hook answer carrying context for the model. `tool`: after a tool call rather than on a prompt. */
@@ -99,7 +99,7 @@ export async function hint(agent, input, minRaw, k = 3) {
         // Loaded skills and those agents keep declining (verdicts.json) are not offered.
         if (sem.status === "error")
             payload = { ...payload, sem_error: sem.error };
-        hits = selectHints(await search(query, 12, { semantic: sem.scores, known: new Set([...loaded, ...suppressed(agent)]), prefer: core }), minRaw, k, { conversational: isConversational(prompt) });
+        hits = selectHints(await search(query, 12, { semantic: sem.scores, known: new Set([...loaded, ...suppressed(agent)]), prefer: core }), minRaw, k, { conversational: isConversational(prompt), trusted: endorsed(agent) });
     }
     catch {
         record(fs.existsSync(INDEX_FILE) ? "index_error" : "missing_index");
@@ -122,29 +122,36 @@ export async function hint(agent, input, minRaw, k = 3) {
  * conversation, not a task. Without the layer: the lexical floor, two matched words, one of them specific; nothing on
  * a conversational prompt. Candidates stay within a margin of the best one (0.12 in cosine, 15% in BM25), at most k.
  *
- * Calibrated 2026-10-24 on 57 real prompts from this machine's hosts (48 got a hint before, 15 after; hints on
- * prompts that needed none fell from 29 to 9) and the bundled fixture (recall and precision unchanged).
+ * `trusted` (see verdicts.ts endorsed): skills this host keeps accepting pass on a lower bar, meaning 0.4 alone or 0.2
+ * with three matched words, one specific (0.45 on a conversational prompt), and are not held to the margin: a weak
+ * match for a skill the agent uses every time is worth more than a strong match for an unknown one.
+ *
+ * Calibrated 2026-10-24 on 57 real prompts from this machine's hosts (48 got a hint before, 13 after; hints on
+ * prompts that needed none fell from 29 to 7) and the bundled fixture (recall and precision unchanged).
  */
 export function selectHints(hits, minRaw, k, options = {}) {
     const described = hits.filter((h) => h.skill.description.trim().length >= 20);
     const semantic = described.some((h) => h.cos !== undefined);
     const specific = (h) => h.specific ?? h.matched; // (a hit built without the count: every matched word counts)
-    const lexical = (h) => h.matched >= 2 && h.raw >= minRaw && specific(h) >= 1;
+    const trusted = (h) => !!options.trusted && (options.trusted.has(bareSkill(h.skill.id)) || options.trusted.has(bareSkill(h.skill.name)));
+    const lexical = (h) => h.matched >= 2 && h.raw >= minRaw && (specific(h) >= 1 || trusted(h));
     if (!semantic) {
         if (options.conversational)
             return [];
         const passing = described.filter(lexical).sort((a, b) => b.raw - a.raw);
         const top = passing[0]?.raw ?? 0;
-        return passing.filter((h) => h.raw >= 0.85 * top).slice(0, k);
+        return passing.filter((h) => trusted(h) || h.raw >= 0.85 * top).slice(0, k);
     }
     // A hit without a vector (new since the last embedding run) is judged by the lexical gate, on a comparable scale.
     const strength = (h) => (h.cos !== undefined ? h.cos : Math.min(0.5, h.raw / 100 + 0.25));
     const passes = (h) => h.cos === undefined
         ? lexical(h) && !options.conversational
-        : options.conversational ? h.cos >= 0.55 : h.cos >= 0.5 || (h.cos >= 0.4 && specific(h) >= 2 && h.raw >= minRaw);
+        : trusted(h)
+            ? (options.conversational ? h.cos >= 0.45 : h.cos >= 0.4 || (h.cos >= 0.2 && h.matched >= 3 && specific(h) >= 1 && h.raw >= minRaw))
+            : options.conversational ? h.cos >= 0.55 : h.cos >= 0.5 || (h.cos >= 0.4 && specific(h) >= 2 && h.raw >= minRaw);
     const passing = described.filter(passes).sort((a, b) => strength(b) - strength(a));
-    const top = passing[0] ? strength(passing[0]) : 0;
-    return passing.filter((h) => strength(h) >= top - 0.12).slice(0, k);
+    const top = passing.find((h) => !trusted(h)) ? strength(passing.find((h) => !trusted(h))) : 0;
+    return passing.filter((h) => trusted(h) || strength(h) >= top - 0.12).slice(0, k);
 }
 /** The hint the model reads: a required decision, each candidate's trigger, and the exact way to load it. */
 export function hintText(hits, hint_id, core, agent = "claude", lead) {

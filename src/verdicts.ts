@@ -15,6 +15,7 @@ import { renameSyncRetry } from "./platform.js";
 const FILE = path.join(SR_DIR, "verdicts.json");
 const LOCK = FILE + ".lock";
 const HOLD_MS = 30 * 86400e3;
+const ENDORSE_MS = 90 * 86400e3;
 
 export interface SkillVerdicts { shown: number; accepted: number; declined: number; last: string }
 type Table = Record<string, SkillVerdicts>;
@@ -103,6 +104,29 @@ export function suppressAfter(): number {
   const raw = process.env.SKILLROUTER_SUPPRESS_AFTER;
   const n = raw === undefined || raw.trim() === "" ? 5 : Number(raw);
   return Number.isFinite(n) ? n : 5;
+}
+
+/** Accepted turns before a skill is endorsed on a host (env SKILLROUTER_ENDORSE_AFTER; 0 turns it off, empty means default). */
+export function endorseAfter(): number {
+  const raw = process.env.SKILLROUTER_ENDORSE_AFTER;
+  const n = raw === undefined || raw.trim() === "" ? 3 : Number(raw);
+  return Number.isFinite(n) ? n : 3;
+}
+
+/**
+ * The mirror of suppression: skills this host has accepted in `endorseAfter()`+ turns and at least half the times
+ * they were suggested, with a verdict in the last 90 days. The prompt check lets them through on a lower bar (see
+ * selectHints): a weak match for a skill the agent keeps using is worth showing; the same match for an unknown one is not.
+ */
+export function endorsed(agent: string, v?: Verdicts): Set<string> {
+  try {
+    const after = endorseAfter();
+    if (!(after > 0)) return new Set();
+    const data = v ?? readVerdicts();
+    return new Set(Object.entries(data.agents[agent] ?? {})
+      .filter(([, e]) => e.accepted >= after && e.accepted * 2 >= e.shown && Date.now() - Date.parse(e.last) < ENDORSE_MS)
+      .map(([id]) => id));
+  } catch { return new Set(); }
 }
 
 /** Held back on this host now: declined in `suppressAfter()`+ sessions, accepted under 10%, last verdict within 30 days, not kept. */

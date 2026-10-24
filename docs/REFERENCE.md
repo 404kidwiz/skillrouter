@@ -161,6 +161,7 @@ Advanced tuning:
 | --- | --- |
 | `SKILLROUTER_SERVICE_IDLE_MIN` | Service idle shutdown interval; default 30 minutes |
 | `SKILLROUTER_MIN_RAW` | Explicit lexical floor; default otherwise scales with library size |
+| `SKILLROUTER_ENDORSE_AFTER` | Accepted turns before a host's skill passes the hint gate on a lower bar (default 3; 0 turns it off) |
 | `SKILLROUTER_SUPPRESS_AFTER` | Decline-session threshold; default 5; 0 disables suppression |
 
 For example, run standalone diagnostics in a POSIX shell:
