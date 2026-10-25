@@ -116,11 +116,13 @@ export function actionOf(tool: string, raw: any): Action | null {
 export function commandsOf(line: string): string[] {
   const text = line.slice(0, 64 * 1024); // bound the work: hook input is untrusted
   // Quoted strings become one token (multi-line too, as in shell), so `VAR="a b" cmd` still reads as an assignment.
-  const noQuotes = stripHeredocs(text).replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "Q");
+  // A double-quoted string that holds `$(...)` or backticks runs them, so its text stays visible to the splitter below.
+  const noQuotes = stripHeredocs(text).replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, (m) => (m[0] === '"' && /\$\(|`/.test(m) ? ` ${m.slice(1, -1)} ` : "Q"));
   // Whole words followed by whitespace only (`bun` never eats `bundle`, `env` never `envsubst`). Package managers
   // are wrappers only with exec/dlx: `pnpm test` is the command `pnpm test`, not `test`.
   const WRAPPERS = /^(?:(?:\w+=\S*|sudo(?:\s+-\S+)*|time|env|nohup|exec|command|do|then|else|!|\{|nice(?:\s+-n\s+\S+)?|timeout\s+\S+|npx(?:\s+-y)?|pnpm\s+(?:exec|dlx)|yarn\s+dlx|bunx|uv\s+run|poetry\s+run|pipenv\s+run|bundle\s+exec|python3?\s+-m)\s+|(?:\.\/)?node_modules\/\.bin\/)+/;
-  return noQuotes.split(/\|\||&&|;|\||\n|\$\(|`|\)/)
+  // A lone & (background) ends a command too; `&&`, `&>`, `>&` and `|&` are not it.
+  return noQuotes.split(/\|\||&&|;|\||\n|\$\(|`|\)|(?<![>&|])&(?![>&])/)
     .map((s) => s.trim().replace(WRAPPERS, ""))
     .filter(Boolean);
 }
@@ -154,8 +156,9 @@ const isReadOnly = (command: string): boolean => {
 // The same for PowerShell (any case): a whole word, so `gc.sh` or `dir/build.sh` are not it.
 const PS_READ_ONLY = /^(?:get-(?:content|childitem|item|location|command|date)|gci|gc|dir|select-string|sls|set-location|write-(?:output|host)|test-path|resolve-path|measure-object|where-object|select-object|sort-object|format-(?:table|list))(?=\s|$)/i;
 
-// Redirects that touch no file: stderr into stdout or into /dev/null, anything into /dev/null. They do not turn a read into a write.
-const HARMLESS_REDIRECT = /\s*(?:&?\d?>>?\s*\/dev\/null|\d?>&\d|\d>&-)(?=\s|$)/g;
+// Redirects that touch no file: stderr into stdout, anything into /dev/null (also `>& /dev/null`, PowerShell `> $null`, cmd `> nul`).
+// They do not turn a read into a write.
+const HARMLESS_REDIRECT = /\s*(?:&?\d?>>?\s*\/dev\/null|\d?>&\s*\/dev\/null|\d?>&\d|\d>&-|\*?>>?\s*\$null|>>?\s*nul)(?=\s|$)/gi;
 
 /** Whether an action is work: any edit, or a shell line with at least one command that does more than read. */
 export function isWork(action: Action | null): boolean {
@@ -165,7 +168,8 @@ export function isWork(action: Action | null): boolean {
   return commands.some((c) => {
     const t = c.replace(HARMLESS_REDIRECT, "").trim(); // `git status 2>&1` is `git status`
     const looks = isReadOnly(t) || PS_READ_ONLY.test(t.replace(/^\(+/, ""));
-    const writes = /(?<![2&])>(?!&)/.test(t) || /&>/.test(t) || />&\s*[^\d\s-]/.test(t) || /^find\b.*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b/.test(t);
+    // Any `>` left after the harmless ones is a file being written: `>f`, `2>f`, `>&f`, `&>f`, `>&2f`, `>|f`, `<>f`.
+    const writes = />/.test(t) || /^find\b.*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b/.test(t);
     return !looks || writes;
   });
 }

@@ -120,7 +120,12 @@ export function shownAlts(session, prompt, since) {
  * the prompt hook marks where a turn starts, the tool hook counts the work done in it, and the
  * end-of-turn hook reads both. `turn` is the hashed host turn id when the host has one.
  */
-export function markTurn(session, turn) { append(session, "turns.jsonl", { turn }); }
+export function markTurn(session, turn) {
+    // A hook run again (the warm service timed out first) must not start the same turn twice.
+    if (turn && rows(session, "turns.jsonl").some((r) => r.turn === turn))
+        return;
+    append(session, "turns.jsonl", { turn });
+}
 export function addTool(session, turn, sub) { append(session, "tools.jsonl", { turn, sub }); }
 /**
  * True the first time a tool call (its host-given id) is seen in this session, and records it. A hook run again after
@@ -168,7 +173,11 @@ export function turnWindow(session, turn) {
  * (not a command or system text; a short or conversational one only while the session has not searched); "searched" rows are
  * searches and skill loads the gate hook saw (`via` says which). How often it has stopped a work call is counted by claiming slots (claimDenial).
  */
-export function addGateTask(session, turn) { append(session, "gate.jsonl", { kind: "task", turn }); }
+export function addGateTask(session, turn) {
+    if (turn && rows(session, "gate.jsonl").some((r) => r.kind === "task" && r.turn === turn))
+        return;
+    append(session, "gate.jsonl", { kind: "task", turn });
+}
 export function addSearched(session, turn, sub, via = "search") { append(session, "gate.jsonl", { kind: "searched", turn, sub, via }); }
 /**
  * Where the current turn started if it is a task turn the gate applies to, else undefined: the turn's marker (the one with

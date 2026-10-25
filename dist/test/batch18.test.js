@@ -104,10 +104,10 @@ test("sessions older than the window are left out, and a quiet log prints no sec
 test("report prints the funnel under the hint sections, with its caveat", () => {
     const text = report(1);
     assert.match(text, /Search gate, per agent \(sessions still on disk, kept 7 days; a turn is one prompt that describes a task\):/);
-    assert.match(text, /\n  claude: 2 task turns; 2 did work, 0 of those with no search or load; 1 refusals in 1 turns, a search followed in 1; 1 of 1 turns with a search then loaded a skill; stepped aside in 0\n/);
-    assert.match(text, /\n  codex: 3 task turns; 2 did work, 2 of those with no search or load; 2 refusals in 1 turns, a search followed in 0; 0 of 0 turns with a search then loaded a skill; stepped aside in 1\n/);
-    assert.match(text, /\n  gemini: 1 task turns;[^\n]*; 1 turns' searches come from the MCP log, not the session's own record\n/);
-    assert.match(text, /borrow another session's search/);
+    assert.match(text, /\n  claude: 2 task turns; 2 did work, 0 of those with no search or load; 1 refusal in 1 turn, a search or load followed in 1; 1 of 1 turn with a search then loaded a skill; stepped aside in 0\n/);
+    assert.match(text, /\n  codex: 3 task turns; 2 did work, 2 of those with no search or load; 2 refusals in 1 turn, a search or load followed in 0; 0 of 0 turns with a search then loaded a skill; stepped aside in 1\n/);
+    assert.match(text, /\n  gemini: 1 task turn;[^\n]*; 1 turn's search comes from the MCP log, not the session's own record\n/);
+    assert.match(text, /each of its rows is credited to one turn at most/);
 });
 test("the gate hook records a search or a load as such, so the funnel can tell them apart", async () => {
     const { gateEvent } = await import("../src/gate.js");
@@ -121,4 +121,64 @@ test("the gate hook records a search or a load as such, so the funnel can tell t
         const row = fs.readFileSync(path.join(process.env.SKILLROUTER_HOME, "state", sessionHash(s), "gate.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((r) => r.kind === "searched");
         assert.equal(row.via, via, tool);
     }
+});
+test("funnel edge cases from review: a huge session, borrowing once, complete records, duplicate hook runs, late refusals, junk rows, shared sessions", async () => {
+    const { logUsage: lu } = await import("../src/search.js");
+    const sessions = path.join(process.env.SKILLROUTER_HOME, "state");
+    const jsonl = (name, file, rows) => { fs.mkdirSync(path.join(sessions, name), { recursive: true }); fs.appendFileSync(path.join(sessions, name, file), rows.map((r) => JSON.stringify(r)).join("\n") + "\n"); };
+    const now = Date.now(), iso = (ms) => new Date(ms).toISOString();
+    const one = (agent, rowsIn, since = now - 86400e3) => gateFunnel(rowsIn, (r) => r.agent ?? "x", since, now + 1_000_000).find((l) => l.agent === agent);
+    // 1. A session with 150,000 tool rows used to blow the stack in Math.max(...rows).
+    const big = hex("1");
+    jsonl(big, "turns.jsonl", [{ ts: now - 1000 }]);
+    jsonl(big, "gate.jsonl", [{ ts: now - 900, kind: "task" }]);
+    fs.appendFileSync(path.join(sessions, big, "tools.jsonl"), `{"ts":${now - 500}}\n`.repeat(150_000));
+    assert.equal(one("bigagent", [{ ts: iso(now), client: "c", tool: "hint", agent: "bigagent", session: big }]).worked, 1);
+    // 2. Two sessions of an agent with no records of their own, one MCP search between them: credited once.
+    const a = hex("2"), b = hex("3");
+    for (const [sid, off] of [[a, 2000], [b, 1900]]) {
+        jsonl(sid, "turns.jsonl", [{ ts: now - off }]);
+        jsonl(sid, "gate.jsonl", [{ ts: now - off + 10, kind: "task" }]);
+        jsonl(sid, "tools.jsonl", [{ ts: now - off + 50 }]);
+    }
+    const lendRows = [{ session: a, agent: "lender" }, { session: b, agent: "lender" }].map((r) => ({ ts: iso(now), client: "c", tool: "hint", ...r }))
+        .concat([{ ts: iso(now - 1800), client: "c", tool: "search_skills", agent: "lender" }]);
+    const lent = one("lender", lendRows);
+    assert.deepEqual([lent.taskTurns, lent.searched, lent.borrowed, lent.workedNoSearch], [2, 1, 1, 1], "one MCP search is lent to one turn, the other turn did work without searching");
+    // 3. A session whose gate hook ran (it has a refusal) has complete records: an MCP search is not lent to it.
+    const c = hex("4");
+    jsonl(c, "turns.jsonl", [{ ts: now - 3000 }]);
+    jsonl(c, "gate.jsonl", [{ ts: now - 2990, kind: "task" }]);
+    const complete = one("complete", [{ ts: iso(now), client: "c", tool: "hint", agent: "complete", session: c }, { ts: iso(now - 2900), client: "c", tool: "gate", agent: "complete", session: c, reason: "denied" },
+        { ts: iso(now - 2800), client: "c", tool: "search_skills", agent: "complete" }]);
+    assert.deepEqual([complete.refusals, complete.searched, complete.workedNoSearch, complete.searchedAfter], [1, 0, 1, 0]);
+    // 4. A hook run twice for one prompt (the service timed out, the CLI ran it again) is one turn.
+    const d = hex("5");
+    markTurn(d, "same");
+    markTurn(d, "same");
+    addGateTask(d, "same");
+    addGateTask(d, "same");
+    assert.equal(fs.readFileSync(path.join(sessions, d, "turns.jsonl"), "utf8").trim().split("\n").length, 1);
+    assert.equal(fs.readFileSync(path.join(sessions, d, "gate.jsonl"), "utf8").trim().split("\n").length, 1);
+    const dupOld = hex("6"); // rows written before the fix: two markers and two task rows with one id
+    jsonl(dupOld, "turns.jsonl", [{ ts: now - 700, turn: "t" }, { ts: now - 600, turn: "t" }]);
+    jsonl(dupOld, "gate.jsonl", [{ ts: now - 690, kind: "task", turn: "t" }, { ts: now - 590, kind: "task", turn: "t" }]);
+    jsonl(dupOld, "tools.jsonl", [{ ts: now - 650 }]);
+    const dup = one("dup", [{ ts: iso(now), client: "c", tool: "hint", agent: "dup", session: dupOld }]);
+    assert.deepEqual([dup.taskTurns, dup.worked], [1, 1], "counted once, with the work between the two markers");
+    // 5. A refusal 90 s after the marker with nothing after it still belongs to its turn; junk rows and future rows do no harm.
+    const e = hex("7");
+    jsonl(e, "turns.jsonl", [{ ts: now - 200_000 }, "junk", 5]);
+    jsonl(e, "gate.jsonl", [{ ts: now - 199_990, kind: "task" }, { kind: "task" }, 7]);
+    jsonl(e, "tools.jsonl", [{ ts: now + 10 * 86400e3 }]);
+    const late = one("late", [{ ts: iso(now), client: "c", tool: "hint", agent: "late", session: e }, { ts: iso(now - 110_000), client: "c", tool: "gate", agent: "late", session: e, reason: "denied" }]);
+    assert.deepEqual([late.taskTurns, late.refusals, late.refusedTurns, late.worked], [1, 1, 1, 1]);
+    // 6. A session id used by two hosts is credited to the one that used it more.
+    const f = hex("8");
+    jsonl(f, "turns.jsonl", [{ ts: now - 400 }]);
+    jsonl(f, "gate.jsonl", [{ ts: now - 390, kind: "task" }]);
+    const shared = gateFunnel([{ session: f, agent: "cursor" }, { session: f, agent: "claude" }, { session: f, agent: "claude" }].map((r) => ({ ts: iso(now), client: "c", tool: "hint", ...r })), (r) => r.agent ?? "x", now - 86400e3, now + 1_000_000);
+    assert.equal(shared.find((l) => l.agent === "claude")?.taskTurns, 1, "credited to claude");
+    assert.equal(shared.some((l) => l.agent === "cursor"), false, "not split with cursor");
+    void lu;
 });
