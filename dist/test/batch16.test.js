@@ -317,3 +317,14 @@ test("a slash command may start with a digit or underscore; a path is still a pr
     for (const c of ["/usr/local/bin/foo fails", "/.claude/x", "/ a b", "fix /commit"])
         assert.equal(isSlashCommand(c), false, c);
 });
+test("a trailing 2>&1, 2>/dev/null or other redirect that touches no file does not turn a read into work; a redirect to a real file still does", () => {
+    const w = (c) => isWork(actionOf("Bash", { command: c }));
+    const reads = ["node -v 2>&1", "codex --version 2>&1", "git status 2>/dev/null", "git -C /repo log -3 2>&1", "curl -s localhost:3000/health 2>&1 | head", "ls >/dev/null 2>&1", "ls > /dev/null",
+        "docker ps 2>&1 | grep web", "npm ls 2>/dev/null", "gh pr view 12 2>&1", "echo hi >&2", "git branch -a &>/dev/null", "cat README.md 1>/dev/null 2>&1", "ps aux 2>&-"];
+    const writes = ["ls > out", "git status > out 2>&1", "echo x >> f 2>/dev/null", "pytest -q 2>&1", "ls &> out", "cat a >&out", "ls 2>&1 > out", "npm install 2>&1 | tail -3", "curl -o f http://x.test 2>/dev/null",
+        "git commit -m x 2>&1", "sed -n 1,5p a > b 2>&1"];
+    for (const c of reads)
+        assert.equal(w(c), false, `${c} only reads`);
+    for (const c of writes)
+        assert.equal(w(c), true, `${c} writes`);
+});

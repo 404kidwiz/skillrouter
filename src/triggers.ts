@@ -154,12 +154,20 @@ const isReadOnly = (command: string): boolean => {
 // The same for PowerShell (any case): a whole word, so `gc.sh` or `dir/build.sh` are not it.
 const PS_READ_ONLY = /^(?:get-(?:content|childitem|item|location|command|date)|gci|gc|dir|select-string|sls|set-location|write-(?:output|host)|test-path|resolve-path|measure-object|where-object|select-object|sort-object|format-(?:table|list))(?=\s|$)/i;
 
+// Redirects that touch no file: stderr into stdout or into /dev/null, anything into /dev/null. They do not turn a read into a write.
+const HARMLESS_REDIRECT = /\s*(?:&?\d?>>?\s*\/dev\/null|\d?>&\d|\d>&-)(?=\s|$)/g;
+
 /** Whether an action is work: any edit, or a shell line with at least one command that does more than read. */
 export function isWork(action: Action | null): boolean {
   if (!action) return false;
   if (action.file || action.files?.length) return true;
   const commands = action.command ? commandsOf(action.command) : [];
-  return commands.some((c) => !(isReadOnly(c) || PS_READ_ONLY.test(c.replace(/^\(+/, ""))) || /(?<![2&])>(?!&)/.test(c) || /&>/.test(c) || /^find\b.*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b/.test(c));
+  return commands.some((c) => {
+    const t = c.replace(HARMLESS_REDIRECT, "").trim(); // `git status 2>&1` is `git status`
+    const looks = isReadOnly(t) || PS_READ_ONLY.test(t.replace(/^\(+/, ""));
+    const writes = /(?<![2&])>(?!&)/.test(t) || /&>/.test(t) || />&\s*[^\d\s-]/.test(t) || /^find\b.*\s-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)\b/.test(t);
+    return !looks || writes;
+  });
 }
 
 /** A command names its ecosystem the way a file extension does: `pnpm test` is JavaScript, `pytest` is Python. */

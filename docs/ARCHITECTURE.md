@@ -35,6 +35,8 @@ Every decided turn also records a verdict: each suggested skill is accepted (it,
 
 `report` credits a check when the hinted skill is loaded in the same session, through `read_skill` or the native Skill tool, and counts decided / nudged turns and fired triggers.
 
+`report` also prints a search-gate funnel per agent from the session logs on disk (kept 7 days): task turns, turns that did work and how many of those had no search or load, refusals, whether a search followed a refusal, whether a skill was loaded after a search, and how often the gate stepped aside. A search or load is read from the session's own records (the gate hook writes a `searched` row with `via: search` or `via: load`; the post-tool hook writes loads). Where a turn has no search of its own, as with Codex before its hook is trusted, the router's MCP log for that agent in the same span stands in, and the report says how many turns relied on it, because it can borrow another session's search.
+
 ## How routing works
 
 1. If a preloaded (core) skill clearly fits, the agent uses it.
@@ -91,5 +93,5 @@ Repeated installation replaces existing router hooks while preserving unrelated 
 | CLI and installation | `src/cli.ts`, `src/install.ts`, `src/platform.ts` |
 | Index, matching and embeddings | `src/index.ts`, `src/search.ts`, `src/bm25.ts`, `src/embed.ts` |
 | Hint lifecycle | `src/hint.ts`, `src/events.ts`, `src/triggers.ts`, `src/verdicts.ts` |
-| MCP and reporting | `src/mcp.ts`, `src/report.ts`, `src/health.ts`, `src/live.ts` |
+| MCP and reporting | `src/mcp.ts`, `src/report.ts`, `src/funnel.ts`, `src/health.ts`, `src/live.ts` |
 | Recovery and service | `src/trim.ts`, `src/restore.ts`, `src/service.ts`, `src/service-client.ts` |

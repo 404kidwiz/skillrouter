@@ -4,6 +4,7 @@ import { AGENT_SKILL_DIRS, AGENTS, USAGE_LOG } from "./paths.js";
 import { health } from "./health.js";
 import { parseFrontmatter } from "./index.js";
 import { bareSkill } from "./state.js";
+import { funnelLines, gateFunnel } from "./funnel.js";
 import { readVerdicts, suppressAfter, suppressedByAgent, endorsed, endorseAfter } from "./verdicts.js";
 export function validRow(value) {
     if (!value || typeof value !== "object")
@@ -114,6 +115,7 @@ export function report(days = 7, rows = readLog(days)) {
         const by = (r) => decisions.filter((d) => d.reason === r).length;
         out.push(`Turn endings after hints: ${by("decided")} decided (loaded or wrote \`Skills:\`), ${by("nudged")} nudged, ${by("trivial")} too small to ask, ${by("no_hints")} without hints.`);
     }
+    out.push(...funnelLines(gateFunnel(organic, agentOf, Date.now() - days * 86400e3), days));
     out.push(...verdictLines(rows.filter((r) => r.tool === "verdict")));
     out.push("", "A load is not proof a skill was applied. Native loads (Claude's Skill tool, Gemini's activate_skill, OpenCode's skill tool, SKILL.md reads) " +
         "are seen through each host's tool hook (Claude Code, Codex once its hooks are trusted, Cursor, Gemini CLI, OpenCode); Antigravity, OpenClaude and Hermes count router read_skill loads only.");

@@ -166,10 +166,10 @@ export function turnWindow(session, turn) {
 /**
  * The search gate's state (see gate.ts). A "task" row is written by the prompt check when the turn's prompt describes work
  * (not a command or system text; a short or conversational one only while the session has not searched); "searched" rows are
- * searches and skill loads the gate hook saw. How often it has stopped a work call is counted by claiming slots (claimDenial).
+ * searches and skill loads the gate hook saw (`via` says which). How often it has stopped a work call is counted by claiming slots (claimDenial).
  */
 export function addGateTask(session, turn) { append(session, "gate.jsonl", { kind: "task", turn }); }
-export function addSearched(session, turn, sub) { append(session, "gate.jsonl", { kind: "searched", turn, sub }); }
+export function addSearched(session, turn, sub, via = "search") { append(session, "gate.jsonl", { kind: "searched", turn, sub, via }); }
 /**
  * Where the current turn started if it is a task turn the gate applies to, else undefined: the turn's marker (the one with
  * this turn id, else the latest) is followed by a task row. A later conversational prompt leaves the earlier task row
@@ -202,6 +202,28 @@ export function claimDenial(session, turnKey, max) {
         if (claim(session, `deny-${turnKey}-${i}`))
             return "denied";
     return claim(session, `deny-${turnKey}-over`) ? "stepped_aside" : "spent";
+}
+/** The logs of every session folder touched since `since` (ms), for the report's gate funnel. Folder names are the hashed session ids. */
+export function sessionLogs(since) {
+    const out = [];
+    let names = [];
+    try {
+        names = fs.readdirSync(STATE_DIR);
+    }
+    catch {
+        return out;
+    }
+    for (const session of names) {
+        try {
+            if (fs.statSync(path.join(STATE_DIR, session)).mtimeMs < since)
+                continue;
+        }
+        catch {
+            continue;
+        }
+        out.push({ session, gate: rows(session, "gate.jsonl"), turns: rows(session, "turns.jsonl"), tools: rows(session, "tools.jsonl"), loaded: rows(session, "loaded.jsonl") });
+    }
+    return out;
 }
 /** When this turn started (its marker, else the latest one) and how many main-thread tool calls it made. */
 export function turnStats(session, turn) {

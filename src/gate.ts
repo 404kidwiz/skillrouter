@@ -49,9 +49,10 @@ export const ROUTER_SEARCH = /^(?:mcp__(?:plugin_[\w.-]+_)?skillrouter__|mcp_ski
  * agent has done what it asks. Loads use the same detector as the post-tool hook (skillLoadOf), so `echo "cat x/SKILL.md"`
  * or writing a SKILL.md is not one.
  */
-function isLookup(p: any): boolean {
+function lookupOf(p: any): "search" | "load" | null {
   const tool = typeof p?.tool_name === "string" ? p.tool_name : "";
-  return ROUTER_SEARCH.test(tool) || skillLoadOf(tool, p?.tool_input) !== null;
+  if (ROUTER_SEARCH.test(tool)) return "search";
+  return skillLoadOf(tool, p?.tool_input) !== null ? "load" : null;
 }
 
 /**
@@ -66,7 +67,8 @@ export function gateEvent(agent: AgentId, input: string, enabled = gateEnabled()
     const session = sessionHash(sessionOf(p));
     if (!session) return "";
     const turn = sessionHash(turnOf(p));
-    if (isLookup(p)) { addSearched(session, turn); return ""; }
+    const lookup = lookupOf(p);
+    if (lookup) { addSearched(session, turn, undefined, lookup); return ""; }
     if (!isWork(actionFor(p))) return "";
     const gated = gatedTurn(session, turn);
     if (!gated) return "";

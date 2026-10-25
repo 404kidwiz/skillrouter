@@ -122,7 +122,7 @@ Keep command and args separate, and escape Windows backslashes in JSON. Do not p
 
 | Command | Purpose |
 | --- | --- |
-| `node dist/src/cli.js report 7` | Recent searches, reads, hints, decisions and attribution |
+| `node dist/src/cli.js report 7` | Recent searches, reads, hints, decisions, attribution, and the search-gate funnel per agent |
 | `node dist/src/cli.js suppress` | Skills held back after repeated declines |
 | `node dist/src/cli.js suppress keep <id>` | Exempt a skill from suppression |
 | `node dist/src/cli.js suppress unkeep <id>` | Remove that exemption |
