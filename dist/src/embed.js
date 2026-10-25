@@ -66,7 +66,9 @@ export async function embed(texts, allowRemote = false) {
     }
 }
 export function skillText(s) {
-    return `${s.name.replace(/[-_~]/g, " ")}: ${s.description}`.slice(0, 512);
+    const name = s.name.replace(/[-_~]/g, " ");
+    // The embedding model reads about 512 characters: an expansion gets room by cutting a long description at 300.
+    return (s.expansion ? `${name}: ${s.description.trim().slice(0, 300)} ${s.expansion}` : `${name}: ${s.description}`).slice(0, 512);
 }
 /** Vectors are stamped with the index they were built for; any other index makes them stale. */
 export function saveVectors(ids, rows, indexBuiltAt) {

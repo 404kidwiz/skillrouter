@@ -16,6 +16,9 @@ const USAGE = `skillrouter — a big skill library without the context bloat
   skillrouter restore <manifest.json> [--apply]
                                           restore what trim removed, skill by skill (dry run; skips and lists skills changed since)
   skillrouter install <agent>...         wire MCP + hooks: claude codex cursor gemini opencode; MCP only: openclaude antigravity hermes
+  skillrouter expand [status] [--url U] [--model M] [--concurrency N] [--limit N]
+                                          have a local Ollama model write example requests and keywords per skill (kept in ~/.skillrouter/expansions.jsonl,
+                                          embedded with the skill after "index --embeddings"; skill files are never edited)
   skillrouter eval [-v] [--ci]           routing quality on the bundled fixture (what CI runs)
   skillrouter eval --live [file] [--lexical] [-v] [--ci]
                                           the same on the real index and ~/.skillrouter/eval.jsonl
@@ -146,6 +149,32 @@ async function main(argv) {
                 }
             }
             console.log(`Indexed ${index.skills.length} skills from ${index.roots.length} folders${vec} -> ${SR_DIR}/index.json`);
+            break;
+        }
+        case "expand": {
+            const { loadIndex } = await import("./index.js");
+            const { expandLibrary, expansionCoverage, EXPANSION_FILE } = await import("./expand.js");
+            const index = loadIndex();
+            if (!index)
+                throw new Error("no index yet: run `skillrouter index` first");
+            if (args[0] === "status") {
+                const c = expansionCoverage(index);
+                console.log(`${c.covered} of ${c.skills} skills have an expansion (${c.rows} stored, ${c.stale} no longer matching any skill) in ${EXPANSION_FILE}`);
+                break;
+            }
+            const url = opt(args, "--url")[0] ?? process.env.SKILLROUTER_EXPAND_URL;
+            const model = opt(args, "--model")[0] ?? process.env.SKILLROUTER_EXPAND_MODEL;
+            const concurrency = Number(opt(args, "--concurrency")[0] ?? 4);
+            const limit = Number(opt(args, "--limit")[0] ?? 0);
+            let last = 0;
+            const s = await expandLibrary(index, { url, model, concurrency, limit, onProgress: (done, total, errors) => { if (done - last >= 25 || done === total) {
+                    last = done;
+                    process.stderr.write(`  ${done}/${total} (${errors} failed)\n`);
+                } } });
+            console.log(`${s.distinct} distinct descriptions: ${s.already} already expanded, ${s.written} written, ${s.errors} failed (rerun to retry those).`);
+            console.log(s.written ? "Next: skillrouter index --embeddings, so the vectors include them." : "Nothing new to embed.");
+            if (s.errors)
+                process.exitCode = 1;
             break;
         }
         case "search": {

@@ -127,6 +127,8 @@ Keep command and args separate, and escape Windows backslashes in JSON. Do not p
 | `node dist/src/cli.js suppress keep <id>` | Exempt a skill from suppression |
 | `node dist/src/cli.js suppress unkeep <id>` | Remove that exemption |
 | `node dist/src/cli.js suppress reset <id>` | Forget that skill's suppression history |
+| `node dist/src/cli.js expand [--url U] [--model M] [--concurrency N] [--limit N]` | Optional: have a local Ollama model write three example requests and six keywords per skill into `~/.skillrouter/expansions.jsonl`; resumable, one request per distinct description. `index --embeddings` then embeds them with the skill |
+| `node dist/src/cli.js expand status` | How many skills have an expansion that still matches their text, and how many stored rows match nothing now |
 
 Search still finds suppressed skills. Successful loading does not prove an agent followed the instructions. Probe/self-test traffic is separated from ordinary usage where client names identify it.
 
@@ -162,6 +164,7 @@ Advanced tuning:
 | --- | --- |
 | `SKILLROUTER_SERVICE_IDLE_MIN` | Service idle shutdown interval; default 30 minutes |
 | `SKILLROUTER_MIN_RAW` | Explicit lexical floor; default otherwise scales with library size |
+| `SKILLROUTER_EXPAND_URL` / `SKILLROUTER_EXPAND_MODEL` | Ollama base URL (default `http://127.0.0.1:11434`) and model (default `qwen3:8b`) for `expand`; the flags win |
 | `SKILLROUTER_ENDORSE_AFTER` | Accepted turns before a host's skill passes the hint gate on a lower bar (default 3; 0 turns it off) |
 | `SKILLROUTER_SUPPRESS_AFTER` | Decline-session threshold; default 5; 0 disables suppression |
 

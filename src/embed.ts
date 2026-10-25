@@ -54,8 +54,10 @@ export async function embed(texts: string[], allowRemote = false): Promise<numbe
   } catch (e) { if (pipe === p) pipe = null; lastEmbedError = String((e as Error)?.message ?? e).split("\n")[0].slice(0, 200); throw e; }
 }
 
-export function skillText(s: { name: string; description: string }): string {
-  return `${s.name.replace(/[-_~]/g, " ")}: ${s.description}`.slice(0, 512);
+export function skillText(s: { name: string; description: string; expansion?: string }): string {
+  const name = s.name.replace(/[-_~]/g, " ");
+  // The embedding model reads about 512 characters: an expansion gets room by cutting a long description at 300.
+  return (s.expansion ? `${name}: ${s.description.trim().slice(0, 300)} ${s.expansion}` : `${name}: ${s.description}`).slice(0, 512);
 }
 
 export interface Vectors { ids: string[]; dim: number; data: Float32Array; index: Map<string, number>; indexBuiltAt?: string }

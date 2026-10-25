@@ -3,6 +3,7 @@ import path from "node:path";
 import { INDEX_FILE, SR_DIR, defaultRoots } from "./paths.js";
 import { tokenize, TOKENIZER_VERSION } from "./bm25.js";
 import { renameSyncRetry } from "./platform.js";
+import { expansionKey, expansionText, openingOf, readExpansions, type Expansion } from "./expand.js";
 
 export interface SkillEntry {
   /** Unique id: frontmatter name, or dir name, suffixed when duplicated. */
@@ -14,6 +15,8 @@ export interface SkillEntry {
   /** Root it was found under (first root wins for duplicates by real path). */
   root: string;
   tokens: string[];
+  /** Requests and keywords a local model wrote for this skill (see expand.ts); appended to its text before embedding, never shown. */
+  expansion?: string;
 }
 
 export interface Index { builtAt: string; roots: string[]; skills: SkillEntry[]; embeddings?: Record<string, number[]>; tokenizer?: number }
@@ -57,7 +60,7 @@ export function buildIndex(extraRoots: string[] = []): Index {
 }
 
 /** An index of exactly these folders (eval fixtures, custom corpora): no agent folders added. */
-export function buildIndexFrom(roots: string[]): Index {
+export function buildIndexFrom(roots: string[], expansions: Map<string, Expansion> = readExpansions()): Index {
   const seen = new Map<string, SkillEntry>();
   const ids = new Map<string, number>();
   for (const root of roots) {
@@ -76,7 +79,8 @@ export function buildIndexFrom(roots: string[]): Index {
       // Name and description carry the routing signal; a little body helps with synonyms without drowning them.
       const body = text.replace(/^---[\s\S]*?---/, "").slice(0, 500);
       const head = `${name} ${description} `.repeat(3);
-      seen.set(real, { id, name, description, path: real, root, tokens: tokenize(head + body) });
+      const ex = expansions.get(expansionKey(description, openingOf(text)));
+      seen.set(real, { id, name, description, path: real, root, tokens: tokenize(head + body), ...(ex ? { expansion: expansionText(ex) } : {}) });
     }
   }
   return { builtAt: new Date().toISOString(), roots, skills: [...seen.values()], tokenizer: TOKENIZER_VERSION };

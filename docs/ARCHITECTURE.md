@@ -45,6 +45,10 @@ Every decided turn also records a verdict: each suggested skill is accepted (it,
 
 Search is BM25 over name + description (weighted) + the start of the body. On a 4,500-skill library it gets the obvious cases right (pytest → `python-testing`, landing page audit → `landing-page-design`, postgres index → `postgres-optimization`) and misses on vague or oddly worded prompts. Optional embeddings (`pnpm add @huggingface/transformers`, then `skillrouter index --embeddings`) blend a MiniLM vector score into the ranking.
 
+## Description expansion (optional)
+
+Descriptions say what a skill is; people ask for what they want done, in other words. `skillrouter expand` has a local Ollama model write three example requests and six keywords per distinct description (copies of a skill under other names share one), kept in `~/.skillrouter/expansions.jsonl` next to the index. Skill files are never edited. `index` attaches a row to a skill when its key matches (a hash of the description, the first 250 characters after the frontmatter and a prompt version, so an edited skill simply stops matching), and `index --embeddings` embeds `name: description (first 300 characters) Asked as: … keywords` instead of the description alone. Only the vectors see it: giving the expansion to BM25 ranked clearly worse in the same measurement (right skill first down 6 to 9 points), and replacing the description with a rewrite ranked slightly worse than keeping it. Without an expansions file nothing changes. The model runs once, offline, on your machine; it is not part of any hook. Measured on the 245-prompt live set over the whole library: right skill first 87% to 90%, hints on prompts that need no skill 32% to 27%, recall 72% unchanged, precision 63% to 60%. That is a small gain on a small set (a few prompts either way), so judge it on your own labels (`eval add`, `eval --live`) before relying on it.
+
 ## The warm service
 
 Every hook used to start Node, and a prompt check also parsed the 8 MB index and loaded the embedding model: about 430 ms per prompt and 50 to 75 ms per tool call. `skillrouter` now keeps one background process per user that holds the index, the BM25 tables and the model in memory and answers hooks over an owner-only Unix socket (on Windows a named pipe that hooks only trust once it proves it holds a secret key) (`~/.skillrouter/run/svc.sock`):
@@ -91,7 +95,7 @@ Repeated installation replaces existing router hooks while preserving unrelated 
 | Concern | Source |
 | --- | --- |
 | CLI and installation | `src/cli.ts`, `src/install.ts`, `src/platform.ts` |
-| Index, matching and embeddings | `src/index.ts`, `src/search.ts`, `src/bm25.ts`, `src/embed.ts` |
+| Index, matching and embeddings | `src/index.ts`, `src/search.ts`, `src/bm25.ts`, `src/embed.ts`, `src/expand.ts` |
 | Hint lifecycle | `src/hint.ts`, `src/events.ts`, `src/triggers.ts`, `src/verdicts.ts` |
 | MCP and reporting | `src/mcp.ts`, `src/report.ts`, `src/funnel.ts`, `src/health.ts`, `src/live.ts` |
 | Recovery and service | `src/trim.ts`, `src/restore.ts`, `src/service.ts`, `src/service-client.ts` |

@@ -3,6 +3,7 @@ import path from "node:path";
 import { INDEX_FILE, SR_DIR, defaultRoots } from "./paths.js";
 import { tokenize, TOKENIZER_VERSION } from "./bm25.js";
 import { renameSyncRetry } from "./platform.js";
+import { expansionKey, expansionText, openingOf, readExpansions } from "./expand.js";
 const SKIP = new Set(["node_modules", ".git", ".venv", "__pycache__", "dist"]);
 export function parseFrontmatter(text) {
     const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -59,7 +60,7 @@ export function buildIndex(extraRoots = []) {
     return buildIndexFrom(defaultRoots(extraRoots).filter((r) => fs.existsSync(r)));
 }
 /** An index of exactly these folders (eval fixtures, custom corpora): no agent folders added. */
-export function buildIndexFrom(roots) {
+export function buildIndexFrom(roots, expansions = readExpansions()) {
     const seen = new Map();
     const ids = new Map();
     for (const root of roots) {
@@ -89,7 +90,8 @@ export function buildIndexFrom(roots) {
             // Name and description carry the routing signal; a little body helps with synonyms without drowning them.
             const body = text.replace(/^---[\s\S]*?---/, "").slice(0, 500);
             const head = `${name} ${description} `.repeat(3);
-            seen.set(real, { id, name, description, path: real, root, tokens: tokenize(head + body) });
+            const ex = expansions.get(expansionKey(description, openingOf(text)));
+            seen.set(real, { id, name, description, path: real, root, tokens: tokenize(head + body), ...(ex ? { expansion: expansionText(ex) } : {}) });
         }
     }
     return { builtAt: new Date().toISOString(), roots, skills: [...seen.values()], tokenizer: TOKENIZER_VERSION };
