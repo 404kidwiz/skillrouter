@@ -10,7 +10,7 @@ Skillrouter organizes local `SKILL.md` folders into a small **core** that stays 
 
 **Start here:** [Let your agent install it](#let-your-agent-install-it) · [Manual setup](#manual-quick-start) · [Host support](#agent-support) · [Troubleshooting](docs/TROUBLESHOOTING.md)
 
-> **Release status:** this checkout documents **0.2.0-beta.1**, an unpublished candidate. Use a checkout containing this candidate's files; the public default branch or marketplace may still contain an earlier version. Do not use `npx skillrouter` to install this candidate. See [validation and release limits](#validation-and-release-status).
+> **Release status:** this checkout documents **0.2.0-beta.1**, a beta that is not published to npm. Use a checkout of this repository; a marketplace listing, if you find one, may hold an earlier version. Do not use `npx skillrouter` to install it. See [validation and release limits](#validation-and-release-status).
 
 ## Why this exists
 
@@ -140,7 +140,7 @@ The illustration is a metaphor; this diagram is the workflow. Search returns IDs
 | Task-driven discovery | Short search phrases instead of browsing thousands of names |
 | Core + library | A deliberate preload budget, with the rest available on demand |
 | Hooks and standing rules | A reminder to look for relevant instructions at useful moments |
-| Search gate | On a task turn the first edit or command is held until the agent has searched the library once (Claude Code, Codex, Cursor, Gemini) |
+| Search gate | On a task turn the first edit or command is held until the agent has searched the library once (Claude Code, Codex, Cursor, Gemini). Used in real sessions on Claude Code and Codex only; Cursor and Gemini are covered by scripted checks. Codex asks you to trust the hook once |
 | Usage and evaluation | Evidence for tuning routing and choosing your core |
 | Backed-up trimming | Preview changes, preserve archives, and restore what trim removed, skill by skill |
 
@@ -161,7 +161,7 @@ These rows describe the repository's adapters. A configured adapter is not proof
 | OpenClaude | `openclaude` | MCP | Add a standing routing rule separately |
 | Hermes | `hermes` | MCP through its configuration API | Installation layout/profile matters; add routing instructions separately |
 
-**macOS, Linux and Windows are implementation targets.** Local candidate verification was on macOS. Expanded CI and native Windows acceptance remain separate release gates. See the [support matrix](docs/SUPPORT.md).
+**macOS, Linux and Windows are implementation targets.** CI runs the tests on all three with Node 20 and 22 (green for the latest commit). Day-to-day use so far has been on two Macs; native Windows acceptance is still open. See the [support matrix](docs/SUPPORT.md).
 
 Grok, Muse and other cloud assistants do not have universal adapters here. They need a host-specific, authorized bridge; local filesystem paths are not remotely accessible by default.
 
@@ -191,20 +191,22 @@ Skills are instructions, not a trust boundary. Review third-party skills and pre
 
 ## Validation and release status
 
-For the **0.2.0-beta.1 local hardening candidate**, recorded on 2026-10-24:
+For **0.2.0-beta.1**, recorded on 2026-10-25:
 
 | Check | Recorded result |
 | --- | --- |
-| Full suite, macOS / Node 22.22.3 | 197 passed, 0 failed, 8 Windows-only skips |
-| Recovery regressions | 13 passed |
-| Real npm archive + clean source-plugin smoke | Both passed |
+| Full suite, macOS / Node 22 | 237 passed, 0 failed, 8 Windows-only skips |
+| CI, latest commit | Linux, macOS and Windows on Node 20 and 22: all six jobs green |
+| Real npm archive + clean source-plugin smoke | Both passed (macOS, Node 22 and Node 26) |
 | Lexical fixture, 59 prompts | 91% top-1, 98% top-3; 89% hint recall, 91% precision |
 | Negative fixture, 12 prompts | 0 false hints |
-| 57 real prompts from the author's hosts, October 2026 | hints on 13 prompts instead of 48; hints on prompts needing none 7 instead of 29 |
+| 245 real prompts from the author's two Macs | Right skill first 87%, in the top three 97%; hint recall 72%, hint precision 63%; hints on 32% of the prompts that need no skill |
 
-These are dated candidate results, not a live CI badge or a guarantee for arbitrary tasks. Smoke tests cover two-tool MCP behavior, six generated host configurations and byte-exact recovery. They do not prove six native agents automatically use skills.
+The 245 prompts are labeled by the author after seeing the router's top candidates, so recall is optimistic; 80 of the 177 no-skill prompts were chosen because they look like skill prompts, so 32% is a stress figure rather than the everyday rate. On all of the author's recent task prompts the router showed hints on about 30%. The search gate has about a day of real use, on Claude Code and Codex.
 
-Exact-candidate cross-platform CI, native Windows acceptance and an actual Claude marketplace-install check remain open. See [release validation](docs/RELEASING.md) and [compatibility evidence](docs/SUPPORT.md).
+These are dated results, not a live CI badge or a guarantee for arbitrary tasks. Smoke tests cover two-tool MCP behavior, six generated host configurations and byte-exact recovery. They do not prove six native agents automatically use skills.
+
+Native Windows acceptance, an actual Claude marketplace-install check, and real sessions of Cursor, Gemini and OpenCode with the search gate remain open. See [release validation](docs/RELEASING.md) and [compatibility evidence](docs/SUPPORT.md).
 
 ## Documentation
 

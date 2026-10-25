@@ -10,7 +10,7 @@ Version under validation: **0.2.0-beta.1**. “Configured,” “MCP connected,�
 | Windows 10/11, Node 20/22 | Windows runner matrix, actual pipe tests, portable launcher and filesystem tests | Individual Windows agent acceptance remains required; hosted runner tests do not establish all Windows 10/11 desktop behavior |
 | Linux, Node 20/22 | CI matrix | Individual host acceptance remains required |
 
-The previous commit `d686716` passed Windows Node 22, macOS Node 22 and Linux Node 20/22 CI. The expanded candidate matrix must run before its new entries can be marked passed. No native Windows desktop was available for the local implementation session.
+Commit `f712768` passed the full CI matrix: Windows, macOS and Linux on Node 20 and 22. No native Windows desktop was available for the local implementation session, so native Windows acceptance has not been done.
 
 ## Host capabilities
 
@@ -24,7 +24,7 @@ The previous commit `d686716` passed Windows Node 22, macOS Node 22 and Linux No
 | Antigravity | Current global config | Separately saved standing rule; no hook integration here | Not installed by this adapter | None |
 | OpenClaude / Hermes | Host configuration | Separately saved standing rule | No hook integration here | None |
 
-The gate fails open on every host: a crashed or timed-out gate hook lets the call through. It prints nothing when it allows, never an explicit allow, so it cannot skip a host's own approval prompts. Known limits: a prompt under 20 characters or one that points back at the conversation ("continue", "go ahead") is a task turn only until the session's first search, because it carries on earlier work; a read-only command (`git status`, `docker ps`, `gh pr view`) is not work, and the list of those is finite; with both the plugin and a standalone install active, two gate hooks answer one call and use both refusals at once. Codex runs a hook only after the user trusts it in `/hooks`; the gate hook learns about searches itself, so trusting the PreToolUse entry is enough.
+In real sessions the gate has run on Claude Code and Codex (about a day on the author's Macs); Cursor and Gemini are covered by scripted hook payloads only, and OpenCode has no gate. The gate fails open on every host: a crashed or timed-out gate hook lets the call through. It prints nothing when it allows, never an explicit allow, so it cannot skip a host's own approval prompts. Known limits: a prompt under 20 characters or one that points back at the conversation ("continue", "go ahead") is a task turn only until the session's first search, because it carries on earlier work; a read-only command (`git status`, `docker ps`, `gh pr view`) is not work, and the list of those is finite; with both the plugin and a standalone install active, two gate hooks answer one call and use both refusals at once. Codex runs a hook only after the user trusts it in `/hooks`; the gate hook learns about searches itself, so trusting the PreToolUse entry is enough.
 
 The installer preserves host approval controls. It does not write standing instructions into user instruction files; see [persistent routing instructions](INSTALL.md#persistent-routing-instructions). Antigravity uses `~/.gemini/config/mcp_config.json`; the legacy router entry can be migrated without copying unrelated servers. Cloud-only assistants may require a distinct bridge and are not covered by these local adapters.
 

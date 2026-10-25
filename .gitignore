@@ -1,2 +1,7 @@
 node_modules/
 *.tgz
+
+# Maintainer's local working notes and evidence: they contain private paths and are not part of the project.
+CLAUDE_CODE_HANDOFF.md
+verification/
+design/
