@@ -7,7 +7,10 @@ const USAGE = `skillrouter — a big skill library without the context bloat
   skillrouter doctor [--live] [agents]   what each agent preloads today and what it costs; --live starts each configured MCP server
   skillrouter index [--root DIR]... [--embeddings]
                                           scan every skill folder into ~/.skillrouter/index.json (+ local vectors)
-  skillrouter search "<task>" [-k N]     try the router from the shell
+  skillrouter search "<task>" [-k N] [--exploratory] [--lexical]
+                                          relevant skills; exploratory includes labeled weak matches
+  skillrouter explain "<task>" [-k N] [--lexical]
+                                          ranking, relevance, applicability, duplicate and semantic decisions
   skillrouter core list|add <id>...|remove <id>...|suggest [N]|sync [agents]
                                           the small set every agent preloads (sync relinks agent folders)
   skillrouter core skip|unskip <id> <agent>...
@@ -118,11 +121,14 @@ async function main(argv: string[]): Promise<void> {
       console.log(`Indexed ${index.skills.length} skills from ${index.roots.length} folders${vec} -> ${SR_DIR}/index.json`);
       break;
     }
-    case "search": {
-      const { search } = await import("./search.js");
-      const { coreIds } = await import("./core.js");
+    case "search":
+    case "explain": {
+      const { routeSearch, formatSearch, formatExplanation } = await import("./routing.js");
+      const exploratory = flag(args, "--exploratory"), lexicalOnly = flag(args, "--lexical");
       const k = Number(opt(args, "-k")[0] ?? 5);
-      for (const h of await search(args.join(" "), k, { prefer: coreIds() })) console.log(`${h.score.toFixed(2)} (raw ${h.raw}${h.cos !== undefined ? `, cos ${h.cos}` : ""})  ${h.skill.id}  —  ${h.skill.description.slice(0, 110)}${h.similar?.length ? `  [similar: ${h.similar.join(", ")}]` : ""}`);
+      if (!Number.isInteger(k) || k < 1 || k > 20 || !args.join(" ").trim()) throw new Error('Provide a task and -k between 1 and 20.');
+      const result = await routeSearch(args.join(" "), { k, exploratory, lexicalOnly });
+      console.log(cmd === "explain" ? formatExplanation(result) : formatSearch(result));
       break;
     }
     case "core": {

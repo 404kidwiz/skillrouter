@@ -137,7 +137,7 @@ The illustration is a metaphor; this diagram is the workflow. Search returns IDs
 
 | Capability | What you get |
 | --- | --- |
-| Task-driven discovery | Short search phrases instead of browsing thousands of names |
+| Task-driven discovery | Relevance-gated search, labeled exploratory matches, and explanations of routing decisions |
 | Core + library | A deliberate preload budget, with the rest available on demand |
 | Hooks and standing rules | A reminder to look for relevant instructions at useful moments |
 | Search gate | On a task turn the first edit or command is held until the agent has searched the library once (Claude Code, Codex, Cursor, Gemini). Used in real sessions on Claude Code and Codex only; Cursor and Gemini are covered by scripted checks. Codex asks you to trust the hook once |

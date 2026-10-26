@@ -62,3 +62,11 @@ v0.1.0 on GitHub (public); local 0.2.0-beta.1 hardening candidate implemented an
 
 ## Blockers
 - Local R1–R5 and clean artifact/recovery checks pass. Broad-release closeout still requires exact-candidate cross-platform CI, native Windows agent acceptance, and a real Claude marketplace-install check. Hermes skill-folder trimming remains outside the router trim command; its MCP integration is separate.
+
+
+## Routing quality and identity (2026-10-26)
+
+- Explicit CLI/MCP search now gates weak results, labels exploratory matches, and identifies relative ranking scores as non-probabilities. `explain` reports semantic state, relevance decisions, default hint decisions, and applicability/duplicate exclusions.
+- Index records stable source-directory-qualified references, preserved legacy aliases and tombstones, full-file hashes, source/version provenance, explicit maintenance priority, and positive/negative applicability metadata. Existing indexes remain readable; reindexing adds metadata. Directory relocation creates a new identity.
+- Core and MCP reads resolve canonical references. Exact search references survive duplicate collapse. Evaluation uses the same copy equivalence for recall and precision; regression coverage includes identity rebuilds, negative applicability, stale-vector fallback, and MCP stdio behavior.
+- Fixture expanded to 62 prompts: top-1 92%, top-3 98%, hint recall 90%, precision 92%, no false hints on negative fixtures. Local validation: 255 tests passed, 8 platform-specific skips, no failures; npm-artifact and source-plugin smoke passed on macOS/Node 22. Independent QA found three routing/alias edge cases, fixed with regression coverage. No package version bump or registry release is included.

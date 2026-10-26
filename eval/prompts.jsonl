@@ -57,3 +57,6 @@
 {"prompt": "bump the version number in package.json", "expect": []}
 {"prompt": "open the settings page and change the theme to dark", "expect": []}
 {"prompt": "what does HTTP 418 mean", "expect": []}
+{"prompt": "improve the skill router implementation", "expect": []}
+{"prompt": "suggest enhancements to the actual skill router", "expect": []}
+{"prompt": "choose the best skill from the installed library for my task", "expect": ["skill-router"]}
