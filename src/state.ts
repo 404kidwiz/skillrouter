@@ -230,4 +230,4 @@ export function lastNudge(session: string | undefined, maxAgeMs = 30 * 60e3): { 
 export function consumeNudge(session: string | undefined, key: string): void { append(session, "nudges.jsonl", { done: key }); }
 
 /** "plugin:name" and "name~2" are the same skill for matching purposes. */
-export const bareSkill = (s: string) => s.split(":").pop()!.replace(/~\d+$/, "").toLowerCase();
+export const bareSkill = (s: string) => s.split(":").pop()!.replace(/@[a-f0-9]{24}$/i, "").replace(/~\d+$/, "").toLowerCase();

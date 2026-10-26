@@ -44,6 +44,9 @@ async function exercise(dir, name, dependencyRoot = dir) {
   const env = homeFor(name);
   run(process.execPath, [cli, "index"], { cwd: dir, env });
   assert.match(run(process.execPath, [cli, "search", "python pytest testing"], { cwd: dir, env }), /smoke-python-testing/);
+  assert.match(run(process.execPath, [cli, "search", "fixtures"], { cwd: dir, env }), /No strong matching skills/);
+  assert.match(run(process.execPath, [cli, "search", "fixtures", "--exploratory"], { cwd: dir, env }), /weak\/exploratory/);
+  assert.match(run(process.execPath, [cli, "explain", "python pytest testing", "--lexical"], { cwd: dir, env }), /Semantic: off/);
   assert.match(run(process.execPath, [cli, "eval", "--ci"], { cwd: dir, env }), /\bPASS\b/);
   const client = new Client({ name: `skillrouter-${name}-smoke`, version: "1" });
   const transport = new StdioClientTransport({ command: process.execPath, args: [cli, "mcp"], cwd: dir, env, stderr: "pipe" });
@@ -57,6 +60,11 @@ async function exercise(dir, name, dependencyRoot = dir) {
     const search = await client.callTool({ name: "search_skills", arguments: { query: "python pytest testing", top_k: 3 } }, undefined, { timeout: 10000 });
     assert.ok(!search.isError, errors);
     assert.match(JSON.stringify(search.content), /smoke-python-testing/);
+    const searchText = search.content.map(c => c.text ?? "").join("\n");
+    const canonicalId = searchText.match(/^- (\S+@[a-f0-9]{24})/m)?.[1];
+    assert.ok(canonicalId, "search must expose a stable canonical reference");
+    const canonicalRead = await client.callTool({ name: "read_skill", arguments: { id: canonicalId } }, undefined, { timeout: 10000 });
+    assert.match(JSON.stringify(canonicalRead.content), /Release smoke fixture/);
     const read = await client.callTool({ name: "read_skill", arguments: { id: "smoke-python-testing" } }, undefined, { timeout: 10000 });
     assert.ok(!read.isError, errors);
     assert.match(JSON.stringify(read.content), /Release smoke fixture: verify deterministic retries/);

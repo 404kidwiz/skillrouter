@@ -12,11 +12,37 @@ Examples run from the checkout. After optional global installation, `skillrouter
 | `node dist/src/cli.js doctor --live claude cursor` | Start selected configured MCP processes and list tools |
 | `node dist/src/cli.js index` | Rebuild from defaults and remembered extra roots |
 | `node dist/src/cli.js index --root "/absolute/path/to/skills"` | Include another library root; repeat the flag for several roots |
-| `node dist/src/cli.js search "postgres migration" -k 5` | Inspect ranked matches from the shell |
+| `node dist/src/cli.js search "postgres migration" -k 5` | Return matches that pass the relevance gate |
+| `node dist/src/cli.js search "postgres migration" --exploratory` | Include weaker candidates, labeled as exploratory |
+| `node dist/src/cli.js explain "postgres migration" --lexical` | Explain relevance, applicability and duplicate decisions without embeddings |
 
 Indexing scans supported agent directories, the shared `~/.agents/skills`, `~/.skills`, the router library and explicit roots. It does not import a remote library. Run it after adding, moving or removing skills.
 
 A search with no matches is not necessarily an error. Check roots and descriptions before changing ranking thresholds. A live doctor exit code alone is insufficient: inspect the per-host result.
+
+### Relevance and explanations
+
+Search returns **no strong match** when candidates fail the evidence floor. `--exploratory` (MCP: `exploratory: true`) includes weaker candidates; it does not bypass applicability exclusions. Ranking scores are relative to other candidates, **not confidence probabilities**. An exact skill reference remains selectable even for a one-word query.
+
+`explain` shows the actual semantic state (`on`, `off`, `stale`, `timeout`, or `error`), the lexical floor, raw and relative scores, cosine when available, relevance decisions, and duplicate/applicability exclusions. These are default search decisions; session-specific loaded skills and host endorsement/suppression are not simulated. `--lexical` explicitly disables query embeddings.
+
+### Identity and applicability metadata
+
+Reindexing records a canonical `name@source-hash` reference plus existing readable aliases. The hash identifies the real source directory; changing content or scan-root order does not change the identity. Moving a source to a new real directory creates a new identity. Preserve `index.json` between rebuilds to retain alias assignments: removed aliases are reserved and never silently reassigned. Alias lookup and allocation are case-insensitive. If an older index contains case-colliding aliases, the first historical owner keeps the alias and the other source receives a suffix. Exact references return only the requested source. Existing indexes continue working; run `index` to add the metadata.
+
+The index records the full-file SHA256, optional `source` and `version`, and optional numeric `maintained_priority` from frontmatter. Higher priority wins among equivalent copies unless an explicitly selected core copy takes precedence. A version is provenance, not an automatic freshness claim.
+
+Optional `use_when` and `do_not_use_when` lists (also camelCase or hyphenated keys) and corresponding Markdown headings describe applicability. Positive terms aid retrieval. Negative rules with at least two meaningful terms exclude a candidate only when all those terms occur in the query; negated predicates such as “not using Python” are left to the caller. Router-maintenance requests also exclude skill-selection and suite-router workflows. These checks are conservative heuristics, not a general natural-language policy engine.
+
+```yaml
+source: example/skills
+version: "1.2"
+maintained_priority: 10
+use_when:
+  - Writing Python regression tests
+do_not_use_when:
+  - Reviewing deployment architecture
+```
 
 ## Core, trim and recovery
 
@@ -95,7 +121,7 @@ It waits for MCP protocol messages; this is not an interactive shell command.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `search_skills` | `query`: short intent; optional `top_k`: integer 1–20, default 5 | Ranked IDs, descriptions, scores and local paths |
+| `search_skills` | `query`: short intent; optional `top_k`: integer 1–20, default 5; `exploratory`: boolean, default false | Relevant canonical IDs, aliases, descriptions, ranking scores and paths; or no strong match |
 | `read_skill` | `id`: returned ID; optional `hint_id` copied from a hint | Full matching SKILL.md body, or a useful not-found/ambiguity/read error |
 
 Example calls, inside an MCP-capable agent:

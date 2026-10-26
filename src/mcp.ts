@@ -3,8 +3,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { findSkill, logUsage, readSkill, search } from "./search.js";
-import { coreIds } from "./core.js";
+import { findSkill, logUsage, readSkill } from "./search.js";
+import { routeSearch, formatSearch } from "./routing.js";
 
 /** Two tools, ~500 tokens of schema: the whole library behind one door. */
 export async function serveMcp(): Promise<void> {
@@ -20,21 +20,17 @@ export async function serveMcp(): Promise<void> {
     "search_skills",
     {
       description: "Find skills for a task. Call this before non-trivial work when no preloaded skill clearly fits. Query = the task intent as one short phrase.",
-      inputSchema: { query: z.string(), top_k: z.number().int().min(1).max(20).default(5) },
+      inputSchema: { query: z.string(), top_k: z.number().int().min(1).max(20).default(5), exploratory: z.boolean().default(false).describe("Include weaker candidates, explicitly labeled; default returns only strong matches") },
     },
-    async ({ query, top_k }) => {
-      let hits: Awaited<ReturnType<typeof search>>;
-      try { hits = await search(query, top_k, { prefer: coreIds() }); } // a preloaded skill wins over its copies
+    async ({ query, top_k, exploratory }) => {
+      let result: Awaited<ReturnType<typeof routeSearch>>;
+      try { result = await routeSearch(query, { k: top_k, exploratory }); } // a preloaded skill wins over its copies
       catch {
         logUsage({ ...context(), client: client(), tool: "search_skills", reason: "index_error" });
         return { isError: true, content: [{ type: "text", text: "Index unavailable. Run skillrouter index." }] };
       }
-      logUsage({ ...context(), client: client(), tool: "search_skills", query, hits: hits.map((h) => [h.skill.id, h.score]) });
-      const text = hits.length
-        ? hits.map((h) => `- ${h.skill.id} (${h.score.toFixed(2)}): ${h.skill.description || "(no description)"}\n  path: ${h.skill.path}` +
-            (h.similar?.length ? `\n  similar: ${h.similar.join(", ")}` : "")).join("\n") +
-          "\n\nLoad one with read_skill(id)."
-        : "No matching skills.";
+      logUsage({ ...context(), client: client(), tool: "search_skills", query, exploratory, sem: result.semantic, hits: result.hits.map((h) => [h.skill.id, h.score]) });
+      const text = formatSearch(result);
       return { content: [{ type: "text", text }] };
     },
   );

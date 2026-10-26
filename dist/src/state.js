@@ -258,4 +258,4 @@ export function lastNudge(session, maxAgeMs = 30 * 60e3) {
 /** A nudge was answered: it is never credited again. */
 export function consumeNudge(session, key) { append(session, "nudges.jsonl", { done: key }); }
 /** "plugin:name" and "name~2" are the same skill for matching purposes. */
-export const bareSkill = (s) => s.split(":").pop().replace(/~\d+$/, "").toLowerCase();
+export const bareSkill = (s) => s.split(":").pop().replace(/@[a-f0-9]{24}$/i, "").replace(/~\d+$/, "").toLowerCase();

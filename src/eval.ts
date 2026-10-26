@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { search, getIndex, duplicateKind } from "./search.js";
+import { search, getIndex, duplicateKind, findSkill } from "./search.js";
 import { isConversational, isSlashCommand, isSystemText, minRawFor, selectHints } from "./hint.js";
 import { coreIds } from "./core.js";
 import { bareSkill } from "./state.js";
@@ -49,14 +49,29 @@ export async function evaluate(cases: EvalCase[], options: { lexicalOnly?: boole
   const k = options.k ?? 3;
   const prefer = coreIds();
   const rows: EvalRow[] = [];
+  const expectedCache = new Map<string, ReturnType<typeof findSkill>>();
+  const resolveExpected = (id: string) => {
+    const cached = expectedCache.get(id);
+    if (cached) return cached;
+    const found = findSkill(id);
+    if (found.length || Object.hasOwn(index.identityAliases ?? {}, id) || !/~\d+$/.test(id)) {
+      expectedCache.set(id, found);
+      return found;
+    }
+    const family = index.skills.filter(s => bareSkill(s.id) === bareSkill(id));
+    expectedCache.set(id, family);
+    return family;
+  };
+  const equivalent = (expected: string[], id: string) => {
+    const b = byId.get(id);
+    return expected.some(e => resolveExpected(e).some(a => a.id === id || (!!b && duplicateKind(a, b, null) === "copy")));
+  };
   for (const c of cases) {
     const hits = await search(c.prompt.slice(0, 1000), 12, { lexicalOnly, prefer });
     // The prompt check skips commands, system turns and very short prompts before searching; so does the eval.
     const skipped = isSlashCommand(c.prompt.trim()) || isSystemText(c.prompt) || c.prompt.trim().length < 20;
     const shown = skipped ? [] : selectHints(hits, minRaw, k, { conversational: isConversational(c.prompt) });
-    const want = new Set(c.expect.map(bareSkill));
-    // An expected skill, or a copy of one (same text under another name): the agent would read the same instructions.
-    const ok = (id: string) => want.has(bareSkill(id)) || c.expect.some((e) => { const a = byId.get(e), b = byId.get(id); return !!a && !!b && duplicateKind(a, b, null) === "copy"; });
+    const ok = (id: string) => equivalent(c.expect, id);
     let copies = 0;
     for (let i = 0; i < shown.length; i++) for (let j = i + 1; j < shown.length; j++) if (duplicateKind(shown[i].skill, shown[j].skill, lexicalOnly ? null : vectors) === "copy") copies++;
     const positive = c.expect.length > 0;
@@ -71,10 +86,9 @@ export async function evaluate(cases: EvalCase[], options: { lexicalOnly?: boole
   }
   const pos = rows.filter((r) => r.expect.length), neg = rows.filter((r) => !r.expect.length);
   const rate = (xs: EvalRow[], f: (r: EvalRow) => boolean | null) => (xs.length ? xs.filter(f).length / xs.length : 1);
-  const shownPos = pos.flatMap((r) => r.shown.map((id) => r.expect.map(bareSkill).includes(bareSkill(id))));
+  const shownPos = pos.flatMap((r) => r.shown.map((id) => equivalent(r.expect, id)));
   // A mistyped or since-removed id makes a positive that can never pass; say so instead of counting it as a miss.
-  const real = new Set(index.skills.map((s) => bareSkill(s.id)));
-  const unknownIds = [...new Set(cases.flatMap((c) => c.expect).filter((id) => !real.has(bareSkill(id))))];
+  const unknownIds = [...new Set(cases.flatMap((c) => c.expect).filter((id) => !resolveExpected(id).length))];
   return { rows, unknownIds, summary: {
     mode: lexicalOnly ? "lexical" : "semantic", cases: rows.length, positives: pos.length, negatives: neg.length,
     top1: rate(pos, (r) => r.top1 === true), top3: rate(pos, (r) => r.top3 === true), hintRecall: rate(pos, (r) => r.recall === true),

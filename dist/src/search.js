@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { BM25, tokenize, stem, TOKENIZER_VERSION } from "./bm25.js";
-import { loadIndex } from "./index.js";
+import { loadIndex, resolveSkillReference } from "./index.js";
+import { applicabilityReason } from "./applicability.js";
 import { USAGE_LOG, SR_DIR } from "./paths.js";
 import { bareSkill } from "./state.js";
 import { loadVectors, semanticScores } from "./embed.js";
@@ -67,12 +68,21 @@ export async function search(query, k = 5, options = {}) {
     // `ref` is the hit whose rank and metrics a cluster keeps, even when a preloaded copy takes the slot.
     const kept = [];
     for (const [id, score] of [...scores.entries()].sort((a, b) => b[1] - a[1])) {
-        if (kept.length >= k)
-            break;
         const s = byId.get(id);
-        if (isKnown(s) || anchors.some((a) => duplicateKind(a, s, v) === "copy"))
+        const excluded = applicabilityReason(s, query);
+        if (excluded) {
+            options.trace?.push({ id, reason: excluded });
             continue;
+        }
+        if (isKnown(s) || anchors.some((a) => duplicateKind(a, s, v) === "copy")) {
+            options.trace?.push({ id, reason: "already known or a copy of a loaded skill" });
+            continue;
+        }
         const j = kept.findIndex((o) => o.skill.name === s.name || kindOf(o.skill, s));
+        if (j < 0 && kept.length >= k) {
+            options.trace?.push({ id, reason: "outside result limit" });
+            continue;
+        }
         if (j < 0) {
             kept.push({ skill: s, score, ref: id, similar: [] });
             continue;
@@ -85,11 +95,22 @@ export async function search(query, k = 5, options = {}) {
         // Slot swaps go by the two skills' own texts, never by a shared name alone: a same-named variant holding other
         // text (impeccable~3 with frontend-design's) must not hand its cluster to the real skill of that name.
         const own = duplicateKind(other.skill, s, v);
-        const plainCopy = own === "copy" && !preferred(other.skill) && s.id.length < other.skill.id.length;
-        if ((preferred(s) && !preferred(other.skill) && own) || plainCopy)
+        const priority = (x) => x.provenance?.maintainedPriority ?? 0;
+        const plainCopy = own === "copy" && !preferred(other.skill) &&
+            (priority(s) > priority(other.skill) || (priority(s) === priority(other.skill) && s.id.length < other.skill.id.length));
+        if ((preferred(s) && !preferred(other.skill) && own) || plainCopy) {
+            // Earlier discarded copies now point to the new representative as well.
+            for (const entry of options.trace ?? [])
+                if (entry.kept === other.skill.id)
+                    entry.kept = s.id;
+            options.trace?.push({ id: other.skill.id, kept: s.id, reason: `duplicate ${own ?? 'copy'}; preferred representative` });
             kept[j] = { ...other, skill: s, similar: own === "similar" ? [other.skill.id, ...other.similar] : other.similar };
-        else if (kind === "similar" && !other.similar.includes(s.id))
-            other.similar.push(s.id);
+        }
+        else {
+            options.trace?.push({ id, kept: other.skill.id, reason: `duplicate ${kind ?? 'copy'}` });
+            if (kind === "similar" && !other.similar.includes(s.id))
+                other.similar.push(s.id);
+        }
     }
     return kept.map(({ skill, score, ref, similar }) => ({ skill, score: Math.round(score * 1000) / 1000, raw: Math.round((raws.get(ref) ?? 0) * 100) / 100,
         // A skill missing from the vectors keeps cos undefined, so the lexical gate still judges it.
@@ -135,9 +156,11 @@ export const nearDuplicate = (a, b, v) => duplicateKind(a, b, v) !== null;
 export function findSkill(nameOrId) {
     const { index } = getIndex();
     const n = nameOrId.trim().toLowerCase();
-    const exact = index.skills.filter((s) => s.id.toLowerCase() === n);
-    if (exact.length)
-        return exact;
+    const resolved = resolveSkillReference(index, nameOrId);
+    if (resolved)
+        return [resolved];
+    if (Object.keys(index.identityAliases ?? {}).some(a => a.toLowerCase() === n))
+        return [];
     return index.skills.filter((s) => s.name.toLowerCase() === n || path.basename(s.path).toLowerCase() === n);
 }
 export function readSkill(skill) {

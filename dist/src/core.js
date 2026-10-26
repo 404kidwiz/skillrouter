@@ -31,14 +31,10 @@ export function readCore() {
  * with other text (design-taste-frontend~2 next to design-taste-frontend) is not what core sync linked.
  */
 export function coreIds(core = readCore()) {
-    const { byId, byName } = getIndex();
     const out = new Set();
     for (const c of core) {
-        if (byId.has(c))
-            out.add(c);
-        else
-            for (const s of byName.get(c) ?? [])
-                out.add(s.id);
+        for (const s of findSkill(c))
+            out.add(s.id);
     }
     return out;
 }
