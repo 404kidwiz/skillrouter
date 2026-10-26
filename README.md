@@ -138,6 +138,7 @@ The illustration is a metaphor; this diagram is the workflow. Search returns IDs
 | Capability | What you get |
 | --- | --- |
 | Task-driven discovery | Relevance-gated search, labeled exploratory matches, and explanations of routing decisions |
+| Stable skill references | Source-qualified IDs keep same-name skills distinct; `explain` shows relevance and applicability decisions |
 | Core + library | A deliberate preload budget, with the rest available on demand |
 | Hooks and standing rules | A reminder to look for relevant instructions at useful moments |
 | Search gate | On a task turn the first edit or command is held until the agent has searched the library once (Claude Code, Codex, Cursor, Gemini). Used in real sessions on Claude Code and Codex only; Cursor and Gemini are covered by scripted checks. Codex asks you to trust the hook once |
@@ -161,7 +162,7 @@ These rows describe the repository's adapters. A configured adapter is not proof
 | OpenClaude | `openclaude` | MCP | Add a standing routing rule separately |
 | Hermes | `hermes` | MCP through its configuration API | Installation layout/profile matters; add routing instructions separately |
 
-**macOS, Linux and Windows are implementation targets.** CI runs the tests on all three with Node 20 and 22 (green for the latest commit). Day-to-day use so far has been on two Macs; native Windows acceptance is still open. See the [support matrix](docs/SUPPORT.md).
+**macOS, Linux and Windows are implementation targets.** [CI for merged commit `7902505`](https://github.com/404kidwiz/skillrouter/actions/runs/40389806602) passed on all three with Node 20 and 22. Day-to-day use so far has been on two Macs; native Windows acceptance is still open. See the [support matrix](docs/SUPPORT.md).
 
 Grok, Muse and other cloud assistants do not have universal adapters here. They need a host-specific, authorized bridge; local filesystem paths are not remotely accessible by default.
 
@@ -174,6 +175,7 @@ These examples run from the checkout and require no global CLI installation.
 | Inspect configuration and index | `node dist/src/cli.js doctor` |
 | Reindex after skills change | `node dist/src/cli.js index` |
 | Find a skill | `node dist/src/cli.js search "python async testing"` |
+| Explain a routing decision | `node dist/src/cli.js explain "python async testing" --lexical` |
 | See observed usage | `node dist/src/cli.js report 7` |
 | Preview library trimming | `node dist/src/cli.js trim claude` |
 
@@ -191,22 +193,31 @@ Skills are instructions, not a trust boundary. Review third-party skills and pre
 
 ## Validation and release status
 
-For **0.2.0-beta.1**, recorded on 2026-10-25:
+For **0.2.0-beta.1**, the routing update merged in [PR #1](https://github.com/404kidwiz/skillrouter/pull/1) as `7902505`. The following evidence was recorded on **2026-10-26**:
 
 | Check | Recorded result |
 | --- | --- |
-| Full suite, macOS / Node 22 | 237 passed, 0 failed, 8 Windows-only skips |
-| CI, latest commit | Linux, macOS and Windows on Node 20 and 22: all six jobs green |
-| Real npm archive + clean source-plugin smoke | Both passed (macOS, Node 22 and Node 26) |
-| Lexical fixture, 59 prompts | 91% top-1, 98% top-3; 89% hint recall, 91% precision |
-| Negative fixture, 12 prompts | 0 false hints |
+| Full local suite, macOS / Node 22 | 263 total: 255 passed, 0 failed, 8 platform-specific skips |
+| CI, merged commit `7902505` | [All six jobs passed](https://github.com/404kidwiz/skillrouter/actions/runs/40389806602): Linux, macOS and Windows on Node 20 and 22 |
+| Focused routing and identity regressions | 18 passed on each of two Macs, including after the merge |
+| Real npm archive + clean source-plugin smoke | Both passed in disposable installations; no npm publication |
+| Lexical fixture, 62 prompts | 92% top-1, 98% top-3; 90% hint recall, 92% precision; 0 false hints on negative fixtures |
+
+Independent agent QA covered seven review areas. Three defects were fixed and independently validated, with no actionable findings remaining. This is agent QA, not a human GitHub approval.
+
+**Historical baseline, 2026-10-25:** these measurements predate PR #1. The 245-real-prompt evaluation was **not rerun** for the merged update.
+
+| Check | Historical result |
+| --- | --- |
+| Full local suite | 237 passed, 0 failed, 8 Windows-only skips |
+| Lexical fixture, 59 prompts | 91% top-1, 98% top-3; 89% hint recall, 91% precision; 0 false hints on 12 negative prompts |
 | 245 real prompts from the author's two Macs | Right skill first 87%, in the top three 97%; hint recall 72%, hint precision 63%; hints on 32% of the prompts that need no skill |
 
-The 245 prompts are labeled by the author after seeing the router's top candidates, so recall is optimistic; 80 of the 177 no-skill prompts were chosen because they look like skill prompts, so 32% is a stress figure rather than the everyday rate. On all of the author's recent task prompts the router showed hints on about 30%. The search gate has about a day of real use, on Claude Code and Codex.
+The 245 prompts were labeled by the author after seeing the router's top candidates, so recall is optimistic; 80 of the 177 no-skill prompts were chosen because they look like skill prompts, so 32% is a stress figure rather than the everyday rate. In that historical run, the router showed hints on about 30% of the author's recent task prompts. Search-gate use had been observed on Claude Code and Codex since 2026-10-24.
 
-These are dated results, not a live CI badge or a guarantee for arbitrary tasks. Smoke tests cover two-tool MCP behavior, six generated host configurations and byte-exact recovery. They do not prove six native agents automatically use skills.
+These are dated results, not a live CI badge or a guarantee for arbitrary tasks. Smoke tests cover two-tool MCP behavior, six generated host configurations and byte-exact recovery. Fresh MCP connections on both Macs also passed search and canonical-ID reads across all eight listed hosts. Connectivity does not prove automatic skill use in every host; existing sessions may need an MCP reconnect or restart.
 
-Native Windows acceptance, an actual Claude marketplace-install check, and real sessions of Cursor, Gemini and OpenCode with the search gate remain open. See [release validation](docs/RELEASING.md) and [compatibility evidence](docs/SUPPORT.md).
+Native Windows acceptance, an actual Claude marketplace-install check, and real-session search-gate acceptance on Cursor and Gemini remain open. OpenCode has no search gate; its automatic discovery needs separate native acceptance. See [release validation](docs/RELEASING.md) and [compatibility evidence](docs/SUPPORT.md).
 
 ## Documentation
 

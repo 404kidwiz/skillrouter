@@ -2,6 +2,9 @@
 
 ## 0.2.0-beta.1 — unreleased
 
+- GitHub documentation now separates the merged routing update's 2026-10-26 validation from the historical 245-real-prompt benchmark. The README links to the merged PR and its exact CI run, retains the prepared hero and install prompt, and clarifies host-acceptance limits; asset provenance no longer links to an unpublished local gallery.
+- Explicit search gates weak matches and labels exploratory results; `explain` reports relevance, semantic state, applicability and duplicate decisions. See the [search reference](docs/REFERENCE.md#relevance-and-explanations).
+- Source-qualified skill IDs preserve same-name sources, historical aliases and removed-alias reservations across index rebuilds. Core selection and MCP reads resolve canonical references; optional applicability metadata helps filter unrelated skills. See [identity and applicability](docs/REFERENCE.md#identity-and-applicability-metadata).
 - Windows launcher, filesystem and named-pipe service support from the preceding implementation, now covered by release-candidate hardening.
 - Trim records original destinations and file inventory in a restore manifest. The new restore command previews changes and brings back only what trim removed, skill by skill: a skill changed since the trim is skipped and listed with every other one, never overwritten, and skills trim kept are left alone. Each archive is extracted once, so large restores take seconds rather than one tar run per file.
 - Antigravity installation and diagnostics use the current global configuration location and preserve unrelated settings.
