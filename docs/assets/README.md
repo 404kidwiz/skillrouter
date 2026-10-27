@@ -17,4 +17,4 @@ The image lives in `docs/assets` so the repository and npm distribution both car
 
 ## Design history
 
-The selected source and other concepts are preserved in [the design gallery](../../design/hero-variations/README.md). The previous hero is retained as `design/hero-variations/00-original-library.png`. These design alternatives are outside the npm distribution.
+The selected artwork is the [README hero](skillrouter-hero.png) above. Alternative concepts and the previous hero are retained only in the maintainer's local design archive, which is excluded from Git and the npm distribution. The selected image and its complete generation prompt are available here without that archive.

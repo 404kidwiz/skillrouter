@@ -4,10 +4,10 @@
 skillrouter: keep a large agent-skill library (thousands of SKILL.md folders) without preloading it into every prompt. Small preloaded core + one MCP router (search_skills / read_skill) + per-prompt hints + usage log + safe trim. Targets Claude Code, Codex, Cursor, Gemini CLI, OpenCode. TypeScript, Node >= 20, pnpm.
 
 ## Status
-v0.1.0 on GitHub (public); local 0.2.0-beta.1 hardening candidate implemented and verified on macOS. Not published to npm; candidate not committed or pushed in this pass.
+Public GitHub checkout documents 0.2.0-beta.1. Routing and identity improvements merged in PR #1 as `7902505`; its six-job CI matrix passed. GitHub presentation is refreshed on a feature branch for review. The beta remains unpublished to npm; native Windows and Claude marketplace-install acceptance remain open.
 
 ## Last Updated
-2026-10-24
+2026-10-26
 
 ## Done
 - All commands implemented and exercised on a real 4,500-skill library and in a scratch home: doctor, index, search, core (list/add/remove/suggest/sync), trim (dry run default, tar backups + RESTORE file), install (5 agents, backs up configs), report, mcp (verified with an MCP SDK client), hint (all four hook dialects).
@@ -70,3 +70,10 @@ v0.1.0 on GitHub (public); local 0.2.0-beta.1 hardening candidate implemented an
 - Index records stable source-directory-qualified references, preserved legacy aliases and tombstones, full-file hashes, source/version provenance, explicit maintenance priority, and positive/negative applicability metadata. Existing indexes remain readable; reindexing adds metadata. Directory relocation creates a new identity.
 - Core and MCP reads resolve canonical references. Exact search references survive duplicate collapse. Evaluation uses the same copy equivalence for recall and precision; regression coverage includes identity rebuilds, negative applicability, stale-vector fallback, and MCP stdio behavior.
 - Fixture expanded to 62 prompts: top-1 92%, top-3 98%, hint recall 90%, precision 92%, no false hints on negative fixtures. Local validation: 255 tests passed, 8 platform-specific skips, no failures; npm-artifact and source-plugin smoke passed on macOS/Node 22. Independent QA found three routing/alias edge cases, fixed with regression coverage. No package version bump or registry release is included.
+
+## GitHub presentation (2026-10-26)
+
+- Preserved the selected jade skill-dispenser hero, its alt text, generation prompt and licensing notes. Removed a public provenance link into the ignored local design archive.
+- README and support evidence now identify [merged PR #1](https://github.com/404kidwiz/skillrouter/pull/1) and [CI for `7902505`](https://github.com/404kidwiz/skillrouter/actions/runs/40389806602). Historical 237-test / 59-fixture-prompt results and the 245-real-prompt benchmark are explicitly separated from the merged update; the real-prompt evaluation was not rerun.
+- Kept checkout-based installation, the agent-install prompt, beta version and support boundaries. Added discoverable references for stable skill identity and routing explanations; no runtime, dependency or host-configuration changes.
+- Verification: 11 documentation files / 61 link and image references resolved to tracked files and valid anchors; all four external URLs returned HTTP 200. Release metadata passed; the actual 95-file npm archive included the unchanged hero and required docs, with excluded private-state paths absent. Local Markdown previews were inspected at 1280 px and 390 px without page overflow. Runtime tests and clean-install smoke were not rerun for this documentation-only pass.
