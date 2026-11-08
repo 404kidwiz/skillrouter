@@ -69,25 +69,40 @@ const PREV_FILE = path.join(SR_DIR, "core.synced");
  */
 export function syncCore(agents: AgentId[]): { linked: number; missing: string[]; skipped: number; unlinked: number } {
   const entries = readCoreEntries();
-  fs.rmSync(CORE_DIR, { recursive: true, force: true });
-  fs.mkdirSync(CORE_DIR, { recursive: true });
   const missing: string[] = [];
   let linked = 0, skipped = 0, unlinked = 0;
-  let previous: string[] = [];
-  try { previous = JSON.parse(fs.readFileSync(PREV_FILE, "utf8")); } catch { /* first sync */ }
-  const current = new Set(entries.map((e) => e.id));
-  for (const gone of previous.filter((n) => !current.has(n))) {
-    for (const agent of agents) {
-      const link = path.join(AGENT_SKILL_DIRS[agent][0], gone);
-      try { if (fs.lstatSync(link).isSymbolicLink()) { fs.unlinkSync(link); unlinked++; } } catch { /* not there */ }
-    }
-  }
+  // Resolve first: core.synced records link names (folder basenames), so "removed from core" must be decided
+  // against link names too. Comparing them with core ids (design-taste-frontend~2, find-docs~2, scroll-craft)
+  // treated every renamed/suffixed entry as removed and deleted + re-created its links on every sync.
   const targets = new Map<string, { target: string; skip: Set<AgentId> }>();
   for (const { id, skip } of entries) {
     const m = findSkill(id);
     if (m.length !== 1) { missing.push(id); continue; }
     targets.set(path.basename(m[0].path).replace(/~\d+$/, ""), { target: m[0].path, skip });
   }
+  // core.synced: legacy format is a JSON array of names; current format maps name -> link target.
+  let previous: Record<string, string | null> = {};
+  try {
+    const raw = JSON.parse(fs.readFileSync(PREV_FILE, "utf8"));
+    previous = Array.isArray(raw) ? Object.fromEntries(raw.map((n: string) => [n, null])) : raw;
+  } catch { /* first sync */ }
+  const carried: Record<string, string | null> = {};
+  for (const [gone, oldTarget] of Object.entries(previous)) {
+    if (targets.has(gone)) continue;
+    // A core id that failed to resolve this run may be what produced this name: do not unlink on a partial resolve.
+    if (missing.length) { carried[gone] = oldTarget; continue; }
+    for (const dir of new Set(agents.map((a) => AGENT_SKILL_DIRS[a][0]))) {
+      const link = path.join(dir, gone);
+      try {
+        if (!fs.lstatSync(link).isSymbolicLink()) continue; // never a real folder
+        // Only remove a link core sync made: same target as recorded (legacy records have no target).
+        if (oldTarget !== null && path.resolve(dir, fs.readlinkSync(link)) !== path.resolve(oldTarget)) continue;
+        fs.unlinkSync(link); unlinked++;
+      } catch { /* not there */ }
+    }
+  }
+  fs.rmSync(CORE_DIR, { recursive: true, force: true });
+  fs.mkdirSync(CORE_DIR, { recursive: true });
   for (const [name, { target }] of targets) { linkDir(target, path.join(CORE_DIR, name)); linked++; }
   // Each agent gets core in its first folder. A folder shared by several agents (~/.agents/skills) is linked once,
   // and a skill is left out of it only when every agent reading that folder skips it.
@@ -103,7 +118,7 @@ export function syncCore(agents: AgentId[]): { linked: number; missing: string[]
       linkDir(target, link);
     }
   }
-  fs.writeFileSync(PREV_FILE, JSON.stringify([...targets.keys()]));
+  fs.writeFileSync(PREV_FILE, JSON.stringify({ ...carried, ...Object.fromEntries([...targets].map(([n, { target }]) => [n, target])) }));
   return { linked, missing, skipped, unlinked };
 }
 
