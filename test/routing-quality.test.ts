@@ -136,3 +136,43 @@ test('explanation acceptance matches returned results and default hints ignore s
   assert.deepEqual(one.decisions.filter(d => d.hintAccepted).map(d => d.hit.skill.id), five.decisions.filter(d => d.hintAccepted).map(d => d.hit.skill.id));
   assert.ok(five.decisions.filter(d => d.hintAccepted).length <= 3);
 });
+
+test('getIndex, loadVectors, embedSkills, tombstoned eval aliases, and conversational filters', async () => {
+  const { getIndex } = await import('../src/search.js');
+  const { embedSkills, loadVectors, saveVectors, skillText, textHash } = await import('../src/embed.js');
+  const { evaluate } = await import('../src/eval.js');
+  const { isConversational } = await import('../src/hint.js');
+
+  // 1. Auto-reload index & vectors on disk write without manual resetIndexCache/resetVectors
+  const before = getIndex().index;
+  const updated = { ...before, builtAt: new Date(Date.now() + 5000).toISOString() };
+  saveIndex(updated);
+  assert.equal(getIndex().index.builtAt, updated.builtAt);
+
+  const hashes = updated.skills.map(s => textHash(skillText(s)));
+  saveVectors(updated.skills.map(s => s.id), updated.skills.map(() => [1, 0]), updated.builtAt, hashes);
+  assert.equal(loadVectors()?.indexBuiltAt, updated.builtAt);
+
+  // 2. embedSkills reuses 100% of vectors when skill text hashes match (never invokes local model)
+  const cachedEmb = await embedSkills(updated.skills, undefined, false);
+  assert.equal(cachedEmb.reused, updated.skills.length);
+  assert.deepEqual(cachedEmb.rows[0], [1, 0]);
+
+  // 3. evaluate resolves bare expected id when canonical alias is a tombstone and ~N variant is active
+  const withTombstone = {
+    ...updated,
+    identityAliases: { ...(updated.identityAliases ?? {}), 'python-testing': 'python-testing@retired000000000000000000' },
+    skills: updated.skills.map(s => s.id === 'python-testing' ? { ...s, id: 'python-testing~2', aliases: ['python-testing~2'] } : s),
+  };
+  saveIndex(withTombstone);
+  const evalRes = await evaluate([{ prompt: 'write python pytest regression tests with fixtures', expect: ['python-testing'] }], { lexicalOnly: true });
+  assert.deepEqual(evalRes.unknownIds, []);
+  assert.equal(evalRes.summary.top1, 1);
+  saveIndex(before);
+
+  // 4. Conversational/handoff/meta filter catches non-task turns and leaves concrete tasks false
+  assert.equal(isConversational('Give me a short iMessage for TJ with the acceptance matrix link'), true);
+  assert.equal(isConversational('Coordination update: the parent has assigned independent reviewer 682'), true);
+  assert.equal(isConversational('Can we make sure that we use the skill router from now on'), true);
+  assert.equal(isConversational('write python pytest regression tests with fixtures'), false);
+});

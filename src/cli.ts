@@ -100,23 +100,28 @@ async function main(argv: string[]): Promise<void> {
     }
     case "index": {
       const { buildIndex, loadIndex, saveIndex } = await import("./index.js");
-      const { embed, vectorsExist, saveVectors, skillText } = await import("./embed.js");
+      const { embedSkills, vectorsExist, saveVectors } = await import("./embed.js");
       const withEmb = flag(args, "--embeddings");
       // Extra roots stick: an index rebuilt without --root keeps the roots of the previous one.
       const roots = opt(args, "--root");
-      const index = buildIndex(roots.length ? roots : (loadIndex()?.roots ?? []));
-      saveIndex(index);
-      // Vectors are rebuilt with the index once a vector store exists. They carry the index's builtAt,
-      // so if this step fails the old vectors read as stale and hints fall back to lexical.
+      const previous = loadIndex();
+      const index = buildIndex(roots.length ? roots : (previous?.roots ?? []));
+      // Vectors are rebuilt with the index once a vector store exists. Save index and vectors together
+      // after embedding so concurrent prompt checks never see an index without matching vectors.
       let vec = "";
       if (withEmb || vectorsExist()) {
         try {
-          const rows: number[][] = [];
-          const texts = index.skills.map(skillText);
-          for (let i = 0; i < texts.length; i += 64) rows.push(...(await embed(texts.slice(i, i + 64), true)));
-          saveVectors(index.skills.map((s) => s.id), rows, index.builtAt);
-          vec = " with embeddings";
-        } catch (e) { vec = ` (embeddings not rebuilt: ${(e as Error).message}; hints use BM25 until \`index --embeddings\` succeeds)`; process.exitCode = 1; }
+          const { rows, hashes, reused } = await embedSkills(index.skills, previous?.skills, true);
+          saveIndex(index);
+          saveVectors(index.skills.map((s) => s.id), rows, index.builtAt, hashes);
+          vec = ` with embeddings (${reused}/${index.skills.length} cached)`;
+        } catch (e) {
+          saveIndex(index);
+          vec = ` (embeddings not rebuilt: ${(e as Error).message}; hints use BM25 until \`index --embeddings\` succeeds)`;
+          process.exitCode = 1;
+        }
+      } else {
+        saveIndex(index);
       }
       console.log(`Indexed ${index.skills.length} skills from ${index.roots.length} folders${vec} -> ${SR_DIR}/index.json`);
       break;

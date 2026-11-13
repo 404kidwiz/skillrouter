@@ -54,11 +54,11 @@ export async function evaluate(cases: EvalCase[], options: { lexicalOnly?: boole
     const cached = expectedCache.get(id);
     if (cached) return cached;
     const found = findSkill(id);
-    if (found.length || Object.hasOwn(index.identityAliases ?? {}, id) || !/~\d+$/.test(id)) {
+    if (found.length) {
       expectedCache.set(id, found);
       return found;
     }
-    const family = index.skills.filter(s => bareSkill(s.id) === bareSkill(id));
+    const family = index.skills.filter(s => bareSkill(s.id) === bareSkill(id) || bareSkill(s.name) === bareSkill(id));
     expectedCache.set(id, family);
     return family;
   };

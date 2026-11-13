@@ -81,7 +81,7 @@ export function report(days = 7, rows = readLog(days)): string {
   for (const a of [...new Set([...searches, ...reads, ...native].map(agentOf))].sort())
     out.push(`  ${a}: ${searches.filter((r) => agentOf(r) === a).length} / ${reads.filter((r) => agentOf(r) === a).length} / ${native.filter((r) => agentOf(r) === a).length}`);
   out.push("", "Most-read skills (candidates for core):");
-  for (const [id, n] of [...[...reads, ...native].reduce((counts, r) => { if (r.skill) counts.set(r.skill, (counts.get(r.skill) ?? 0) + 1); return counts; }, new Map<string, number>()).entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)) out.push(`  ${String(n).padStart(4)}  ${id}`);
+  for (const [id, n] of [...[...reads, ...native].reduce((counts, r) => { if (r.skill) { const k = r.skill.replace(/^catalog--/, ""); counts.set(k, (counts.get(k) ?? 0) + 1); } return counts; }, new Map<string, number>()).entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)) out.push(`  ${String(n).padStart(4)}  ${id}`);
   if (hints.length) {
     const shown = hints.filter((h) => h.hits?.length);
     const followed = shown.filter((h) => [...reads, ...loads].some((r) => followsHint(h, r)));

@@ -3,14 +3,24 @@ import path from "node:path";
 import { BM25, tokenize, stem, TOKENIZER_VERSION } from "./bm25.js";
 import { loadIndex, resolveSkillReference } from "./index.js";
 import { applicabilityReason } from "./applicability.js";
-import { USAGE_LOG, SR_DIR } from "./paths.js";
+import { INDEX_FILE, USAGE_LOG, SR_DIR } from "./paths.js";
 import { bareSkill } from "./state.js";
 import { loadVectors, semanticScores } from "./embed.js";
 let cached = null;
+function indexStamp() {
+    try {
+        const s = fs.statSync(INDEX_FILE);
+        return `${s.mtimeMs}:${s.size}`;
+    }
+    catch {
+        return "-";
+    }
+}
 /** Forget the loaded index (the warm service does this when index.json changes on disk). */
 export function resetIndexCache() { cached = null; }
 export function getIndex() {
-    if (cached)
+    const stamp = indexStamp();
+    if (cached && cached.stamp === stamp)
         return cached;
     const index = loadIndex();
     if (!index)
@@ -20,7 +30,7 @@ export function getIndex() {
     const byName = new Map();
     for (const s of index.skills)
         byName.set(s.name, [...(byName.get(s.name) ?? []), s]);
-    cached = { index, bm25: new BM25(index.skills.map((s) => ({ id: s.id, tokens: tokens(s), name: tokenize(s.name) }))), byId: new Map(index.skills.map((s) => [s.id, s])), byName };
+    cached = { index, bm25: new BM25(index.skills.map((s) => ({ id: s.id, tokens: tokens(s), name: tokenize(s.name) }))), byId: new Map(index.skills.map((s) => [s.id, s])), byName, stamp };
     return cached;
 }
 /**

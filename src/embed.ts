@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -58,33 +59,85 @@ export function skillText(s: { name: string; description: string }): string {
   return `${s.name.replace(/[-_~]/g, " ")}: ${s.description}`.slice(0, 512);
 }
 
-export interface Vectors { ids: string[]; dim: number; data: Float32Array; index: Map<string, number>; indexBuiltAt?: string }
+export function textHash(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+export interface Vectors { ids: string[]; dim: number; data: Float32Array; index: Map<string, number>; indexBuiltAt?: string; hashes?: string[] }
 
 /** Vectors are stamped with the index they were built for; any other index makes them stale. */
-export function saveVectors(ids: string[], rows: number[][], indexBuiltAt: string): void {
+export function saveVectors(ids: string[], rows: number[][], indexBuiltAt: string, hashes?: string[]): void {
   const dim = rows[0]?.length ?? 0;
   const data = new Float32Array(ids.length * dim);
   rows.forEach((r, i) => data.set(r, i * dim));
   fs.mkdirSync(SR_DIR, { recursive: true });
   fs.writeFileSync(VEC_FILE + ".tmp", Buffer.from(data.buffer));
-  fs.writeFileSync(META_FILE + ".tmp", JSON.stringify({ model: MODEL, dim, count: ids.length, builtAt: new Date().toISOString(), indexBuiltAt, ids }));
+  fs.writeFileSync(META_FILE + ".tmp", JSON.stringify({ model: MODEL, dim, count: ids.length, builtAt: new Date().toISOString(), indexBuiltAt, ids, ...(hashes ? { hashes } : {}) }));
   renameSyncRetry(VEC_FILE + ".tmp", VEC_FILE);
   renameSyncRetry(META_FILE + ".tmp", META_FILE);
+}
+
+/** Embed only skills whose text changed since the previous vector build; reuse unchanged Float32 rows. */
+export async function embedSkills(
+  skills: { id: string; name: string; description: string }[],
+  previousSkills?: { id: string; name: string; description: string }[],
+  allowRemote = true,
+): Promise<{ rows: number[][]; hashes: string[]; reused: number }> {
+  const prevVec = loadVectors();
+  const reusable = new Map<string, number[]>();
+  if (prevVec && prevVec.dim > 0) {
+    const prevHashes = prevVec.hashes;
+    const prevHashById = new Map<string, string>();
+    if (!prevHashes && previousSkills) {
+      for (const s of previousSkills) prevHashById.set(s.id, textHash(skillText(s)));
+    }
+    for (let i = 0; i < prevVec.ids.length; i++) {
+      const h = prevHashes?.[i] ?? prevHashById.get(prevVec.ids[i]);
+      if (h && !reusable.has(h)) {
+        reusable.set(h, Array.from(prevVec.data.subarray(i * prevVec.dim, (i + 1) * prevVec.dim)));
+      }
+    }
+  }
+  const texts = skills.map(skillText);
+  const hashes = texts.map(textHash);
+  const rows: number[][] = new Array(skills.length);
+  const missingIdx: number[] = [];
+  let reused = 0;
+  for (let i = 0; i < skills.length; i++) {
+    const hit = reusable.get(hashes[i]);
+    if (hit) { rows[i] = hit; reused++; }
+    else missingIdx.push(i);
+  }
+  for (let i = 0; i < missingIdx.length; i += 64) {
+    const batch = missingIdx.slice(i, i + 64);
+    const vecs = await embed(batch.map((idx) => texts[idx]), allowRemote);
+    for (let j = 0; j < batch.length; j++) rows[batch[j]] = vecs[j];
+  }
+  return { rows, hashes, reused };
 }
 
 export function vectorsExist(): boolean { return fs.existsSync(META_FILE); }
 
 let vectors: Vectors | null | undefined;
+let vectorsStamp: string | undefined;
+function vecStamp(): string {
+  try {
+    const m = fs.statSync(META_FILE), v = fs.statSync(VEC_FILE);
+    return `${m.mtimeMs}:${m.size}|${v.mtimeMs}:${v.size}`;
+  } catch { return "-"; }
+}
 /** Forget the loaded vectors (the warm service does this when the embedding files change on disk). */
-export function resetVectors(): void { vectors = undefined; }
+export function resetVectors(): void { vectors = undefined; vectorsStamp = undefined; }
 export function loadVectors(): Vectors | null {
-  if (vectors !== undefined) return vectors;
+  const stamp = vecStamp();
+  if (vectors !== undefined && vectorsStamp === stamp) return vectors;
+  vectorsStamp = stamp;
   try {
     const meta = JSON.parse(fs.readFileSync(META_FILE, "utf8"));
     const buf = fs.readFileSync(VEC_FILE);
     const data = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
     if (meta.model !== MODEL || data.length !== meta.count * meta.dim) throw new Error("stale");
-    vectors = { ids: meta.ids, dim: meta.dim, data, index: new Map(meta.ids.map((id: string, i: number) => [id, i])), indexBuiltAt: meta.indexBuiltAt };
+    vectors = { ids: meta.ids, dim: meta.dim, data, index: new Map(meta.ids.map((id: string, i: number) => [id, i])), indexBuiltAt: meta.indexBuiltAt, ...(Array.isArray(meta.hashes) ? { hashes: meta.hashes } : {}) };
   } catch { vectors = null; }
   return vectors;
 }
