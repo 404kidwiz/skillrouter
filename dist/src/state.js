@@ -126,6 +126,8 @@ export function markTurn(session, turn) {
         return;
     append(session, "turns.jsonl", { turn });
 }
+/** Whether the prompt hook has ever marked a turn in this session. False for a whole session means the host sent tool events but no prompt event. */
+export function turnSeen(session) { return rows(session, "turns.jsonl").length > 0; }
 export function addTool(session, turn, sub) { append(session, "tools.jsonl", { turn, sub }); }
 /**
  * True the first time a tool call (its host-given id) is seen in this session, and records it. A hook run again after
@@ -159,6 +161,32 @@ export function firstUse(session, useId) {
     }
     catch { /* best effort: count it */ }
     return true;
+}
+/** The request (a hash of its text, see recurring.ts) each of this session's turns is answering; the latest is the current one. */
+export function setPromptKey(session, turn, key) {
+    const last = rows(session, "pkey.jsonl").pop();
+    if (last && last.key === key && last.turn === turn)
+        return;
+    append(session, "pkey.jsonl", { turn, key });
+}
+export function promptKeyOf(session) {
+    const last = rows(session, "pkey.jsonl").pop();
+    return typeof last?.key === "string" && /^[a-f0-9]{32}$/.test(last.key) ? last.key : undefined;
+}
+/**
+ * For a host that sends no turn id (Antigravity): the turn is identified by `key` (a hash of the user input). With
+ * `open`, a key different from the last one starts a new turn (`fresh`); without it, the turn is returned only when
+ * the key is still the current one.
+ */
+export function hostTurn(session, key, open) {
+    const last = rows(session, "hostturn.jsonl").pop();
+    if (last && last.key === key && typeof last.turn === "string")
+        return { turn: last.turn, fresh: false };
+    if (!open || !session)
+        return undefined;
+    const turn = `${key.slice(0, 16)}-${Date.now().toString(36)}`;
+    append(session, "hostturn.jsonl", { key, turn });
+    return { turn, fresh: true };
 }
 /** A turn's time span: from its marker to the next marker (open-ended for the current turn). */
 export function turnWindow(session, turn) {

@@ -13,7 +13,7 @@ process.env.SKILLROUTER_HOME = path.join(scratch, "router");
 fs.mkdirSync(process.env.SKILLROUTER_HOME);
 const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 const { report, followsHint, readLog } = await import("../src/report.js");
-const { install, addHook, openCodePlugin, resolveNode } = await import("../src/install.js");
+const { install, addHook, openCodePlugin, resolveNode, NODE_FALLBACKS } = await import("../src/install.js");
 const { configuration, health } = await import("../src/health.js");
 const { runHint } = await import("../src/hint.js");
 const logFile = path.join(process.env.SKILLROUTER_HOME, "usage.jsonl");
@@ -51,7 +51,9 @@ test("installer never pins a Node binary that another tool manages", () => {
     process.env.PATH = [path.dirname(managedNode), path.dirname(freeNode)].join(path.delimiter);
     const picked = resolveNode();
     assert.ok(!picked.includes(".hermes"), picked);
-    assert.ok(picked === process.execPath || picked === freeNode, picked);
+    // The running Node when its path is stable; under a versioned path (CI tool caches, version managers) a stable system Node.
+    // The fake `node` on PATH is never picked on its own merits: it does not answer `-v`.
+    assert.ok(picked === process.execPath || picked === freeNode || NODE_FALLBACKS.includes(picked), picked);
   } finally { Object.assign(process.env, saved); if (saved.SKILLROUTER_NODE === undefined) delete process.env.SKILLROUTER_NODE; }
 });
 

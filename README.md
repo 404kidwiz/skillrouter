@@ -158,9 +158,9 @@ These rows describe the repository's adapters. A configured adapter is not proof
 | Cursor | `cursor` | MCP + prompt/tool/stop hooks + search gate | Prompt and stop behavior is for interactive sessions |
 | Gemini CLI | `gemini` | MCP + agent/tool hooks + search gate | Final nudge can cause a response retry |
 | OpenCode | `opencode` | MCP + message/tool plugin | No final decision nudge |
-| Antigravity | `antigravity` | MCP at the current config path | Add a standing routing rule separately |
+| Antigravity | `antigravity` | MCP at the current config path; with `--hooks` a prompt check + search gate (experimental) | Hooks are opt-in and tested against the documented contract only |
 | OpenClaude | `openclaude` | MCP | Add a standing routing rule separately |
-| Hermes | `hermes` | MCP through its configuration API | Installation layout/profile matters; add routing instructions separately |
+| Hermes | `hermes` | MCP + prompt check + search gate, for the main home and every profile, through its configuration API | Hooks run only once approved in Hermes; `--accept-hooks` approves them for unattended profiles |
 
 **macOS, Linux and Windows are implementation targets.** [CI for merged commit `7902505`](https://github.com/404kidwiz/skillrouter/actions/runs/40389806602) passed on all three with Node 20 and 22. Day-to-day use so far has been on two Macs; native Windows acceptance is still open. See the [support matrix](docs/SUPPORT.md).
 

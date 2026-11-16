@@ -20,6 +20,12 @@ export function antigravityConfigPaths(home = HOME): { current: string; legacy: 
 
 export type AgentId = "claude" | "codex" | "cursor" | "gemini" | "opencode";
 export const AGENTS: AgentId[] = ["claude", "codex", "cursor", "gemini", "opencode"];
+/**
+ * Hosts whose hooks the router answers. Hermes and Antigravity have hooks (a prompt check and the search gate) but no
+ * skill folder the router manages, so they are not in AGENTS, which drives core links, trim and the per-agent folders.
+ */
+export type HookAgent = AgentId | "hermes" | "antigravity";
+export const HOOK_AGENTS: HookAgent[] = [...AGENTS, "hermes", "antigravity"];
 
 /** Folders each agent auto-loads at startup (user scope). First entry is where core links go. */
 export const AGENT_SKILL_DIRS: Record<AgentId, string[]> = {

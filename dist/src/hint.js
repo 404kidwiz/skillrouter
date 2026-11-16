@@ -2,15 +2,22 @@ import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { INDEX_FILE } from "./paths.js";
-import { getIndex, logUsage, search } from "./search.js";
+import { fromHost } from "./hosts.js";
+import { findSkill, getIndex, logUsage, search } from "./search.js";
+import { recallRequest } from "./recurring.js";
 import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
-import { addGateTask, addShown, bareSkill, loadedSkills, markTurn, sessionSearched } from "./state.js";
+import { addGateTask, addShown, bareSkill, loadedSkills, markTurn, sessionSearched, setPromptKey } from "./state.js";
 import { endorsed, suppressed } from "./verdicts.js";
 const EVENT = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
 const TOOL_EVENT = { gemini: "AfterTool" }; // claude/codex: PostToolUse
 /** The host's hook answer carrying context for the model. `tool`: after a tool call rather than on a prompt. */
 export function formatHint(agent, text, tool = false) {
+    // Hermes appends `context` to the turn's user message; Antigravity injects a step before the model call.
+    if (agent === "hermes")
+        return JSON.stringify(text && !tool ? { context: text } : {});
+    if (agent === "antigravity")
+        return JSON.stringify(text && !tool ? { injectSteps: [{ ephemeralMessage: text }] } : {});
     if (agent === "cursor")
         return JSON.stringify(text ? { ...(tool ? {} : { continue: true }), additional_context: text } : tool ? {} : { continue: true });
     if (!text)
@@ -53,8 +60,16 @@ export function minRawFor(skills) {
     return Math.round(20 * Math.log(Math.max(2, skills)) / Math.log(4500) * 10) / 10;
 }
 /** Reads the hook JSON on stdin, prints the agent-specific hook output. Never blocks a prompt. */
-export async function hint(agent, input, minRaw, k = 3) {
+export async function hint(agent, rawInput, minRaw, k = 3) {
     const started = performance.now();
+    let translated = rawInput;
+    try {
+        translated = fromHost(agent, rawInput, "prompt");
+    }
+    catch { /* judged as sent */ }
+    if (translated === null)
+        return formatHint(agent, ""); // nothing to check for this event
+    const input = translated;
     const hint_id = randomUUID();
     let payload = {};
     let semStatus;
@@ -78,6 +93,8 @@ export async function hint(agent, input, minRaw, k = 3) {
     // coming back as a prompt (Cursor's follow-up, Gemini's retry, Codex's continuation) belongs to the nudged turn.
     if (!/^skillrouter: this turn did real work/.test(prompt))
         markTurn(session, sessionHash(turnOf(payload)));
+    // Whatever this turn is, it is no longer the request of the turn before: skill loads from here on are not that request's.
+    setPromptKey(session, sessionHash(turnOf(payload)), "");
     if (isSlashCommand(prompt)) {
         record("skipped_command");
         return formatHint(agent, "");
@@ -95,6 +112,10 @@ export async function hint(agent, input, minRaw, k = 3) {
         record("skipped_short_prompt");
         return formatHint(agent, "");
     }
+    // The same request as an earlier run (a scheduled job): the skills that run loaded are named first.
+    // (Not for a prompt that points back at the conversation: "go ahead with your plan" recurs everywhere and names no task.)
+    const recalled = isConversational(prompt) ? { key: "", skills: [], runs: 0 } : recallRequest(session, sessionHash(turnOf(payload)), prompt);
+    let remembered = [];
     let hits = [];
     let core = new Set();
     try {
@@ -114,12 +135,35 @@ export async function hint(agent, input, minRaw, k = 3) {
         record(fs.existsSync(INDEX_FILE) ? "index_error" : "missing_index");
         return formatHint(agent, "");
     }
+    try {
+        const loaded = loadedSkills(session, undefined);
+        const held = suppressed(agent);
+        for (const id of recalled.skills) {
+            const found = findSkill(id);
+            const skill = found.length === 1 ? found[0] : undefined; // a name that now means several skills, or none, is not guessed
+            if (!skill || loaded.has(bareSkill(skill.id)) || held.has(bareSkill(skill.id)))
+                continue;
+            remembered.push(skill.id);
+            if (!hits.some((h) => bareSkill(h.skill.id) === bareSkill(skill.id)))
+                hits.unshift({ skill, score: 1, raw: 0, matched: 0 });
+        }
+        hits = hits.slice(0, Math.max(k, remembered.length));
+    }
+    catch {
+        remembered = [];
+    }
     record(hits.length ? "shown" : "no_match", hits);
+    if (remembered.length)
+        logUsage({ client: `hook/${agent}`, agent, tool: "recurring", reason: "recalled", session, prompt: sessionHash(turnOf(payload)), skills: remembered, runs: recalled.runs });
     if (!hits.length)
         return formatHint(agent, "");
     // Named siblings count as shown, so a later trigger this turn doesn't offer them again.
     addShown(session, hits.map((h) => h.skill.id), sessionHash(turnOf(payload)), Object.fromEntries(hits.filter((h) => h.similar?.length).map((h) => [h.skill.id, h.similar])));
-    return formatHint(agent, hintText(hits, hint_id, core, agent));
+    // Hermes and Antigravity keep their own skill folders: nothing is "preloaded" there, every suggestion is a read.
+    const text = hintText(hits, hint_id, agent === "hermes" || agent === "antigravity" ? new Set() : core, agent);
+    // (Requests are matched with their numbers flattened, so "issue 12" and "issue 97" look alike: the agent is told to judge.)
+    const note = remembered.length ? `\nA request worded like this one was answered before with: ${remembered.join(", ")}. If this is the same task, use ${remembered.length > 1 ? "them" : "it"} and skip the search; if the task differs, search as usual.` : "";
+    return formatHint(agent, text + note);
 }
 /**
  * Which candidates become a hint. A hint costs context on every prompt, so only a confident match is shown; the

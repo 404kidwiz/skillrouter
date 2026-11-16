@@ -4,7 +4,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { HOME, antigravityConfigPaths } from "./paths.js";
-import { INSTALL_TARGETS } from "./install.js";
+import { INSTALL_TARGETS } from "./pins.js";
 function json(file) { try {
     return parseJson(fs.readFileSync(file, "utf8"));
 }

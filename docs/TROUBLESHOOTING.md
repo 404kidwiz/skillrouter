@@ -35,7 +35,7 @@ Check each layer separately:
 4. **Behavior:** does an ordinary relevant task cause a search/read in a fresh session?
 5. **Application:** did the agent follow useful instructions from the skill? A read alone cannot answer that.
 
-Antigravity, Hermes and OpenClaude get MCP configuration from the adapter, not prompt hooks or an automatically written standing rule. See [persistent routing instructions](INSTALL.md#persistent-routing-instructions).
+OpenClaude gets MCP configuration from the adapter, not prompt hooks or an automatically written standing rule. Hermes also gets a prompt check and the search gate through its shell hooks; if `doctor` says they are "NOT yet approved in Hermes", they are configured but Hermes will not run them until you accept them in `hermes chat` or run `skillrouter install hermes --accept-hooks`. Antigravity gets hooks only with `install antigravity --hooks`. See [persistent routing instructions](INSTALL.md#persistent-routing-instructions).
 
 Cursor headless behavior differs from interactive behavior. Codex hooks can require trust. OpenCode has no final nudge. Do not test one mode and claim all modes work.
 

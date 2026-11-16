@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { AGENTS, SR_DIR, type AgentId } from "./paths.js";
+import { AGENTS, HOOK_AGENTS, SR_DIR, type AgentId, type HookAgent } from "./paths.js";
 // Everything else is imported where used: hooks run on every prompt and tool call, so they load only what they need.
 
 const USAGE = `skillrouter — a big skill library without the context bloat
@@ -8,7 +8,7 @@ const USAGE = `skillrouter — a big skill library without the context bloat
   skillrouter index [--root DIR]... [--embeddings]
                                           scan every skill folder into ~/.skillrouter/index.json (+ local vectors)
   skillrouter search "<task>" [-k N] [--exploratory] [--lexical]
-                                          relevant skills; exploratory includes labeled weak matches
+                                          relevant skills, or a few labeled weak ones when none is strong; exploratory lists all weak matches
   skillrouter explain "<task>" [-k N] [--lexical]
                                           ranking, relevance, applicability, duplicate and semantic decisions
   skillrouter core list|add <id>...|remove <id>...|suggest [N]|sync [agents]
@@ -19,7 +19,15 @@ const USAGE = `skillrouter — a big skill library without the context bloat
                                           move everything except core out of agent folders (dry run by default)
   skillrouter restore <manifest.json> [--apply]
                                           restore what trim removed, skill by skill (dry run; skips and lists skills changed since)
-  skillrouter install <agent>...         wire MCP + hooks: claude codex cursor gemini opencode; MCP only: openclaude antigravity hermes
+  skillrouter install <agent>... [--accept-hooks] [--hooks]
+                                          wire MCP + hooks: claude codex cursor gemini opencode hermes; MCP only: openclaude antigravity
+                                          --accept-hooks: approve the router's hooks in Hermes (needed for gateway/cron profiles)
+                                          --hooks: also install Antigravity's hooks (experimental)
+  skillrouter recurring [reset | forget <hash>]
+                                          requests seen more than once and the skills they used (named at once next time)
+  skillrouter backups [--older-than DAYS] [--apply]
+                                          list ~/.skillrouter/backups; --apply removes entries older than DAYS (default 30),
+                                          never the newest trim's restore manifest and archives (dry run by default)
   skillrouter eval [-v] [--ci]           routing quality on the bundled fixture (what CI runs)
   skillrouter eval --live [file] [--lexical] [-v] [--ci]
                                           the same on the real index and ~/.skillrouter/eval.jsonl
@@ -57,25 +65,36 @@ async function main(argv: string[]): Promise<void> {
   switch (cmd) {
     case "hint":
     case "hint-worker": {
-      const agent = args[0] as AgentId;
+      const agent = args[0] as HookAgent;
       const mode = args[1];
-      if (!AGENTS.includes(agent)) return;
+      if (!HOOK_AGENTS.includes(agent)) return;
       const { readHintInput, runHint, formatHint, hint } = await import("./hint.js");
+      const { silent } = await import("./hosts.js");
       const worker = cmd === "hint-worker";
-      const input = await readHintInput(agent, 1500, mode ? 8 * 1024 * 1024 : 256 * 1024);
-      if (input === null) return finish(mode ? "" : formatHint(agent, ""), worker);
+      // Hermes and Antigravity have the prompt check and the gate; any other mode there has nothing to do.
+      // Hermes and Antigravity have the prompt check and the gate, Hermes also the end-of-turn record; any other mode there has nothing to do.
+      if ((agent === "hermes" || agent === "antigravity") && mode && mode !== "gate" && !(agent === "hermes" && mode === "decision")) return finish(silent(agent, false), worker);
+      // Hermes's end-of-turn payload carries the whole conversation: only its last reply is read, but all of it has to be taken in.
+      const input = await readHintInput(agent, 1500, agent === "hermes" && mode === "decision" ? 64 * 1024 * 1024 : mode ? 8 * 1024 * 1024 : 256 * 1024);
+      if (input === null) return finish(mode ? silent(agent, mode === "gate") : formatHint(agent, ""), worker);
       // SKILLROUTER_GATE=0 is the hook's own environment: the warm service has its own and must not be asked.
-      if (mode === "gate") { const { gateEnabled } = await import("./gate.js"); if (!gateEnabled()) return finish("", worker); }
+      if (mode === "gate") { const { gateEnabled } = await import("./gate.js"); if (!gateEnabled()) return finish(silent(agent, true), worker); }
       // The warm service answers in milliseconds when it is running; any failure falls through to doing the work here.
       if (!worker) {
         const { serviceEnabled, ask, startServiceSoon } = await import("./service-client.js");
-        if (serviceEnabled() && process.env.SKILLROUTER_SERVICE_TRIED !== "1") {
+        // (SKILLROUTER_RECURRING=0 is this hook's own setting: the service has its own environment and would not see it.)
+        if (serviceEnabled() && process.env.SKILLROUTER_SERVICE_TRIED !== "1" && process.env.SKILLROUTER_RECURRING !== "0") {
           const answer = await ask(agent, mode ?? "-", input);
           if (answer.kind === "ok") return finish(answer.out, false);
           if (answer.kind === "failed") startServiceSoon(); // not reachable: start one for the next hook (not after a mere decline)
         }
       }
       if (mode === "gate") { const { gateEvent } = await import("./gate.js"); return finish(gateEvent(agent, input), worker); }
+      if (agent === "hermes" && mode === "decision") { const { decisionEvent } = await import("./events.js"); decisionEvent(agent, input); return finish("{}", worker); }
+      if (agent === "hermes" || agent === "antigravity") {
+        // The prompt check, in this process: these hosts allow seconds, and the killable-worker path below is not needed for them.
+        return finish(await hint(agent, input), worker);
+      }
       if (mode === "stop") { const { stopEvent } = await import("./events.js"); return finish(stopEvent(agent, input), worker); }
       if (mode === "decision") { const { decisionEvent } = await import("./events.js"); return finish(decisionEvent(agent, input), worker); }
       if (mode === "tool") {
@@ -89,9 +108,42 @@ async function main(argv: string[]): Promise<void> {
       const live = flag(args, "--live");
       const { doctor } = await import("./report.js");
       console.log(doctor());
+      {
+        // Pins: what each host's config and the hook launcher actually point at.
+        const { mcpSpec, hermesSpec } = await import("./live.js");
+        const { INSTALL_TARGETS, pinProblems } = await import("./pins.js");
+        const { HOME, SR_DIR, BACKUP_DIR, USAGE_LOG } = await import("./paths.js");
+        const fs = await import("node:fs"), path = await import("node:path");
+        const specs: { host: string; command: unknown; args: unknown }[] = [];
+        for (const t of INSTALL_TARGETS) { try { const sp = mcpSpec(t as any); if (sp) specs.push({ host: `${t} MCP`, command: sp.command, args: sp.args }); } catch { /* unreadable config: reported above */ } }
+        try {
+          for (const name of fs.readdirSync(path.join(HOME, ".hermes", "profiles"))) {
+            try { const sp = hermesSpec(fs.readFileSync(path.join(HOME, ".hermes", "profiles", name, "config.yaml"), "utf8")); if (sp) specs.push({ host: `hermes profile ${name} MCP`, command: sp.command, args: sp.args }); } catch { /* no config */ }
+          }
+        } catch { /* no profiles */ }
+        const problems = pinProblems(specs);
+        const codes = new Set(specs.map((x) => (Array.isArray(x.args) ? x.args : []).find((a) => typeof a === "string" && /cli\.js$/.test(a))).filter(Boolean));
+        if (codes.size > 1) problems.push(`hosts run ${codes.size} different copies of the code (${[...codes].join(", ")}); run \`skillrouter install\` so all use one`);
+        console.log(problems.length ? "\nPins (Node and code paths the hosts are configured with):\n  " + problems.join("\n  ") : specs.length ? `\nPins: ${specs.length} configured Node and code paths exist and are stable.` : "\nPins: no host has the skillrouter MCP server configured.");
+        try {
+          const { readCore } = await import("./core.js");
+          const { findSkill } = await import("./search.js");
+          const count = (id: string) => { try { return findSkill(id).length; } catch { return 1; } };
+          const core = readCore(), lost = core.filter((id) => count(id) === 0), many = core.filter((id) => count(id) > 1);
+          if (lost.length) console.log(`Core entries that match no indexed skill (a retired or misspelled name; edit core.txt or reindex): ${lost.join(", ")}`);
+          if (many.length) console.log(`Core entries that match several skills (\`core sync\` links none of them; name one id, e.g. name~2): ${many.join(", ")}`);
+        } catch { /* no index */ }
+        const size = (p: string): number => { try { const st = fs.lstatSync(p); if (!st.isDirectory()) return st.size; return fs.readdirSync(p).reduce((n, f) => n + size(path.join(p, f)), 0); } catch { return 0; } };
+        const mb = (n: number) => `${(n / 1048576).toFixed(1)} MB`;
+        const { usageArchives, logMaxMB } = await import("./search.js");
+        const archives = usageArchives();
+        const limit = logMaxMB() > 0 ? `rotates at ${logMaxMB()} MB` : "rotation off";
+        console.log(`Disk: usage log ${mb(size(USAGE_LOG))}${archives.length ? ` + ${archives.length} rotated (${mb(archives.reduce((n, f) => n + size(f), 0))})` : ""} (${limit}); backups ${mb(size(BACKUP_DIR))} in ${BACKUP_DIR} (never deleted automatically; "skillrouter backups" lists them and can remove old ones)`);
+        void SR_DIR;
+      }
       if (live) {
         const { liveCheck } = await import("./live.js");
-        const { INSTALL_TARGETS } = await import("./install.js");
+        const { INSTALL_TARGETS } = await import("./pins.js");
         const targets = args.filter((x) => (INSTALL_TARGETS as string[]).includes(x));
         console.log("\nLive MCP check (each configured server started and asked for its tools):");
         console.log((await liveCheck((targets.length ? targets : INSTALL_TARGETS) as any)).join("\n"));
@@ -184,12 +236,34 @@ async function main(argv: string[]): Promise<void> {
       else console.log("Restored to original agent folders. Re-run skillrouter index if needed.");
       break;
     }
+    case "recurring": {
+      const { formatRecurring, forgetRecurring } = await import("./recurring.js");
+      if (args[0] === "reset") { forgetRecurring(); console.log("Forgot every remembered request."); break; }
+      if (args[0] === "forget" && args[1]) { const { forgetRequest } = await import("./recurring.js"); const n = forgetRequest(args[1]); console.log(n ? `Forgot ${n} request${n === 1 ? "" : "s"}.` : `No remembered request starts with ${args[1]}.`); break; }
+      console.log(formatRecurring());
+      break;
+    }
+    case "backups": {
+      const { backupPlan, pruneBackups, formatBackups } = await import("./backups.js");
+      const apply = flag(args, "--apply");
+      const raw = opt(args, "--older-than")[0];
+      const days = raw !== undefined && raw.trim() !== "" && Number.isFinite(Number(raw)) && Number(raw) >= 0 ? Number(raw) : 30; // an empty value (an unset shell variable) is not "0 days"
+      const plan = backupPlan(days);
+      console.log(formatBackups(plan, days, apply ? pruneBackups(plan) : undefined));
+      break;
+    }
     case "install": {
-      const { install, NODE, INSTALL_TARGETS } = await import("./install.js");
+      const { install, NODE, INSTALL_TARGETS, snapshotApp, setInstallCli, volatileNode } = await import("./install.js");
+      const installOptions = { acceptHooks: flag(args, "--accept-hooks"), hooks: flag(args, "--hooks") };
+      const app = snapshotApp();
+      setInstallCli(app.cli);
+      console.log(app.note);
+      { const fs = await import("node:fs"), path = await import("node:path"); if (path.isAbsolute(NODE) && !fs.existsSync(NODE)) console.log(`Warning: ${NODE} does not exist${process.env.SKILLROUTER_NODE ? " (from SKILLROUTER_NODE)" : ""}; hooks will fall back to another Node, MCP servers will not start. Fix the path and install again.`); }
+      if (volatileNode(NODE)) console.log(`Warning: no stable Node found; pinned ${NODE}, which sits in a versioned or managed folder. Set SKILLROUTER_NODE=/path/to/node and install again.`);
       const targets = args.filter((x) => (INSTALL_TARGETS as string[]).includes(x));
       console.log(process.platform === "win32" ? `Node for MCP: ${NODE} (override with SKILLROUTER_NODE=C:/path/to/node.exe); hooks run the node on PATH` : `Node pinned for hooks and MCP: ${NODE} (override with SKILLROUTER_NODE=/path/to/node)`);
       const seen = new Set<string>();
-      for (const a of (targets.length ? targets : INSTALL_TARGETS) as any[]) for (const line of install(a)) if (!seen.has(line)) { seen.add(line); console.log(line); }
+      for (const a of (targets.length ? targets : INSTALL_TARGETS) as any[]) for (const line of install(a, undefined, undefined, installOptions)) if (!seen.has(line)) { seen.add(line); console.log(line); }
       // A running service holds the old code and launcher paths: stop it, the next hook starts the new one.
       try { const { serviceSnapshot } = await import("./service-client.js"); if (serviceSnapshot().running) { const { stopService } = await import("./service.js"); await stopService(); console.log("Stopped the running warm service; the next hook starts it with the new install."); } } catch { /* best effort */ }
       break;

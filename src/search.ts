@@ -161,8 +161,70 @@ export function findSkill(nameOrId: string): SkillEntry[] {
   return index.skills.filter((s) => s.name.toLowerCase() === n || path.basename(s.path).toLowerCase() === n);
 }
 
+/**
+ * What read_skill loads for a name. A bare name whose reserved identity was retired (after a consolidation the skill
+ * lives on as `name~2`) finds nothing through findSkill, by design: a retired name is never handed to another skill
+ * silently. But a read by that name has to load something useful, so here, and only here, it is answered by the active
+ * skills of the same bare name, and the caller says so (`retired`). A numbered or source-qualified reference
+ * (`name~2`, `name@…`) names one particular copy and is never substituted. (2026-11-15: read_skill("prompt-mini") had
+ * failed 58 times in two weeks while prompt-mini~2 was the only skill of that name.)
+ */
+export function findSkillForRead(nameOrId: string): { matches: SkillEntry[]; retired?: string } {
+  const matches = findSkill(nameOrId);
+  const n = nameOrId.trim().toLowerCase();
+  if (matches.length || /~\d+$|@[a-f0-9]{24}$/.test(n)) return { matches };
+  const { index } = getIndex();
+  if (!Object.keys(index.identityAliases ?? {}).some((a) => a.toLowerCase() === n)) return { matches };
+  const family = index.skills.filter((s) => bareSkill(s.id) === n || bareSkill(s.name) === n);
+  return family.length ? { matches: family, retired: nameOrId.trim() } : { matches };
+}
+
 export function readSkill(skill: SkillEntry): string {
   return fs.readFileSync(path.join(skill.path, "SKILL.md"), "utf8");
+}
+
+/**
+ * Past logs set aside by rotation, oldest first; readers take them together with the live file. A name is
+ * usage.<time>.<n>.<pid>.jsonl: the time of the rotation, then a counter that orders one process's rotations within a
+ * millisecond, then the process (so two processes never write the same name). Sorted by those numbers, not by file
+ * times, whose resolution differs between file systems.
+ */
+const ARCHIVE = /^usage\.(\d+)(?:\.(\d+)\.(\d+))?\.jsonl$/;
+export function usageArchives(): string[] {
+  try {
+    return fs.readdirSync(SR_DIR).map((f) => ({ f, m: f.match(ARCHIVE) })).filter((x) => x.m)
+      .map((x) => ({ file: path.join(SR_DIR, x.f), key: [Number(x.m![1]), Number(x.m![2] ?? 0), Number(x.m![3] ?? 0)] }))
+      .sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1] || a.key[2] - b.key[2]).map((x) => x.file);
+  } catch { return []; }
+}
+let rotations = 0;
+
+/**
+ * The log grew without bound (6.4 MB in three weeks on the author's Mac, read whole by every report and doctor run).
+ * Past SKILLROUTER_LOG_MAX_MB (default 32) the file is renamed aside under a unique name, so two processes rotating at
+ * once cannot overwrite an archive, and the three newest archives are kept.
+ */
+function rotateUsage(): void {
+  // An empty or unreadable setting means the default, not "never" (0 turns rotation off).
+  const max = logMaxMB() * 1024 * 1024;
+  if (!(max > 0)) return;
+  const seen = fs.statSync(USAGE_LOG);
+  if (seen.size <= max) return;
+  // Another process may have rotated between the append and here: the file under this name is then a new, small
+  // one, and renaming it would spend an archive slot on a few rows. Rename only what was measured.
+  const now = fs.statSync(USAGE_LOG);
+  if (now.ino !== seen.ino || now.size < seen.size) return;
+  fs.renameSync(USAGE_LOG, path.join(SR_DIR, `usage.${Date.now()}.${rotations++}.${process.pid}.jsonl`));
+  // Keep three archives; a few more while they are small ones left by a lost race, so they never push out full ones.
+  const archives = usageArchives().map((f) => { try { return { f, size: fs.statSync(f).size }; } catch { return { f, size: 0 }; } });
+  while (archives.length > 3 && (archives.length > 8 || archives.slice(1).reduce((n, a) => n + a.size, 0) >= 3 * max)) {
+    try { fs.unlinkSync(archives.shift()!.f); } catch { /* another process took it */ }
+  }
+}
+/** The size at which usage.jsonl is rotated, in MB (SKILLROUTER_LOG_MAX_MB, default 32; 0 or less: never). */
+export function logMaxMB(): number {
+  const raw = process.env.SKILLROUTER_LOG_MAX_MB;
+  return raw !== undefined && raw.trim() !== "" && Number.isFinite(Number(raw)) ? Number(raw) : 32;
 }
 
 /** One JSON line per event. Prompt text is never logged; queries written by the model are. */
@@ -170,5 +232,6 @@ export function logUsage(event: Record<string, unknown>): void {
   try {
     fs.mkdirSync(SR_DIR, { recursive: true });
     fs.appendFileSync(USAGE_LOG, JSON.stringify({ ts: new Date().toISOString(), ...event }) + "\n");
+    try { rotateUsage(); } catch { /* rotation is best effort */ }
   } catch { /* never block a tool on logging */ }
 }

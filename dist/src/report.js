@@ -4,6 +4,7 @@ import { AGENT_SKILL_DIRS, AGENTS, USAGE_LOG } from "./paths.js";
 import { health } from "./health.js";
 import { parseFrontmatter } from "./index.js";
 import { bareSkill } from "./state.js";
+import { usageArchives } from "./search.js";
 import { funnelLines, gateFunnel } from "./funnel.js";
 import { readVerdicts, suppressAfter, suppressedByAgent, endorsed, endorseAfter } from "./verdicts.js";
 export function validRow(value) {
@@ -40,19 +41,225 @@ export function isSynthetic(row) {
 }
 export function readLog(days) {
     const since = Date.now() - days * 86400e3;
-    try {
-        return fs.readFileSync(USAGE_LOG, "utf8").split("\n").filter(Boolean)
-            .map((l) => { try {
-            return JSON.parse(l);
+    const out = [];
+    // Rotated logs first (oldest to newest), skipping those that ended before the window.
+    for (const file of [...usageArchives(), USAGE_LOG]) {
+        try {
+            if (file !== USAGE_LOG && fs.statSync(file).mtimeMs < since)
+                continue;
+            for (const l of fs.readFileSync(file, "utf8").split("\n")) {
+                if (!l)
+                    continue;
+                let r;
+                try {
+                    r = JSON.parse(l);
+                }
+                catch {
+                    continue;
+                }
+                if (validRow(r) && Date.parse(r.ts) >= since && Date.parse(r.ts) <= Date.now())
+                    out.push(r);
+            }
         }
-        catch {
-            return null;
-        } })
-            .filter((r) => validRow(r) && Date.parse(r.ts) >= since && Date.parse(r.ts) <= Date.now());
+        catch { /* missing or unreadable: the others still count */ }
     }
-    catch {
-        return [];
+    return out;
+}
+/**
+ * Skill gaps: searches that came back with nothing, grouped when they share most of their telling words (a job
+ * phrased very differently between runs can show as two or three lines; two different jobs are not put on one), and reads of names
+ * that do not exist. A group that keeps recurring is either a skill worth writing (or adding to the library) or a
+ * recurring job whose wording never matches the skill it should use. (2026-11-15: one scheduled Codex check made up
+ * about two thirds of a sample of empty searches, and nothing surfaced it.)
+ */
+export function gapLines(rows, min = 3) {
+    // Words that say nothing about the task; without this list "the" or "for" alone tie unrelated queries together.
+    const STOP = new Set("the and for with from into that this those these your our are was were has have had not but can use using via per its".split(" "));
+    const words = (q) => new Set(q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w)));
+    const groups = [];
+    const byWord = new Map(); // word -> groups whose first query has it, so a query meets only groups it can share words with
+    const MAX_GROUPS = 3000; // a log of nothing but distinct queries: groups seen once make way for new ones
+    const COMMON = 1500; // a word in this many groups says nothing about which one a query belongs to, and walking them all is the slow part
+    const reindex = () => { byWord.clear(); groups.forEach((g, i) => { for (const t of g.words) {
+        const list = byWord.get(t);
+        if (list)
+            list.push(i);
+        else
+            byWord.set(t, [i]);
+    } }); };
+    // Boilerplate: words that more than 40% of the distinct empty queries carry ("read-only production …" in every job
+    // of a log). Two queries are not the same job for sharing those; they count only when little else is left.
+    const distinct = new Set();
+    const inQueries = new Map();
+    for (const r of rows) {
+        const q = r.query;
+        if (r.tool !== "search_skills" || typeof q !== "string" || (r.hits?.length ?? 0) > 0 || r.exploratory || r.reason)
+            continue;
+        const flat = [...words(q)].sort().join(" ");
+        if (!flat || distinct.has(flat))
+            continue;
+        distinct.add(flat);
+        for (const t of flat.split(" "))
+            inQueries.set(t, (inQueries.get(t) ?? 0) + 1);
     }
+    const boiler = (t) => distinct.size >= 10 && (inQueries.get(t) ?? 0) > 0.4 * distinct.size;
+    const telling = (set) => { const out = new Set([...set].filter((t) => !boiler(t))); return out.size >= 2 ? out : set; };
+    for (const r of rows) {
+        const q = r.query;
+        if (r.tool !== "search_skills" || typeof q !== "string" || (r.hits?.length ?? 0) > 0 || r.exploratory || r.reason)
+            continue;
+        const all = words(q);
+        if (!all.size)
+            continue;
+        const w = telling(all);
+        const shared = new Map();
+        for (const t of w) {
+            const list = byWord.get(t);
+            if (list && (list.length <= COMMON || w.size === 1))
+                for (const g of list)
+                    shared.set(g, (shared.get(g) ?? 0) + 1);
+        }
+        // Same group: most words of the shorter query are shared, and at least two of them (a one-word query joins only its twin).
+        let best = -1, bestShared = 0;
+        for (const [g, both] of shared) {
+            const small = Math.min(w.size, groups[g].words.size), large = Math.max(w.size, groups[g].words.size);
+            const same = both / small >= 0.5 && (both >= Math.min(3, small)) && (both >= 2 || large === 1);
+            if (same && both > bestShared) {
+                best = g;
+                bestShared = both;
+            }
+        }
+        let g;
+        if (best >= 0) {
+            g = groups[best];
+            g.n++;
+            g.agents.add(agentOf(r));
+            if (g.members.length < 60)
+                g.members.push(q);
+        }
+        else {
+            if (groups.length >= MAX_GROUPS) {
+                const kept = groups.filter((x) => x.n > 1);
+                groups.length = 0;
+                groups.push(...kept);
+                reindex();
+            }
+            g = { words: w, n: 1, agents: new Set([agentOf(r)]), members: [q], seen: new Map() };
+            groups.push(g);
+            for (const t of w) {
+                const list = byWord.get(t);
+                if (list)
+                    list.push(groups.length - 1);
+                else
+                    byWord.set(t, [groups.length - 1]);
+            }
+        }
+        for (const t of all)
+            g.seen.set(t, (g.seen.get(t) ?? 0) + 1);
+    }
+    // One recurring job is phrased hundreds of ways and lands in several groups, each opened by a different first
+    // phrasing. Two groups whose queries use the same telling words at the same rates (weighted cosine 0.5 or more)
+    // are the same job: the smaller is folded into the larger. Only groups that recur are compared.
+    const coreOf = (g) => [...g.seen.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 5).map(([t]) => t);
+    const recurring = groups.filter((g) => g.n >= 2).sort((a, b) => b.n - a.n).slice(0, 300);
+    // A word counts for as much as it tells groups apart: one that most recurring groups share ("read", "only",
+    // "production" in every job of a log) weighs little, one that few have weighs fully.
+    const inGroups = new Map();
+    for (const g of recurring)
+        for (const t of g.seen.keys())
+            inGroups.set(t, (inGroups.get(t) ?? 0) + 1);
+    const weight = (t) => Math.log(1 + recurring.length / (inGroups.get(t) ?? 1)) / Math.log(1 + recurring.length);
+    const alike = (a, b) => {
+        let dot = 0, na = 0, nb = 0;
+        for (const [t, n] of a.seen) {
+            const x = (n / a.n) * weight(t);
+            na += x * x;
+            const m = b.seen.get(t);
+            if (m)
+                dot += x * (m / b.n) * weight(t);
+        }
+        for (const [t, n] of b.seen) {
+            const x = (n / b.n) * weight(t);
+            nb += x * x;
+        }
+        return na && nb ? dot / Math.sqrt(na * nb) : 0;
+    };
+    const folded = new Set();
+    for (let i = 0; i < recurring.length; i++) {
+        const a = recurring[i];
+        if (folded.has(a))
+            continue;
+        for (let j = i + 1; j < recurring.length; j++) {
+            const b = recurring[j];
+            if (folded.has(b) || a.seen.size < 3 || b.seen.size < 3 || alike(a, b) < 0.5)
+                continue;
+            a.n += b.n;
+            for (const x of b.agents)
+                a.agents.add(x);
+            for (const m of b.members)
+                if (a.members.length < 60)
+                    a.members.push(m);
+            for (const [t, n] of b.seen)
+                a.seen.set(t, (a.seen.get(t) ?? 0) + n);
+            folded.add(b);
+        }
+    }
+    // A phrasing seen once joins the recurring group it most resembles, if any.
+    const live = recurring.filter((g) => !folded.has(g));
+    for (const g of groups) {
+        if (g.n !== 1 || g.seen.size < 3)
+            continue;
+        let best, score = 0.5;
+        for (const r of live) {
+            const a = alike(r, g);
+            if (a >= score) {
+                best = r;
+                score = a;
+            }
+        }
+        if (!best)
+            continue;
+        best.n += 1;
+        for (const x of g.agents)
+            best.agents.add(x);
+        if (best.members.length < 60)
+            best.members.push(...g.members);
+        folded.add(g);
+    }
+    if (folded.size) {
+        const kept = groups.filter((g) => !folded.has(g));
+        groups.length = 0;
+        groups.push(...kept);
+    }
+    // The line shown for a group: the member that carries most of the words the group's queries have in common, the
+    // shortest such one (the shortest member alone can be an outlier that merely shares the boilerplate).
+    const sampleOf = (g) => {
+        const core = new Set(coreOf(g));
+        let pick = g.members[0], score = -1;
+        for (const m of g.members) {
+            let n = 0;
+            for (const t of words(m))
+                if (core.has(t))
+                    n++;
+            if (n > score || (n === score && m.length < pick.length)) {
+                pick = m;
+                score = n;
+            }
+        }
+        return pick;
+    };
+    const out = [];
+    const repeated = groups.filter((g) => g.n >= min).sort((a, b) => b.n - a.n).slice(0, 10);
+    if (repeated.length)
+        out.push("", "Skill gaps (repeated searches that found nothing; write or add a skill, or reword the job):", ...repeated.map((g) => `  ${String(g.n).padStart(4)}  ${[...g.agents].sort().join("+")}: ${sampleOf(g).slice(0, 110)}`));
+    const missing = new Map();
+    for (const r of rows)
+        if (r.tool === "read_skill" && r.found === false && r.skill && !r.reason)
+            missing.set(r.skill, (missing.get(r.skill) ?? 0) + 1);
+    const names = [...missing.entries()].filter(([, n]) => n >= min).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    if (names.length)
+        out.push("", "Reads of names that are not in the index (a rule or skill refers to them; fix the reference or reindex):", ...names.map(([id, n]) => `  ${String(n).padStart(4)}  ${id}`));
+    return out;
 }
 export function readCounts(days) {
     const m = new Map();
@@ -118,6 +325,17 @@ export function report(days = 7, rows = readLog(days)) {
         out.push(`Turn endings after hints: ${by("decided")} decided (loaded or wrote \`Skills:\`), ${by("nudged")} nudged, ${by("trivial")} too small to ask, ${by("no_hints")} without hints.`);
     }
     out.push(...funnelLines(gateFunnel(organic, agentOf, Date.now() - days * 86400e3), days));
+    {
+        // Exploratory searches return weak candidates by request, and a failed search (no index) found nothing for another reason: both are counted apart.
+        const flag = (r, k) => r[k];
+        const failed = searches.filter((r) => !!r.reason), exploratory = searches.filter((r) => !r.reason && flag(r, "exploratory") === true);
+        const plain = searches.filter((r) => !r.reason && flag(r, "exploratory") !== true);
+        const empty = plain.filter((r) => !(r.hits?.length)).length, weak = plain.filter((r) => flag(r, "weak") === true && r.hits?.length).length;
+        if (plain.length)
+            out.push("", `Searches: ${plain.length}; ${plain.length - empty - weak} with a strong match, ${weak} with weak candidates only, ${empty} with nothing (${Math.round((100 * empty) / plain.length)}%)` +
+                `${exploratory.length ? `; plus ${exploratory.length} exploratory` : ""}${failed.length ? `; ${failed.length} failed (index unavailable)` : ""}.`);
+    }
+    out.push(...gapLines(organic));
     out.push(...verdictLines(rows.filter((r) => r.tool === "verdict")));
     out.push("", "A load is not proof a skill was applied. Native loads (Claude's Skill tool, Gemini's activate_skill, OpenCode's skill tool, SKILL.md reads) " +
         "are seen through each host's tool hook (Claude Code, Codex once its hooks are trusted, Cursor, Gemini CLI, OpenCode); Antigravity, OpenClaude and Hermes count router read_skill loads only.");

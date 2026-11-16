@@ -23,7 +23,11 @@ What each host gets from `install`:
 | Cursor | `beforeSubmitPrompt` | `postToolUse` | `stop` sends one `followup_message` (`loop_limit: 1`); counts edits and commands only, and waits for the final text in the transcript |
 | Gemini CLI | `BeforeAgent` | `AfterTool` | `AfterAgent` retries with the nudge as the prompt |
 | OpenCode | plugin `chat.message` | plugin `tool.execute.after` (appended to the tool result) | none |
-| Antigravity, OpenClaude, Hermes | MCP only; save a standing rule separately (see INSTALL.md) | | |
+| Hermes | shell hook `pre_llm_call` (answers `{context}`) | none | none; the search gate is a `pre_tool_call` shell hook |
+| Antigravity (opt-in, experimental) | `PreInvocation` (answers `{injectSteps}`), once per user input | none | none; the search gate is a `PreToolUse` hook that always answers with a decision |
+| OpenClaude | MCP only; save a standing rule separately (see INSTALL.md) | | |
+
+Hermes and Antigravity send payloads in their own shapes and tool names; `src/hosts.ts` rewrites them into the shape the prompt check and the gate already read, and the answers are shaped back per host. Hermes runs a hook only once it is approved there (its first-use prompt, or `skillrouter install hermes --accept-hooks` for unattended profiles).
 
 Skill loads count wherever they happen: the router's `read_skill` under each host's MCP naming, Claude's Skill tool, Gemini's `activate_skill`, OpenCode's `skill` tool, and reads of a `SKILL.md` file.
 
@@ -54,7 +58,7 @@ Every hook used to start Node, and a prompt check also parsed the 8 MB index and
 | Prompt check | ~410 ms | ~20 ms |
 | Tool and end-of-turn hooks | ~50 ms | ~17 ms |
 
-It starts itself the first time a hook finds no service, reloads when the index or vectors change, restarts when you rebuild or upgrade skillrouter, and exits after 30 idle minutes (`SKILLROUTER_SERVICE_IDLE_MIN`). It holds about 420 MB while running (the embedding model is most of it).
+It starts itself the first time a hook finds no service, reloads when the index or vectors change, restarts when the code it runs changes (the files it was started from, or the installed copy `~/.skillrouter/app/current` being switched by `install`), and exits after 120 idle minutes (`SKILLROUTER_SERVICE_IDLE_MIN`). It holds about 420 MB while running (the embedding model is most of it).
 
 The hook launcher hands each hook to a small Perl client (Perl is preinstalled on macOS and nearly every Linux, and starts in 10 ms where Node needs 30). The client reads the hook's input (waiting at most 1.5 s, like before), asks the service (one 0.8 s budget for connecting, sending and reading, using a non-blocking socket so a wedged service can never trap it), and when there is no healthy service it starts one in the background and runs the hook with Node itself, exactly as before. Without Perl, the Node client does the same. A missing, stopped, wedged or refusing service therefore only costs the old speed, never a hook: output and exit code are the same either way. Payloads over 1 MB, unknown hook modes, and hooks whose state folder (`SKILLROUTER_HOME`, else `$HOME/.skillrouter`) is not the one the service serves, skip the service. A wedged service is killed (only after checking that the process really is a skillrouter service) and replaced. `SKILLROUTER_SERVICE=0` turns the whole thing off.
 

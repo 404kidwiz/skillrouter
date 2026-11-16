@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { AGENTS, INDEX_FILE, SR_DIR, type AgentId } from "./paths.js";
+import { HOOK_AGENTS, INDEX_FILE, SR_DIR, type AgentId, type HookAgent } from "./paths.js";
 import { getIndex, logUsage, resetIndexCache } from "./search.js";
 import { VECTOR_FILES, embed, loadVectors, resetVectors } from "./embed.js";
 import { hint } from "./hint.js";
@@ -175,10 +175,21 @@ const fileStamp = (f: string) => { try { const s = fs.statSync(f); return `${s.m
 const dataStamp = () => [INDEX_FILE, ...VECTOR_FILES].map(fileStamp).join("|");
 const CODE_DIR = () => process.env.SKILLROUTER_SERVICE_CODE_DIR ?? path.dirname(fileURLToPath(import.meta.url));
 function codeStamp(): string {
-  try { return fs.readdirSync(CODE_DIR()).filter((f) => f.endsWith(".js")).map((f) => fileStamp(path.join(CODE_DIR(), f))).join("|"); } catch { return "-"; }
+  // The compiled files this process runs, plus where ~/.skillrouter/app/current points: after `install` switched the
+  // private copy, this process's own files are unchanged, and only the link shows that newer code is installed.
+  let current = "-";
+  try { current = fs.realpathSync(path.join(SR_DIR, "app", "current")); } catch { /* no private copy: a checkout or package run in place */ }
+  try { return fs.readdirSync(CODE_DIR()).filter((f) => f.endsWith(".js")).map((f) => fileStamp(path.join(CODE_DIR(), f))).join("|") + "|" + current; } catch { return "-"; }
 }
 
-const HEADER = new RegExp(`^${PROTOCOL} (${AGENTS.join("|")}|-) (-|tool|stop|decision|gate|status|shutdown|hang) (\\d{1,8})$`);
+/**
+ * Minutes without a request before the service exits. It was 30: over two weeks on the author's Mac the service
+ * cold-started 69 times, and each cold start is a slow first hook (Codex's prompt check timed out on 1.5% of prompts).
+ * Two hours spans a working session's pauses; the cost is ~420 MB held that much longer. SKILLROUTER_SERVICE_IDLE_MIN sets it.
+ */
+export const DEFAULT_IDLE_MIN = 120;
+
+const HEADER = new RegExp(`^${PROTOCOL} (${HOOK_AGENTS.join("|")}|-) (-|tool|stop|decision|gate|status|shutdown|hang) (\\d{1,8})$`);
 
 export async function serve(): Promise<void> {
   if (!stateDirPrivate()) { logUsage({ client: "skillrouter-service", tool: "service", reason: "state_dir_not_private" }); return; } // (Windows) see service-client.ts
@@ -197,7 +208,7 @@ export async function serve(): Promise<void> {
   }
 
   const startedAt = new Date();
-  const idleMs = Math.max(200, Number(process.env.SKILLROUTER_SERVICE_IDLE_MIN ?? 30) * 60e3);
+  const idleMs = Math.max(200, Number(process.env.SKILLROUTER_SERVICE_IDLE_MIN ?? DEFAULT_IDLE_MIN) * 60e3);
   const stats = { requests: 0, fallbacks: 0, lastAt: null as Date | null, byMode: new Map<string, { count: number; ms: number }>() };
   let dataSeen = dataStamp();
   let codeSeen = codeStamp();
@@ -246,8 +257,12 @@ export async function serve(): Promise<void> {
     return false;
   };
 
-  const run = async (agent: AgentId, mode: string, body: string, pending: { spawn?: string; cancelled?: boolean }): Promise<string | null> => {
-    if (mode === "-") return body.length > MAX_PROMPT_BYTES ? null : hint(agent, body);
+  const run = async (host: HookAgent, mode: string, body: string, pending: { spawn?: string; cancelled?: boolean }): Promise<string | null> => {
+    if (mode === "-") return body.length > MAX_PROMPT_BYTES ? null : hint(host, body);
+    if (mode === "gate") return gateEvent(host, body, true); // the hook checked its own SKILLROUTER_GATE before asking
+    if (mode === "decision" && host === "hermes") { decisionEvent(host, body); return "{}"; } // Hermes's post_llm_call: the verdict is recorded, nothing is answered
+    if (host === "hermes" || host === "antigravity") return null; // otherwise these hosts have the prompt check and the gate only
+    const agent: AgentId = host;
     if (mode === "tool") {
       const first = await toolEvent(agent, body, false);
       if (typeof first === "string") return first;
@@ -257,7 +272,6 @@ export async function serve(): Promise<void> {
       pending.spawn = undefined;
       return out;
     }
-    if (mode === "gate") return gateEvent(agent, body, true); // the hook checked its own SKILLROUTER_GATE before asking
     if (mode === "stop") return stopEvent(agent, body);
     if (mode === "decision") return decisionEvent(agent, body);
     return null;
@@ -295,7 +309,7 @@ export async function serve(): Promise<void> {
       else if (mode === "hang" && process.env.SKILLROUTER_SERVICE_FAULT === "hang") { for (;;) { /* test fault: wedge the event loop */ } }
       else {
         let timer: NodeJS.Timeout | undefined;
-        out = await Promise.race([run(agent as AgentId, mode, body.toString("utf8"), pending), new Promise<null>((r) => { timer = setTimeout(() => r(null), agent === "opencode" ? OPENCODE_DEADLINE_MS : DEADLINE_MS); })]);
+        out = await Promise.race([run(agent as HookAgent, mode, body.toString("utf8"), pending), new Promise<null>((r) => { timer = setTimeout(() => r(null), agent === "opencode" ? OPENCODE_DEADLINE_MS : DEADLINE_MS); })]);
         clearTimeout(timer);
         if (out === null) logUsage({ client: "skillrouter-service", tool: "service", reason: "fallback", mode });
       }

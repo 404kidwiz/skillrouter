@@ -2,18 +2,23 @@ import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { INDEX_FILE } from "./paths.js";
-import type { AgentId } from "./paths.js";
-import { getIndex, logUsage, search, type Hit } from "./search.js";
+import type { AgentId, HookAgent } from "./paths.js";
+import { fromHost } from "./hosts.js";
+import { findSkill, getIndex, logUsage, search, type Hit } from "./search.js";
+import { recallRequest } from "./recurring.js";
 import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
-import { addGateTask, addShown, bareSkill, loadedSkills, markTurn, sessionSearched } from "./state.js";
+import { addGateTask, addShown, bareSkill, loadedSkills, markTurn, sessionSearched, setPromptKey } from "./state.js";
 import { endorsed, suppressed } from "./verdicts.js";
 
 const EVENT: Partial<Record<AgentId, string>> = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
 const TOOL_EVENT: Partial<Record<AgentId, string>> = { gemini: "AfterTool" }; // claude/codex: PostToolUse
 
 /** The host's hook answer carrying context for the model. `tool`: after a tool call rather than on a prompt. */
-export function formatHint(agent: AgentId, text: string, tool = false): string {
+export function formatHint(agent: HookAgent, text: string, tool = false): string {
+  // Hermes appends `context` to the turn's user message; Antigravity injects a step before the model call.
+  if (agent === "hermes") return JSON.stringify(text && !tool ? { context: text } : {});
+  if (agent === "antigravity") return JSON.stringify(text && !tool ? { injectSteps: [{ ephemeralMessage: text }] } : {});
   if (agent === "cursor") return JSON.stringify(text ? { ...(tool ? {} : { continue: true }), additional_context: text } : tool ? {} : { continue: true });
   if (!text) return "";
   const hookEventName = tool ? TOOL_EVENT[agent] ?? "PostToolUse" : EVENT[agent] ?? "UserPromptSubmit";
@@ -61,8 +66,12 @@ export function minRawFor(skills: number): number {
 }
 
 /** Reads the hook JSON on stdin, prints the agent-specific hook output. Never blocks a prompt. */
-export async function hint(agent: AgentId, input: string, minRaw?: number, k = 3): Promise<string> {
+export async function hint(agent: HookAgent, rawInput: string, minRaw?: number, k = 3): Promise<string> {
   const started = performance.now();
+  let translated: string | null = rawInput;
+  try { translated = fromHost(agent, rawInput, "prompt"); } catch { /* judged as sent */ }
+  if (translated === null) return formatHint(agent, ""); // nothing to check for this event
+  const input = translated;
   const hint_id = randomUUID();
   let payload: Record<string, unknown> = {};
   let semStatus: string | undefined;
@@ -80,6 +89,8 @@ export async function hint(agent: AgentId, input: string, minRaw?: number, k = 3
   // Every prompt starts a turn, checked or not: the end-of-turn nudge counts work from here. The nudge itself
   // coming back as a prompt (Cursor's follow-up, Gemini's retry, Codex's continuation) belongs to the nudged turn.
   if (!/^skillrouter: this turn did real work/.test(prompt)) markTurn(session, sessionHash(turnOf(payload)));
+  // Whatever this turn is, it is no longer the request of the turn before: skill loads from here on are not that request's.
+  setPromptKey(session, sessionHash(turnOf(payload)), "");
   if (isSlashCommand(prompt)) { record("skipped_command"); return formatHint(agent, ""); }
   if (isSystemText(prompt)) { record("skipped_system"); return formatHint(agent, ""); }
   // A prompt that describes work is a task turn: the search gate (gate.ts) holds its first work call until the agent has searched.
@@ -87,6 +98,10 @@ export async function hint(agent: AgentId, input: string, minRaw?: number, k = 3
   // turn only while the session has not searched at all.
   if ((prompt.length >= 20 && !isConversational(prompt)) || !sessionSearched(session)) addGateTask(session, sessionHash(turnOf(payload)));
   if (prompt.length < 20) { record("skipped_short_prompt"); return formatHint(agent, ""); }
+  // The same request as an earlier run (a scheduled job): the skills that run loaded are named first.
+  // (Not for a prompt that points back at the conversation: "go ahead with your plan" recurs everywhere and names no task.)
+  const recalled = isConversational(prompt) ? { key: "", skills: [] as string[], runs: 0 } : recallRequest(session, sessionHash(turnOf(payload)), prompt);
+  let remembered: string[] = [];
   let hits: Hit[] = [];
   let core = new Set<string>();
   try {
@@ -104,11 +119,28 @@ export async function hint(agent: AgentId, input: string, minRaw?: number, k = 3
     record(fs.existsSync(INDEX_FILE) ? "index_error" : "missing_index");
     return formatHint(agent, "");
   }
+  try {
+    const loaded = loadedSkills(session, undefined);
+    const held = suppressed(agent);
+    for (const id of recalled.skills) {
+      const found = findSkill(id);
+      const skill = found.length === 1 ? found[0] : undefined; // a name that now means several skills, or none, is not guessed
+      if (!skill || loaded.has(bareSkill(skill.id)) || held.has(bareSkill(skill.id))) continue;
+      remembered.push(skill.id);
+      if (!hits.some((h) => bareSkill(h.skill.id) === bareSkill(skill.id))) hits.unshift({ skill, score: 1, raw: 0, matched: 0 });
+    }
+    hits = hits.slice(0, Math.max(k, remembered.length));
+  } catch { remembered = []; }
   record(hits.length ? "shown" : "no_match", hits);
+  if (remembered.length) logUsage({ client: `hook/${agent}`, agent, tool: "recurring", reason: "recalled", session, prompt: sessionHash(turnOf(payload)), skills: remembered, runs: recalled.runs });
   if (!hits.length) return formatHint(agent, "");
   // Named siblings count as shown, so a later trigger this turn doesn't offer them again.
   addShown(session, hits.map((h) => h.skill.id), sessionHash(turnOf(payload)), Object.fromEntries(hits.filter((h) => h.similar?.length).map((h) => [h.skill.id, h.similar!])));
-  return formatHint(agent, hintText(hits, hint_id, core, agent));
+  // Hermes and Antigravity keep their own skill folders: nothing is "preloaded" there, every suggestion is a read.
+  const text = hintText(hits, hint_id, agent === "hermes" || agent === "antigravity" ? new Set() : core, agent);
+  // (Requests are matched with their numbers flattened, so "issue 12" and "issue 97" look alike: the agent is told to judge.)
+  const note = remembered.length ? `\nA request worded like this one was answered before with: ${remembered.join(", ")}. If this is the same task, use ${remembered.length > 1 ? "them" : "it"} and skip the search; if the task differs, search as usual.` : "";
+  return formatHint(agent, text + note);
 }
 
 /**
@@ -153,7 +185,7 @@ export function selectHints(hits: Hit[], minRaw: number, k: number, options: { c
 }
 
 /** The hint the model reads: a required decision, each candidate's trigger, and the exact way to load it. */
-export function hintText(hits: Hit[], hint_id: string, core: Set<string>, agent: AgentId = "claude", lead?: string): string {
+export function hintText(hits: Hit[], hint_id: string, core: Set<string>, agent: HookAgent = "claude", lead?: string): string {
   const lines = hits.map((h) => {
     const id = h.skill.id;
     const how = core.has(id) // resolved core ids (coreIds): a same-named variant with other text is not preloaded
@@ -168,7 +200,7 @@ export function hintText(hits: Hit[], hint_id: string, core: Set<string>, agent:
 }
 
 /** Run work in a killable process: synchronous index work cannot defeat the deadline. */
-export function runHint(agent: AgentId, input: string, cli: string, timeout = 1500, mode?: string): Promise<string> {
+export function runHint(agent: HookAgent, input: string, cli: string, timeout = 1500, mode?: string): Promise<string> {
   const started = performance.now();
   return new Promise((resolve) => {
     const child = execFile(process.execPath, [cli, "hint-worker", agent, ...(mode ? [mode] : [])], {
@@ -189,7 +221,7 @@ export function runHint(agent: AgentId, input: string, cli: string, timeout = 15
 }
 
 /** Bound stdin too: a host that never closes its pipe must not hang prompt submission. Tool events carry tool output, so their cap is higher. */
-export function readHintInput(agent: AgentId, timeout = 1500, cap = 256 * 1024): Promise<string | null> {
+export function readHintInput(agent: HookAgent, timeout = 1500, cap = 256 * 1024): Promise<string | null> {
   return new Promise((resolve) => {
     let input = "";
     const done = (reason?: string) => {

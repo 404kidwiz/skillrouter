@@ -328,7 +328,13 @@ eval {
 };
 
 # SKILLROUTER_GATE=0 is this hook's environment, not the service's: the gate is off here, whatever the service was started with.
-exit 0 if $mode eq "gate" && defined $ENV{SKILLROUTER_GATE} && $ENV{SKILLROUTER_GATE} eq "0";
+# (Antigravity must be given a decision on every call; Hermes reads an empty object. The others read silence.)
+if ($mode eq "gate" && defined $ENV{SKILLROUTER_GATE} && $ENV{SKILLROUTER_GATE} eq "0") {
+  my $host = defined $hook[0] ? $hook[0] : "";
+  print STDOUT "{\"decision\":\"allow\"}\n" if $host eq "antigravity";
+  print STDOUT "{}\n" if $host eq "hermes";
+  exit 0;
+}
 
 # A file counts as recent when it is 0 to N seconds old: one from the future (the clock was stepped back) does not.
 sub recent {

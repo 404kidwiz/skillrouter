@@ -69,7 +69,9 @@ Replace `claude` with the actual target: `codex`, `cursor`, `gemini`, `opencode`
 
 The installer writes only the named adapters, preserves unrelated settings where supported, and stops an existing router service during installation. Review every printed result: Hermes can report a skipped setup, and live doctor can print a connection failure without a failing process exit code.
 
-For Hermes, the adapter expects its local config plus its Python environment under `~/.hermes/hermes-agent`. Nonstandard installs and named profiles require profile-aware setup using that host's supported configuration mechanism. One install is not evidence that every profile was configured.
+For Hermes, the adapter expects its local config plus its Python environment under `~/.hermes/hermes-agent`. Nonstandard installs and named profiles require profile-aware setup using that host's supported configuration mechanism. `install hermes` configures the main home and every profile under `~/.hermes/profiles` (MCP entry, prompt-check hook and search-gate hook) and names any it could not change. Hermes runs a new hook only after you approve it: `hermes chat` asks once per profile, and gateway or cron profiles never ask, so `skillrouter install hermes --accept-hooks` records the approval for the router's two hooks in each home. `hermes hooks list` and `hermes hooks doctor` show the result. Set `SKILLROUTER_HERMES_PYTHON` when Hermes's Python is not under `~/.hermes/hermes-agent`.
+
+For Antigravity, `install antigravity --hooks` also writes a `skillrouter` group into `~/.gemini/config/hooks.json`. It is opt-in because the app's documentation does not say what happens when a hook fails, and this integration has not been run against a live app; set `"enabled": false` on the group to switch it off.
 
 ### 5. Verify inside the host
 

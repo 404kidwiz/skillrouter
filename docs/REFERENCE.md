@@ -13,7 +13,7 @@ Examples run from the checkout. After optional global installation, `skillrouter
 | `node dist/src/cli.js index` | Rebuild from defaults and remembered extra roots |
 | `node dist/src/cli.js index --root "/absolute/path/to/skills"` | Include another library root; repeat the flag for several roots |
 | `node dist/src/cli.js search "postgres migration" -k 5` | Return matches that pass the relevance gate |
-| `node dist/src/cli.js search "postgres migration" --exploratory` | Include weaker candidates, labeled as exploratory |
+| `node dist/src/cli.js search "postgres migration" --exploratory` | List every weaker candidate, labeled as exploratory (without the flag, a search with no strong match returns at most three labeled weak ones) |
 | `node dist/src/cli.js explain "postgres migration" --lexical` | Explain relevance, applicability and duplicate decisions without embeddings |
 
 Indexing scans supported agent directories, the shared `~/.agents/skills`, `~/.skills`, the router library and explicit roots. It does not import a remote library. Run it after adding, moving or removing skills.
@@ -22,7 +22,7 @@ A search with no matches is not necessarily an error. Check roots and descriptio
 
 ### Relevance and explanations
 
-Search returns **no strong match** when candidates fail the evidence floor. `--exploratory` (MCP: `exploratory: true`) includes weaker candidates; it does not bypass applicability exclusions. Ranking scores are relative to other candidates, **not confidence probabilities**. An exact skill reference remains selectable even for a one-word query.
+When no candidate clears the evidence floor, search returns up to three **weak** candidates that still show evidence (labeled, with the advice to load one only if its description fits), or nothing when there are none. `--exploratory` (MCP: `exploratory: true`) includes weaker candidates; it does not bypass applicability exclusions. Ranking scores are relative to other candidates, **not confidence probabilities**. An exact skill reference remains selectable even for a one-word query.
 
 `explain` shows the actual semantic state (`on`, `off`, `stale`, `timeout`, or `error`), the lexical floor, raw and relative scores, cosine when available, relevance decisions, and duplicate/applicability exclusions. These are default search decisions; session-specific loaded skills and host endorsement/suppression are not simulated. `--lexical` explicitly disables query embeddings.
 
@@ -121,7 +121,7 @@ It waits for MCP protocol messages; this is not an interactive shell command.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `search_skills` | `query`: short intent; optional `top_k`: integer 1–20, default 5; `exploratory`: boolean, default false | Relevant canonical IDs, aliases, descriptions, ranking scores and paths; or no strong match |
+| `search_skills` | `query`: short intent; optional `top_k`: integer 1–20, default 5; `exploratory`: boolean, default false | Relevant canonical IDs, aliases, descriptions, ranking scores and paths; labeled weak candidates when there is no strong match; or nothing |
 | `read_skill` | `id`: returned ID; optional `hint_id` copied from a hint | Full matching SKILL.md body, or a useful not-found/ambiguity/read error |
 
 Example calls, inside an MCP-capable agent:
@@ -186,7 +186,13 @@ Advanced tuning:
 
 | Variable | Meaning |
 | --- | --- |
-| `SKILLROUTER_SERVICE_IDLE_MIN` | Service idle shutdown interval; default 30 minutes |
+| `SKILLROUTER_SERVICE_IDLE_MIN` | Service idle shutdown interval; default 120 minutes |
+| `SKILLROUTER_WEAK` | `0`: search returns nothing when there is no strong match, instead of labeled weak candidates |
+| `SKILLROUTER_SNAPSHOT` | `0`: `install` from a git checkout points hosts at the checkout instead of a private copy |
+| `SKILLROUTER_LOG_MAX_MB` | Size at which `usage.jsonl` is rotated; default 32; `0` turns rotation off |
+| `SKILLROUTER_SNAPSHOT_KEEP_DAYS` | How long private code copies beyond the newest three are kept; default 14 |
+| `SKILLROUTER_RECURRING` | `0`: do not remember which skills a repeated request used |
+| `SKILLROUTER_HERMES_PYTHON` | The Python of the Hermes installation, when it is not under `~/.hermes/hermes-agent` |
 | `SKILLROUTER_MIN_RAW` | Explicit lexical floor; default otherwise scales with library size |
 | `SKILLROUTER_ENDORSE_AFTER` | Accepted turns before a host's skill passes the hint gate on a lower bar (default 3; 0 turns it off) |
 | `SKILLROUTER_SUPPRESS_AFTER` | Decline-session threshold; default 5; 0 disables suppression |
@@ -213,6 +219,17 @@ Lexical routing is the default. Semantic routing requires the optional `@hugging
 
 An existing vector store also causes subsequent index rebuilds to attempt refreshing embeddings. Stale or unavailable vectors fall back to lexical matching. Use `doctor` to inspect vector state and [architecture](ARCHITECTURE.md) for scoring details.
 
+### Host hooks and backups
+
+| Command | Result |
+| --- | --- |
+| `node dist/src/cli.js install hermes` | MCP entry, prompt-check hook and search-gate hook in Hermes's main home and every profile; hooks run once approved in Hermes |
+| `node dist/src/cli.js install hermes --accept-hooks` | The same, and records Hermes's approval for those two hooks in each home (needed for gateway and cron profiles, which never ask) |
+| `node dist/src/cli.js install antigravity --hooks` | Also writes the experimental `skillrouter` hook group into `~/.gemini/config/hooks.json` |
+| `node dist/src/cli.js recurring` | Requests seen more than once (by hash) and the skills they used; `recurring forget <hash>` forgets one, `recurring reset` all. A skill named three runs in a row without being used is no longer named |
+| `node dist/src/cli.js backups` | Lists `~/.skillrouter/backups` with sizes and ages, and what `--apply` would remove |
+| `node dist/src/cli.js backups --older-than 60 --apply` | Removes entries older than 60 days (default 30); never the newest trim's restore manifest, its notes or its archives |
+
 ## State layout
 
 ```text
@@ -222,6 +239,9 @@ An existing vector store also causes subsequent index rebuilds to attempt refres
   core/            managed core links
   library/         trimmed skills; .conflicts/ retains variants
   usage.jsonl      events, model-written queries and attribution
+  usage.<n>.jsonl  rotated logs (a few are kept; reports read them)
+  app/             private copies of the compiled code; app/current is the one hosts run
+  bin/             the hook launcher and its Perl client
   verdicts.json    acceptance/decline history and suppression
   run/             socket/pipe state, PID, status, Windows key
   backups/         trim archives plus restore JSON and Markdown

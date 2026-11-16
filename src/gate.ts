@@ -1,9 +1,11 @@
 import { logUsage } from "./search.js";
-import type { AgentId } from "./paths.js";
+import type { HookAgent } from "./paths.js";
+import { fromHost, silent } from "./hosts.js";
 import { sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, isWork, shellCommand } from "./triggers.js";
 import { skillLoadOf } from "./events.js";
-import { addSearched, claimDenial, gateProgress, gatedTurn, loadedSkills } from "./state.js";
+import { addLoaded, addSearched, claim, claimDenial, gateProgress, gatedTurn, loadedSkills, turnSeen } from "./state.js";
+import { creditRequest, knownSkill } from "./recurring.js";
 
 /**
  * The search gate: the rule "search the skill library before you start work" as something the agent cannot skip.
@@ -11,7 +13,8 @@ import { addSearched, claimDenial, gateProgress, gatedTurn, loadedSkills } from 
  * On a turn whose prompt describes a task (the prompt check marks it, see hint.ts), the first work tool call (an edit, or a
  * command that does more than read) is refused until the agent has called search_skills or loaded a skill in that turn. The
  * refusal names what to do, so the agent's next call is the search. After two refusals in a turn the gate steps aside, so an
- * agent that cannot search (the router is down, a skill is unreadable) is never stuck. Subagents and reads are never gated;
+ * agent that cannot search (the router is down, a skill is unreadable) is never stuck. Subagents (on hosts that mark them: a Hermes
+ * child has a session of its own and is judged by its own brief) and reads are never gated;
  * a short or conversational prompt ("continue", "go ahead") is gated only while the session has not searched at all, because it
  * carries on earlier work; SKILLROUTER_GATE=0 turns it off.
  *
@@ -25,8 +28,10 @@ export const GATE_REASON = "skillrouter: before starting this work, search the s
   "If nothing fits, say so on your `Skills:` line afterwards. This stops only the first work call of a task turn.";
 
 /** The host's own way of saying "not this call, and here is why". */
-export function formatGate(agent: AgentId, reason = GATE_REASON): string {
+export function formatGate(agent: HookAgent, reason = GATE_REASON): string {
   switch (agent) {
+    case "hermes": return JSON.stringify({ decision: "block", reason });
+    case "antigravity": return JSON.stringify({ decision: "deny", reason });
     case "gemini": return JSON.stringify({ decision: "deny", reason });
     case "cursor": return JSON.stringify({ permission: "deny", user_message: "skillrouter: searching the skill library first.", agent_message: reason });
     default: return JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } });
@@ -59,16 +64,44 @@ function lookupOf(p: any): "search" | "load" | null {
  * The hook's answer for one pre-tool event: a host-shaped denial, or "" to let the call through. Never throws.
  * `enabled` is the hook's own SKILLROUTER_GATE: the warm service runs this on behalf of many hooks and must not read its own.
  */
-export function gateEvent(agent: AgentId, input: string, enabled = gateEnabled()): string {
+export function gateEvent(agent: HookAgent, input: string, enabled = gateEnabled()): string {
+  // A host that requires an answer (Antigravity: a decision on every call) gets its "go ahead" where others get silence.
+  return gateDecision(agent, input, enabled) || silent(agent, true);
+}
+
+function gateDecision(agent: HookAgent, rawInput: string, enabled: boolean): string {
   try {
     if (!enabled) return "";
+    const input = fromHost(agent, rawInput, "gate");
+    if (input === null) return "";
     const p = JSON.parse(input);
     if (!p || typeof p !== "object" || p.agent_id) return ""; // a subagent works from its own brief
     const session = sessionHash(sessionOf(p));
     if (!session) return "";
     const turn = sessionHash(turnOf(p));
+    // A tool event in a session whose prompt was never seen: the host ran this hook but not the prompt hook (Cursor's CLI
+    // sends no beforeSubmitPrompt; a Codex prompt hook not yet trusted). The gate cannot arm without a prompt, so nothing
+    // else would be logged and doctor would read the host as silent. One row per session says what did happen.
+    // (Per host: Cursor's CLI also runs Claude Code's hooks from ~/.claude/settings.json on the same session id, and that
+    // copy would otherwise take the session's one row and label it "claude".)
+    if (!turnSeen(session) && claim(session, `no-prompt-event-${agent}`)) logUsage({ client: `hook/${agent}`, agent, tool: "gate", reason: "no_prompt_event", session });
     const lookup = lookupOf(p);
-    if (lookup) { addSearched(session, turn, undefined, lookup); return ""; }
+    if (lookup) {
+      addSearched(session, turn, undefined, lookup);
+      if (lookup === "load") {
+        const load = skillLoadOf(typeof p.tool_name === "string" ? p.tool_name : "", p.tool_input);
+        // This is seen before the call runs, so it may yet fail: only a name that is exactly one indexed skill counts.
+        const known = load ? knownSkill(load.skill) : undefined;
+        if (load && known) {
+          creditRequest(session, known); // what this request used, for its next run (recurring.ts)
+          // Hermes and Antigravity have no after-tool hook: the gate is where their skill loads are seen and logged (once per call).
+          if ((agent === "hermes" || agent === "antigravity") && claim(session, `gate-load-${String(p.tool_use_id ?? known).slice(0, 80)}`)) {
+            addLoaded(session, known); logUsage({ client: `hook/${agent}`, agent, tool: "skill_load", via: load.via, skill: known, session, prompt: turn });
+          }
+        }
+      }
+      return "";
+    }
     if (!isWork(actionFor(p))) return "";
     const gated = gatedTurn(session, turn);
     if (!gated) return "";

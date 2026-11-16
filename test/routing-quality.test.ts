@@ -100,7 +100,7 @@ test('MCP search abstention, exploratory labels and canonical loading work over 
   try {
     await client.connect(transport);
     const text = (r: any) => r.content.map((c: any) => c.text ?? '').join('\n');
-    assert.match(text(await client.callTool({name: 'search_skills', arguments: {query: 'library'}})), /No strong matching skills/);
+    assert.match(text(await client.callTool({name: 'search_skills', arguments: {query: 'library'}})), /No matching skills/);
     assert.match(text(await client.callTool({name: 'search_skills', arguments: {query: 'library', exploratory: true}})), /weak\/exploratory/);
     const found = text(await client.callTool({name: 'search_skills', arguments: {query: 'write python pytest regression tests'}}));
     assert.match(found, /ranking score/);

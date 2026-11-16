@@ -44,7 +44,7 @@ async function exercise(dir, name, dependencyRoot = dir) {
   const env = homeFor(name);
   run(process.execPath, [cli, "index"], { cwd: dir, env });
   assert.match(run(process.execPath, [cli, "search", "python pytest testing"], { cwd: dir, env }), /smoke-python-testing/);
-  assert.match(run(process.execPath, [cli, "search", "fixtures"], { cwd: dir, env }), /No strong matching skills/);
+  assert.match(run(process.execPath, [cli, "search", "fixtures"], { cwd: dir, env }), /No matching skills/);
   assert.match(run(process.execPath, [cli, "search", "fixtures", "--exploratory"], { cwd: dir, env }), /weak\/exploratory/);
   assert.match(run(process.execPath, [cli, "explain", "python pytest testing", "--lexical"], { cwd: dir, env }), /Semantic: off/);
   assert.match(run(process.execPath, [cli, "eval", "--ci"], { cwd: dir, env }), /\bPASS\b/);
