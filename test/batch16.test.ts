@@ -12,7 +12,7 @@ process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 process.env.SKILLROUTER_SERVICE = "0";
 fs.mkdirSync(process.env.SKILLROUTER_HOME, { recursive: true });
 delete process.env.SKILLROUTER_GATE;
-const { gateEvent, formatGate, GATE_MAX_DENIALS, GATE_REASON, GATE_REASON_NO_PROMPT } = await import("../src/gate.js");
+const { gateEvent, formatGate, GATE_MAX_DENIALS, GATE_REASON, GATE_REASON_NO_PROMPT, GATE_REASON_LAST } = await import("../src/gate.js");
 const { toolEvent } = await import("../src/events.js");
 const { hint } = await import("../src/hint.js");
 const { saveIndex } = await import("../src/index.js");
@@ -354,4 +354,22 @@ test("a Cursor session whose prompt was never seen is asked to search once, befo
 
   process.env.SKILLROUTER_GATE = "0";
   try { assert.equal(shell(session(), "pytest -q"), "", "SKILLROUTER_GATE=0 turns this off too"); } finally { delete process.env.SKILLROUTER_GATE; }
+});
+
+test("an agent that cannot search is told how the call gets through, and which refusal is the last", async () => {
+  // Seen on a Mac: an hourly Codex automation in a thread without the router's tools stopped at the first refusal, 88 runs in a row.
+  for (const r of [GATE_REASON, GATE_REASON_NO_PROMPT]) assert.match(r, /not available in this session[^.]*repeat this same call[^.]*refused twice at most, then let through/);
+  assert.match(GATE_REASON_LAST, /last refusal[^.]*repeat this same call and it will go through/);
+  const s = session(); await prompt(s, "t1", task, "codex");
+  const answers = [1, 2, 3, 4].map(() => gate("codex", work(s, "t1")));
+  assert.equal(answers[0], formatGate("codex", GATE_REASON), "the first refusal asks for the search and names the way out");
+  assert.equal(answers[1], formatGate("codex", GATE_REASON_LAST), "the second says it is the last");
+  assert.deepEqual(answers.slice(2), ["", ""], "what it promised: the repeated call goes through");
+  // A new task turn starts over with the full request.
+  await prompt(s, "t2", task, "codex");
+  assert.equal(gate("codex", work(s, "t2")), formatGate("codex", GATE_REASON));
+  // The once-per-session rule for a prompt-less Cursor session ends the same way.
+  const c = session();
+  const shell = () => gate("cursor", { conversation_id: c, generation_id: c, tool_name: "Shell", tool_input: { command: "pytest -q" } });
+  assert.deepEqual([shell(), shell(), shell()], [formatGate("cursor", GATE_REASON_NO_PROMPT), formatGate("cursor", GATE_REASON_LAST), ""]);
 });

@@ -4,7 +4,7 @@ import { fromHost, silent } from "./hosts.js";
 import { sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, isWork, shellCommand } from "./triggers.js";
 import { skillLoadOf } from "./events.js";
-import { addLoaded, addSearched, claim, claimDenial, gateProgress, gatedTurn, loadedSkills, sessionSearched, turnSeen } from "./state.js";
+import { addLoaded, addSearched, claim, claimDenial, claimed, gateProgress, gatedTurn, loadedSkills, sessionSearched, turnSeen } from "./state.js";
 import { creditRequest, knownSkill } from "./recurring.js";
 
 /**
@@ -13,7 +13,7 @@ import { creditRequest, knownSkill } from "./recurring.js";
  * On a turn whose prompt describes a task (the prompt check marks it, see hint.ts), the first work tool call (an edit, or a
  * command that does more than read) is refused until the agent has called search_skills or loaded a skill in that turn. The
  * refusal names what to do, so the agent's next call is the search. After two refusals in a turn the gate steps aside, so an
- * agent that cannot search (the router is down, a skill is unreadable) is never stuck. Subagents (on hosts that mark them: a Hermes
+ * agent that cannot search (the router is down, a skill is unreadable) is never stuck; both refusals say so, the second that it is the last. Subagents (on hosts that mark them: a Hermes
  * child has a session of its own and is judged by its own brief) and reads are never gated;
  * a short or conversational prompt ("continue", "go ahead") is gated only while the session has not searched at all, because it
  * carries on earlier work; SKILLROUTER_GATE=0 turns it off.
@@ -27,12 +27,18 @@ import { creditRequest, knownSkill } from "./recurring.js";
 export const GATE_MAX_DENIALS = 2;
 export const gateEnabled = () => process.env.SKILLROUTER_GATE !== "0";
 
+// An agent that cannot search must be told how the call gets through. Seen on a Mac, 2026-11-11 to 15: an hourly Codex
+// automation ran in a thread without the router's tools, read the refusal as a hard stop, and skipped its work 88 times.
+const CANNOT_SEARCH = " If search_skills is not available in this session, say so and repeat this same call: it is refused twice at most, then let through.";
 export const GATE_REASON = "skillrouter: before starting this work, search the skill library once: call search_skills with a short phrase for the task " +
   "(or read_skill for a skill the Skill check above suggested), read what fits, then carry on with this same call. " +
-  "If nothing fits, say so on your `Skills:` line afterwards. This stops only the first work call of a task turn.";
+  "If nothing fits, say so on your `Skills:` line afterwards. This stops only the first work call of a task turn." + CANNOT_SEARCH;
 /** The same request where no prompt was seen: there was no Skill check to refer to, and it is asked once per session. */
 export const GATE_REASON_NO_PROMPT = "skillrouter: before starting this work, search the skill library once: call search_skills with a short phrase for the task, " +
-  "read what fits, then carry on with this same call. If nothing fits, say so on your `Skills:` line afterwards. This stops only the first work call of this session.";
+  "read what fits, then carry on with this same call. If nothing fits, say so on your `Skills:` line afterwards. This stops only the first work call of this session." + CANNOT_SEARCH;
+/** The final refusal: the next attempt is let through, and the agent is told so instead of being left to guess. */
+export const GATE_REASON_LAST = "skillrouter: no search of the skill library was seen. This is the last refusal: repeat this same call and it will go through. " +
+  "Call search_skills first if you can; if it is not available in this session, say so on your `Skills:` line.";
 
 /** The host's own way of saying "not this call, and here is why". */
 export function formatGate(agent: HookAgent, reason = GATE_REASON): string {
@@ -113,7 +119,8 @@ function gateDecision(agent: HookAgent, rawInput: string, enabled: boolean): str
     const log = (reason: string) => logUsage({ client: `hook/${agent}`, agent, tool: "gate", reason, session, prompt: turn });
     const refuse = (key: string, reason?: string) => {
       const slot = claimDenial(session, key, GATE_MAX_DENIALS);
-      if (slot === "denied") { log("denied"); return formatGate(agent, reason); }
+      // The last slot being taken means no further refusal follows (two calls at once may both say so; each is then let through).
+      if (slot === "denied") { log("denied"); return formatGate(agent, claimed(session, `deny-${key}-${GATE_MAX_DENIALS}`) ? GATE_REASON_LAST : reason); }
       if (slot === "stepped_aside") log("stepped_aside");
       return "";
     };
