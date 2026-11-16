@@ -148,6 +148,8 @@ test("OpenCode plugin: a finished turn's text is sent once, the current turn's n
     msg("user", "u2", undefined, "second request"), msg("assistant", "a2", "u2", "Working…", false)];
   await hooks["experimental.chat.messages.transform"]({}, { messages });
   await hooks["experimental.chat.messages.transform"]({}, { messages });
+  // Wait for the child process's report (a loaded machine can take longer than a fixed 400 ms), then leave time for a second, wrong one.
+  for (let i = 0; i < 100 && !(fs.existsSync(seen) && fs.readFileSync(seen, "utf8").trim()); i++) await new Promise((r) => setTimeout(r, 100));
   await new Promise((r) => setTimeout(r, 400));
   const calls = fs.readFileSync(seen, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   assert.equal(calls.length, 1);
@@ -279,7 +281,9 @@ test("OpenCode: a prompt queued mid-turn doesn't end the turn; a late report isn
   await new Promise((r) => setTimeout(r, 300));
   assert.ok(!fs.existsSync(seen), "the first turn is still running");
   await hooks["experimental.chat.messages.transform"]({}, { messages: [...queued.slice(0, 3), msg("assistant", "a1b", "u1", "Done. Skills: none (x)"), msg("assistant", "a2", "u2", "on it", false)] });
-  await new Promise((r) => setTimeout(r, 400));
+  // The report is written by a child process: wait for it instead of a fixed 400 ms, which a loaded machine misses
+  // (seen on a Mac at load average 46: ENOENT here, and the same file passed five times alone).
+  for (let i = 0; i < 100 && !(fs.existsSync(seen) && fs.readFileSync(seen, "utf8").trim()); i++) await new Promise((r) => setTimeout(r, 100));
   assert.deepEqual(JSON.parse(fs.readFileSync(seen, "utf8").trim()), { session_id: "s2", prompt_id: "u1", text: "step one\nDone. Skills: none (x)" });
   // decisionEvent only counts loads inside the turn's own span.
   const S = sessionHash("s3"), U1 = sessionHash("x1"), U2 = sessionHash("x2");
