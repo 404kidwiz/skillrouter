@@ -53,7 +53,8 @@ export function fromHost(agent, input, gate) {
             return null; // a later model call of the turn already checked
         return JSON.stringify({ ...base, prompt_id: turn.turn, prompt });
     }
-    // The turn the prompt check opened for this same user input; without one (the check never ran) there is no task to gate.
+    // The turn the prompt check opened for this same user input. Without one for this input, the gate goes by the
+    // conversation's latest turn, as on hosts that send no turn id.
     const turn = hostTurn(session, sha(prompt), false);
     const call = p.toolCall && typeof p.toolCall === "object" ? p.toolCall : {};
     return JSON.stringify({ ...base, prompt_id: turn?.turn, tool_use_id: typeof p.stepIdx === "number" ? `step-${p.stepIdx}` : undefined, ...antigravityTool(str(call.name) ?? "", call.args) });
@@ -71,8 +72,13 @@ function textOf(message) {
 }
 /** The router's own MCP tools under either host's naming, as the names the gate and load detection know. */
 function routerTool(name, args) {
-    const m = name.match(/(?:^|[_.:/-])skillrouter[_.:/-]+(search_skills|read_skill)$/) ?? (/^(search_skills|read_skill)$/.test(name) ? [name, name] : null);
-    return m ? { tool_name: `mcp__skillrouter__${m[1]}`, tool_input: obj(args) } : null;
+    // mcp_skillrouter_search_skills, mcp__skillrouter__read_skill, skillrouter/search_skills, SkillRouter.searchSkills …:
+    // the server's name, then the tool's. Also a bare or merely mcp-prefixed tool name (mcp0_search_skills), for hosts
+    // that drop the server from it; another server's tool (mcp_other_search_skills) is not the router's.
+    const tool = (t) => (/^search_?skills$/i.test(t) ? "search_skills" : /^read_?skill$/i.test(t) ? "read_skill" : null);
+    const m = name.match(/(?:^|[_.:/-])skill_?router[_.:/-]*([A-Za-z_]+)$/i) ?? name.match(/^(?:mcp\d*[_.:/-]+)?((?:search_?skills|read_?skill))$/i);
+    const which = m ? tool(m[1]) : null;
+    return which ? { tool_name: `mcp__skillrouter__${which}`, tool_input: obj(args) } : null;
 }
 function hermesTool(name, raw) {
     const a = obj(raw);
@@ -82,7 +88,10 @@ function hermesTool(name, raw) {
     switch (name) {
         case "terminal": return { tool_name: "Bash", tool_input: { command: a.command } };
         case "write_file": return { tool_name: "Write", tool_input: { file_path: a.path } };
-        case "patch": return { tool_name: "Edit", tool_input: { file_path: a.path } }; // a V4A patch without a path names its files inside; it still counts as an edit when a path is given
+        // A replace-mode patch names its file; a V4A patch (mode "patch") names its files inside the text, which the patch parser reads.
+        case "patch": return typeof a.path === "string" && a.path ? { tool_name: "Edit", tool_input: { file_path: a.path } } : { tool_name: "apply_patch", tool_input: { patch: a.patch } };
+        // Code run in Hermes's sandbox changes things as a script would: it is work, like a command that runs a script.
+        case "execute_code": return { tool_name: "Bash", tool_input: { command: "python3 hermes_execute_code.py" } };
         case "read_file": return { tool_name: "Read", tool_input: { file_path: a.path } };
         case "skill_view": return { tool_name: "Skill", tool_input: { skill: a.name } };
         default: return { tool_name: name, tool_input: a };

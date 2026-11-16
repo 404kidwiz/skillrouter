@@ -139,23 +139,32 @@ export function gapLines(rows, min = 3) {
             g.seen.set(t, (g.seen.get(t) ?? 0) + 1);
     }
     // One recurring job is phrased hundreds of ways and lands in several groups, each opened by a different first
-    // phrasing. Two groups whose queries use the same words at the same rates (cosine of their word counts 0.6 or
-    // more) are the same job: the smaller is folded into the larger. Jobs that share only boilerplate ("read-only
-    // production …") stay apart, at about 0.5. Only groups that recur are compared.
+    // phrasing. Two groups whose queries use the same telling words at the same rates (weighted cosine 0.5 or more)
+    // are the same job: the smaller is folded into the larger. Only groups that recur are compared.
     const coreOf = (g) => [...g.seen.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 5).map(([t]) => t);
+    const recurring = groups.filter((g) => g.n >= 2).sort((a, b) => b.n - a.n).slice(0, 300);
+    // A word counts for as much as it tells groups apart: one that most recurring groups share ("read", "only",
+    // "production" in every job of a log) weighs little, one that few have weighs fully.
+    const inGroups = new Map();
+    for (const g of recurring)
+        for (const t of g.seen.keys())
+            inGroups.set(t, (inGroups.get(t) ?? 0) + 1);
+    const weight = (t) => Math.log(1 + recurring.length / (inGroups.get(t) ?? 1)) / Math.log(1 + recurring.length);
     const alike = (a, b) => {
         let dot = 0, na = 0, nb = 0;
         for (const [t, n] of a.seen) {
-            na += n * n;
+            const x = (n / a.n) * weight(t);
+            na += x * x;
             const m = b.seen.get(t);
             if (m)
-                dot += n * m;
+                dot += x * (m / b.n) * weight(t);
         }
-        for (const n of b.seen.values())
-            nb += n * n;
+        for (const [t, n] of b.seen) {
+            const x = (n / b.n) * weight(t);
+            nb += x * x;
+        }
         return na && nb ? dot / Math.sqrt(na * nb) : 0;
     };
-    const recurring = groups.filter((g) => g.n >= 2).sort((a, b) => b.n - a.n).slice(0, 300);
     const folded = new Set();
     for (let i = 0; i < recurring.length; i++) {
         const a = recurring[i];
@@ -163,7 +172,7 @@ export function gapLines(rows, min = 3) {
             continue;
         for (let j = i + 1; j < recurring.length; j++) {
             const b = recurring[j];
-            if (folded.has(b) || a.seen.size < 3 || b.seen.size < 3 || alike(a, b) < 0.6)
+            if (folded.has(b) || a.seen.size < 3 || b.seen.size < 3 || alike(a, b) < 0.5)
                 continue;
             a.n += b.n;
             for (const x of b.agents)

@@ -50,6 +50,11 @@ test("Hermes payloads are read in Hermes's shape and answered in Hermes's shape"
     assert.match(refused.reason, /search the skill library/);
     assert.equal(JSON.parse(call(["write_file", { path: "/w/a.py", content: "x" }], "c2")).decision, "block");
     assert.equal(call(["patch", { path: "/w/a.py", old_string: "a", new_string: "b" }], "c3"), "{}", "after two refusals the gate steps aside");
+    // A V4A patch (files named in its text) and code execution are work too.
+    await hint("hermes", hermes("pre_llm_call", "h6", { turn_id: "t1", user_message: PROMPT }));
+    const call6 = (tool, id) => gateEvent("hermes", hermes("pre_tool_call", "h6", { turn_id: "t1", tool_call_id: id }, tool));
+    assert.equal(JSON.parse(call6(["patch", { mode: "patch", patch: "*** Begin Patch\n*** Update File: src/a.py\n@@\n-a\n+b\n*** End Patch" }], "p1")).decision, "block");
+    assert.equal(JSON.parse(call6(["execute_code", { code: "open('x','w').write('y')" }], "p2")).decision, "block");
     // Another session: a search through the router's MCP tool (Hermes's naming) opens the gate at once; so does skill_view.
     await hint("hermes", hermes("pre_llm_call", "h4", { turn_id: "t9", user_message: PROMPT }));
     const call4 = (tool, id) => gateEvent("hermes", hermes("pre_tool_call", "h4", { turn_id: "t9", tool_call_id: id }, tool));
@@ -87,7 +92,7 @@ test("Antigravity payloads: one check per user input, a decision on every tool c
     assert.equal(tool("a1", PROMPT, "write_to_file", { TargetFile: "/w/a.py", CodeContent: "x" }, 4).decision, "deny");
     assert.deepEqual(tool("a1", PROMPT, "replace_file_content", { TargetFile: "/w/a.py" }, 5), { decision: "allow" }, "after two refusals the gate steps aside");
     // A search under whatever name the app gives the router's MCP tool opens the gate.
-    for (const [conv, name] of [["a2", "mcp_skillrouter_search_skills"], ["a3", "skillrouter/search_skills"], ["a4", "mcp__skillrouter__search_skills"], ["a5", "search_skills"]]) {
+    for (const [conv, name] of [["a2", "mcp_skillrouter_search_skills"], ["a3", "skillrouter/search_skills"], ["a4", "mcp__skillrouter__search_skills"], ["a5", "search_skills"], ["a51", "mcp0_search_skills"], ["a52", "mcp_SkillRouter_search_skills"], ["a53", "skillrouterSearchSkills"]]) {
         await hint("antigravity", base(conv, PROMPT, { invocationNum: 0 }));
         assert.deepEqual(tool(conv, PROMPT, name, { query: "pytest" }, 1), { decision: "allow" });
         assert.deepEqual(tool(conv, PROMPT, "run_command", { CommandLine: "npm install left-pad" }, 2), { decision: "allow" }, name);
@@ -122,7 +127,7 @@ test("each host gets its own wire shapes", () => {
     assert.equal(formatHint("codex", ""), "");
     assert.match(formatGate("claude", "r"), /permissionDecision/);
     const m = new RegExp(HERMES_GATE_MATCHER);
-    for (const t of ["terminal", "write_file", "patch", "skill_view", "mcp_skillrouter_search_skills", "mcp_skillrouter_read_skill"])
+    for (const t of ["terminal", "write_file", "patch", "execute_code", "skill_view", "mcp_skillrouter_search_skills", "mcp_skillrouter_read_skill"])
         assert.ok(m.test(t), t);
     for (const t of ["read_file", "web_search", "terminal_x", "xterminal", "mcp_other_search_skills"])
         assert.ok(!m.test(t), t);
@@ -202,6 +207,35 @@ test("install hermes writes the MCP entry and both hooks into the main home and 
         install("hermes", h, undefined, { acceptHooks: true });
         assert.equal(read(h, "shell-hooks-allowlist.json").approvals.length, 3, "approving twice adds nothing");
         assert.match(hostHooks("hermes", h), /approved in Hermes$/);
+        // A user's own hook that wraps or mentions the launcher is theirs: it stays.
+        const mine = read(h, "config.yaml");
+        mine.hooks.pre_tool_call.unshift({ command: "/mine/audit.sh '/x/skillrouter-hint' hermes gate" }, { command: "echo skillrouter-hint hermes # note" });
+        fs.writeFileSync(path.join(h, ".hermes", "config.yaml"), JSON.stringify(mine));
+        install("hermes", h);
+        assert.deepEqual(read(h, "config.yaml").hooks.pre_tool_call.map((e) => e.command).slice(0, 3), ["/mine/audit.sh '/x/skillrouter-hint' hermes gate", "echo skillrouter-hint hermes # note", "/mine/guard.sh"]);
+        assert.equal(read(h, "config.yaml").hooks.pre_tool_call.length, 4);
+        // Shapes the installer does not understand are left exactly as found, and named.
+        const captain = path.join(h, ".hermes", "profiles", "captain", "config.yaml");
+        for (const odd of [{ model: "c", hooks: ["a list"] }, { model: "c", hooks: { pre_tool_call: { command: "/mine/guard.sh" } } }, { model: "c", mcp_servers: "text" }]) {
+            fs.writeFileSync(captain, JSON.stringify(odd));
+            assert.match(install("hermes", h).join("\n"), /FAILED, not changed: captain \(left unchanged: /);
+            assert.deepEqual(JSON.parse(fs.readFileSync(captain, "utf8")), odd);
+        }
+        fs.writeFileSync(captain, JSON.stringify({ model: "captain" }));
+        // An allowlist that is not in Hermes's documented shape is not overwritten; a valid one is backed up before the first change.
+        const allowFile = path.join(h, ".hermes", "profiles", "captain", "shell-hooks-allowlist.json");
+        for (const bad of ["[1, 2]", "{ broken", JSON.stringify({ approvals: "x" })]) {
+            fs.writeFileSync(allowFile, bad);
+            assert.match(install("hermes", h, undefined, { acceptHooks: true }).join("\n"), /FAILED, not changed: captain \(left unchanged: shell-hooks-allowlist\.json/);
+            assert.equal(fs.readFileSync(allowFile, "utf8"), bad);
+            assert.equal(JSON.parse(fs.readFileSync(captain, "utf8")).hooks, undefined, "nothing is written to the config either");
+        }
+        fs.rmSync(allowFile);
+        assert.ok(fs.existsSync(path.join(h, ".hermes", "shell-hooks-allowlist.json.bak-skillrouter")));
+        // A module planted in a profile folder is never imported by the installer's Python.
+        fs.writeFileSync(path.join(h, ".hermes", "profiles", "captain", "datetime.py"), "raise SystemExit('planted')\n");
+        fs.writeFileSync(path.join(h, ".hermes", "profiles", "captain", "json.py"), "raise SystemExit('planted')\n");
+        assert.doesNotMatch(install("hermes", h, undefined, { acceptHooks: true }).join("\n"), /planted|FAILED/);
         // A profile whose config Hermes cannot load is reported and left alone; the others are still done.
         fs.writeFileSync(path.join(h, ".hermes", "profiles", "scout", "config.yaml"), "{ not json");
         const third = install("hermes", h).join("\n");
@@ -259,7 +293,9 @@ test("Antigravity hooks are installed only when asked for, beside the user's own
 });
 test("the launcher's fallback takes only a Node that is new enough", () => {
     const text = launcherScript("/pinned/node", "/x/cli.js", "/x/client.pl", "/x", "/x/sock");
-    assert.match(text, /\[ -x "\$c" \] && "\$c" -e 'process\.exit\(\+process\.versions\.node\.split\("\."\)\[0\] >= 20 \? 0 : 1\)' 2>\/dev\/null; then NODE="\$c"; break; fi/);
+    assert.match(text, /\[ -x "\$c" \] && "\$c" -e 'process\.exit\(\+process\.versions\.node\.split\("\."\)\[0\] >= 20 \? 0 : 1\)' <\/dev\/null 2>\/dev\/null; then NODE="\$c"; break; fi/);
+    // With nothing to run the hook, a host that needs an answer gets one from the launcher itself.
+    assert.match(text, /antigravity:gate\) echo '\{"decision":"allow"\}'; exit 0;; antigravity:\*\|hermes:\*\) echo '\{\}'; exit 0;;/);
     if (process.platform !== "win32") {
         // The check itself, as the shell runs it: this Node passes, a stand-in that is too old does not.
         const check = (node) => spawnSync("sh", ["-c", `"$1" -e 'process.exit(+process.versions.node.split(".")[0] >= 20 ? 0 : 1)' 2>/dev/null`, "sh", node]).status;
@@ -299,20 +335,42 @@ test("backups: old entries are offered for removal, the newest trim's manifest a
     const done = pruneBackups(plan, dir);
     assert.deepEqual(done.removed.sort(), ["RESTORE-2026-09-01.json", "RESTORE-2026-09-01.md", "claude-2026-09-01.tar", "rules-old"]);
     assert.deepEqual(fs.readdirSync(dir).sort(), ["RESTORE-2026-10-01.json", "RESTORE-2026-10-01.md", "claude-2026-10-01.tar", "codex-2026-10-01.tar", "old-folder-new-file", "recent-snapshot"]);
+    // Which trim is newest goes by the manifest's own date (createdAt, else its name), not the file's time: a copied
+    // or synced folder has fresh file times on old manifests.
+    const d2 = path.join(home, "backups-order");
+    fs.mkdirSync(d2);
+    const at = (name, ageDays, body) => { fs.writeFileSync(path.join(d2, name), body); const t = new Date(now - ageDays * day); fs.utimesSync(path.join(d2, name), t, t); };
+    at("RESTORE-2026-01-01T00-00-00.json", 40, JSON.stringify({ version: 2, backups: [{ archive: "jan.tar" }] }));
+    at("jan.tar", 40, "x");
+    at("RESTORE-2026-09-01T00-00-00.json", 60, JSON.stringify({ version: 2, createdAt: "2026-09-01T00:00:00.000Z", backups: [{ archive: "sep.tar" }] }));
+    at("sep.tar", 60, "x");
+    const order = Object.fromEntries(backupPlan(30, d2, now).map((i) => [i.name, i.keep]));
+    assert.match(order["RESTORE-2026-09-01T00-00-00.json"], /newest restore manifest/);
+    assert.match(order["sep.tar"], /newest restore manifest/);
+    assert.equal(order["jan.tar"], undefined);
     // A newest manifest that cannot be read: nothing is offered, because which archives it needs is unknown.
     put("RESTORE-2026-11-01.json", 40, "{ broken");
     assert.ok(backupPlan(0, dir, now).every((i) => i.keep));
     assert.deepEqual(backupPlan(30, path.join(home, "no-such-dir")), []);
 });
-test("skill gaps: one recurring job phrased many ways is one line", () => {
+test("skill gaps: a recurring job phrased many ways is one line, and jobs that share only boilerplate stay apart", () => {
     const now = new Date().toISOString();
     const s = (query, agent = "codex") => ({ ts: now, client: "x", agent, tool: "search_skills", query, hits: [] });
-    const job = ["read-only production website integrity verification TLS DNS smoke", "production website integrity guard verify GitHub variable TLS", "read-only production site integrity QA verification",
+    const integrity = ["read-only production website integrity verification TLS DNS smoke", "production website integrity guard verify GitHub variable TLS", "read-only production site integrity QA verification",
         "run read-only production integrity checks website TLS certificate", "read-only production integrity validation", "production integrity verification of deployment freeze GitHub variable domain TLS",
         "read-only production website integrity monitoring HTTP TLS GitHub variable", "verify production website integrity read-only smoke TLS", "integrity guard production read-only website verification GitHub"];
-    const rows = [...job, ...job, ...job].map((q) => s(q)).concat([s("weekly revenue pipeline review", "hermes"), s("weekly revenue pipeline review summary", "hermes"), s("review weekly revenue pipeline", "hermes"), s("configure xbox controller")]);
+    const database = ["read-only production database backup restore verification", "verify production database backup and restore read-only", "production database backup verification restore drill read-only", "read-only production postgres database backup restore check"];
+    const cluster = ["read-only production kubernetes cluster health verification", "verify production kubernetes cluster node health read-only", "production kubernetes cluster health check pods read-only"];
+    const rows = [...Array(5).fill(integrity).flat().slice(0, 40), ...Array(8).fill(database).flat().slice(0, 30), ...Array(4).fill(cluster).flat()].map((q) => s(q));
     const lines = gapLines(rows).filter((l) => /^\s+\d+\s/.test(l));
-    assert.equal(lines.length, 2, lines.join("\n"));
-    assert.match(lines[0], /^\s+27 {2}codex: .*integrity/);
-    assert.match(lines[1], /^\s+3 {2}hermes: .*weekly revenue pipeline/);
+    assert.equal(lines.length, 3, lines.join("\n"));
+    const count = (l) => Number(l.trim().split(/\s+/)[0]);
+    assert.match(lines[0], /integrity/);
+    assert.ok(count(lines[0]) >= 38 && count(lines[0]) <= 44, lines[0]);
+    assert.match(lines[1], /database backup/);
+    assert.equal(count(lines[1]), 30);
+    assert.match(lines[2], /kubernetes cluster/);
+    assert.ok(count(lines[2]) >= 10 && count(lines[2]) <= 12, lines[2]);
+    assert.ok(rows.some((r) => lines[0].endsWith(r.query.slice(0, 110))), "the label is one of the queries");
+    assert.deepEqual(gapLines(rows), gapLines(rows), "the same rows give the same lines");
 });

@@ -10,7 +10,8 @@ import { addSearched, claimDenial, gateProgress, gatedTurn, loadedSkills } from 
  * On a turn whose prompt describes a task (the prompt check marks it, see hint.ts), the first work tool call (an edit, or a
  * command that does more than read) is refused until the agent has called search_skills or loaded a skill in that turn. The
  * refusal names what to do, so the agent's next call is the search. After two refusals in a turn the gate steps aside, so an
- * agent that cannot search (the router is down, a skill is unreadable) is never stuck. Subagents and reads are never gated;
+ * agent that cannot search (the router is down, a skill is unreadable) is never stuck. Subagents (on hosts that mark them: a Hermes
+ * child has a session of its own and is judged by its own brief) and reads are never gated;
  * a short or conversational prompt ("continue", "go ahead") is gated only while the session has not searched at all, because it
  * carries on earlier work; SKILLROUTER_GATE=0 turns it off.
  *

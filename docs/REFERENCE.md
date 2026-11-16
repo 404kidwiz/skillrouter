@@ -191,6 +191,7 @@ Advanced tuning:
 | `SKILLROUTER_SNAPSHOT` | `0`: `install` from a git checkout points hosts at the checkout instead of a private copy |
 | `SKILLROUTER_LOG_MAX_MB` | Size at which `usage.jsonl` is rotated; default 32; `0` turns rotation off |
 | `SKILLROUTER_SNAPSHOT_KEEP_DAYS` | How long private code copies beyond the newest three are kept; default 14 |
+| `SKILLROUTER_HERMES_PYTHON` | The Python of the Hermes installation, when it is not under `~/.hermes/hermes-agent` |
 | `SKILLROUTER_MIN_RAW` | Explicit lexical floor; default otherwise scales with library size |
 | `SKILLROUTER_ENDORSE_AFTER` | Accepted turns before a host's skill passes the hint gate on a lower bar (default 3; 0 turns it off) |
 | `SKILLROUTER_SUPPRESS_AFTER` | Decline-session threshold; default 5; 0 disables suppression |
@@ -216,6 +217,16 @@ These examples affect the terminal process environment, not necessarily an alrea
 Lexical routing is the default. Semantic routing requires the optional `@huggingface/transformers` dependency and a local model download, plus `index --embeddings`. Follow your dependency-management workflow and expect extra disk/memory use; do not silently add it during ordinary setup.
 
 An existing vector store also causes subsequent index rebuilds to attempt refreshing embeddings. Stale or unavailable vectors fall back to lexical matching. Use `doctor` to inspect vector state and [architecture](ARCHITECTURE.md) for scoring details.
+
+### Host hooks and backups
+
+| Command | Result |
+| --- | --- |
+| `node dist/src/cli.js install hermes` | MCP entry, prompt-check hook and search-gate hook in Hermes's main home and every profile; hooks run once approved in Hermes |
+| `node dist/src/cli.js install hermes --accept-hooks` | The same, and records Hermes's approval for those two hooks in each home (needed for gateway and cron profiles, which never ask) |
+| `node dist/src/cli.js install antigravity --hooks` | Also writes the experimental `skillrouter` hook group into `~/.gemini/config/hooks.json` |
+| `node dist/src/cli.js backups` | Lists `~/.skillrouter/backups` with sizes and ages, and what `--apply` would remove |
+| `node dist/src/cli.js backups --older-than 60 --apply` | Removes entries older than 60 days (default 30); never the newest trim's restore manifest, its notes or its archives |
 
 ## State layout
 

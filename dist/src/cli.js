@@ -311,7 +311,7 @@ async function main(argv) {
             const { backupPlan, pruneBackups, formatBackups } = await import("./backups.js");
             const apply = flag(args, "--apply");
             const raw = opt(args, "--older-than")[0];
-            const days = raw !== undefined && Number.isFinite(Number(raw)) && Number(raw) >= 0 ? Number(raw) : 30;
+            const days = raw !== undefined && raw.trim() !== "" && Number.isFinite(Number(raw)) && Number(raw) >= 0 ? Number(raw) : 30; // an empty value (an unset shell variable) is not "0 days"
             const plan = backupPlan(days);
             console.log(formatBackups(plan, days, apply ? pruneBackups(plan) : undefined));
             break;

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { HOME, SR_DIR, AGENTS, antigravityConfigPaths, type AgentId } from "./paths.js";
@@ -63,13 +64,17 @@ NODE=${quote(node)}
 # The pinned Node is gone (an update or cleanup removed it): use another one, new enough, rather than fail every hook.
 if [ ! -x "$NODE" ]; then
   for c in "$(command -v node 2>/dev/null)" ${NODE_FALLBACKS.map(quote).join(" ")}; do
-    if [ -n "$c" ] && [ -x "$c" ] && "$c" -e 'process.exit(+process.versions.node.split(".")[0] >= 20 ? 0 : 1)' 2>/dev/null; then NODE="$c"; break; fi
+    if [ -n "$c" ] && [ -x "$c" ] && "$c" -e 'process.exit(+process.versions.node.split(".")[0] >= 20 ? 0 : 1)' </dev/null 2>/dev/null; then NODE="$c"; break; fi
   done
 fi
 if [ "\${SKILLROUTER_SERVICE:-1}" != 0 ] && [ -f ${quote(perlClient)} ] && command -v perl >/dev/null 2>&1; then
   perl ${quote(perlClient)} ${quote(dir)} ${quote(sock)} "$NODE" ${quote(cli)} "$@"
   rc=$?
   if [ $rc -ne 2 ] && [ $rc -ne 255 ]; then exit $rc; fi
+fi
+# Nothing can run the hook (no Node, or the code is gone): a host that needs an answer still gets its "go ahead".
+if [ ! -x "$NODE" ] || [ ! -f ${quote(cli)} ]; then
+  case "$1:$2" in antigravity:gate) echo '{"decision":"allow"}'; exit 0;; antigravity:*|hermes:*) echo '{}'; exit 0;; esac
 fi
 exec "$NODE" ${quote(cli)} hint "$@"
 `;
@@ -240,9 +245,11 @@ export function install(agent: InstallTarget, home = HOME, platform: Platform = 
 }
 
 /** Hermes tools the search gate looks at: work calls, skill loads, and the router's own two tools (to see a search). */
-export const HERMES_GATE_MATCHER = "^(?:terminal|write_file|patch|skill_view|mcp_skillrouter_(?:read_skill|search_skills))$";
+export const HERMES_GATE_MATCHER = "^(?:terminal|write_file|patch|execute_code|skill_view|mcp_skillrouter_(?:read_skill|search_skills))$";
 /** A hook entry of ours in a Hermes config: the launcher followed by `hermes`. */
-const HERMES_HOOK = /skillrouter-hint(?:\.mjs)?['"]?\s+hermes\b/;
+// Only a command that starts with the launcher (optionally through node, as on Windows) is ours: a user's own
+// script that wraps or merely mentions it is theirs and stays.
+const HERMES_HOOK = /^\s*(?:\S*node(?:\.exe)?['"]?\s+)?['"]?[^'"\s]*skillrouter-hint(?:\.mjs)?['"]?\s+hermes(?:\s+gate)?\s*$/;
 
 /**
  * What Hermes's own Python does to one HERMES_HOME (the main one or a profile): set the MCP entry, replace our hook
@@ -250,15 +257,22 @@ const HERMES_HOOK = /skillrouter-hint(?:\.mjs)?['"]?\s+hermes\b/;
  * shell-hooks-allowlist.json, in the format its docs give for manual allowlisting. Hermes's config API writes the
  * YAML, so comments and layout survive.
  */
-const HERMES_SCRIPT = `import sys, json, os, re, datetime
+const HERMES_SCRIPT = `import sys
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]  # never import from the folder this runs in
+import json, os, re, datetime, shutil
 sys.path.insert(0, sys.argv[2])
 from hermes_cli.config import load_config, save_config
 spec = json.loads(sys.argv[1])
+def refuse(why):
+    sys.stderr.write("left unchanged: " + why + "\\n")
+    sys.exit(3)
 c = load_config()
 servers = c.get("mcp_servers")
-if not isinstance(servers, dict):
+if servers is None:
     servers = {}
     c["mcp_servers"] = servers
+if not isinstance(servers, dict):
+    refuse("mcp_servers is not a mapping")
 prev = servers.get("skillrouter")
 prev = dict(prev) if isinstance(prev, dict) else {}
 env = dict(prev.get("env")) if isinstance(prev.get("env"), dict) else {}
@@ -267,24 +281,37 @@ prev.update({"command": spec["mcp"]["command"], "args": spec["mcp"]["args"], "en
 servers["skillrouter"] = prev
 ours = re.compile(spec["marker"])
 hooks = c.get("hooks")
-if not isinstance(hooks, dict):
+if hooks is None:
     hooks = {}
     c["hooks"] = hooks
+if not isinstance(hooks, dict):
+    refuse("hooks is not a mapping of events")
 for event, entry in spec["hooks"].items():
-    kept = [e for e in (hooks.get(event) if isinstance(hooks.get(event), list) else []) if not (isinstance(e, dict) and ours.search(str(e.get("command", ""))))]
+    current = hooks.get(event)
+    if current is None:
+        current = []
+    if not isinstance(current, list):
+        refuse("hooks." + event + " is not a list")
+    kept = [e for e in current if not (isinstance(e, dict) and ours.search(str(e.get("command", ""))))]
     kept.append(entry)
     hooks[event] = kept
-save_config(c)
+approvals = None
+path = os.path.join(os.environ["HERMES_HOME"], "shell-hooks-allowlist.json")
 if spec.get("accept"):
-    path = os.path.join(os.environ["HERMES_HOME"], "shell-hooks-allowlist.json")
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-    approvals = data.get("approvals") if isinstance(data.get("approvals"), list) else []
+    data = {}
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except Exception:
+            refuse("shell-hooks-allowlist.json is not readable JSON; fix or remove it, then install again")
+        if not isinstance(data, dict) or not isinstance(data.get("approvals", []), list):
+            refuse("shell-hooks-allowlist.json has an unexpected shape")
+    approvals = data.get("approvals", [])
+save_config(c)
+if approvals is not None:
+    if os.path.exists(path) and not os.path.exists(path + ".bak-skillrouter"):
+        shutil.copy2(path, path + ".bak-skillrouter")
     now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
     for event, entry in spec["hooks"].items():
         approvals = [a for a in approvals if not (isinstance(a, dict) and a.get("event") == event and a.get("command") == entry["command"])]
@@ -324,7 +351,8 @@ function installHermes(home: string, bin: string, opts: InstallOptions): string[
     try {
       backup(file, fs.statSync(file).mode & 0o777);
       const env = { ...process.env, HERMES_HOME: dir };
-      execFileSync(py, ["-c", HERMES_SCRIPT, spec, agentDir], { cwd: fs.existsSync(agentDir) ? agentDir : dir, env, stdio: ["ignore", "pipe", "pipe"], timeout: 60000, ...NO_WINDOW });
+      // Run from Hermes's own folder, or a neutral one: never from a profile folder, whose files must not be importable.
+      execFileSync(py, ["-c", HERMES_SCRIPT, spec, agentDir], { cwd: fs.existsSync(agentDir) ? agentDir : os.tmpdir(), env, stdio: ["ignore", "pipe", "pipe"], timeout: 60000, ...NO_WINDOW });
       done.push(label);
     } catch (e) {
       const err = e as Error & { stderr?: Buffer };
@@ -332,7 +360,8 @@ function installHermes(home: string, bin: string, opts: InstallOptions): string[
     }
   }
   const out = [`${cfg}: skillrouter MCP and hooks (prompt check, search gate) set via Hermes config API for ${done.length ? done.join(", ") : "no home"}${failed.length ? `; FAILED, not changed: ${failed.join("; ")}` : ""}`];
-  if (failed.includes("main") || failed.some((f) => f.startsWith("main "))) out[0] += patchHermesProfiles(home);
+  // A home Hermes's API could not write still gets its MCP lines repointed where the plain layout allows.
+  if (failed.length) out[0] += patchHermesProfiles(home);
   if (!done.length) return out;
   out.push(opts.acceptHooks
     ? "Hermes hooks approved for these homes (shell-hooks-allowlist.json): they run from the next session. `hermes hooks list` shows them."

@@ -24,8 +24,24 @@ export function backupPlan(days = 30, dir = BACKUP_DIR, now = Date.now()) {
     catch {
         return 0;
     } };
-    // Newest by the time written, then by name: a restore manifest's name carries its timestamp.
-    const manifests = names.filter((n) => /^RESTORE-.*\.json$/.test(n)).map((n) => ({ n, t: mtime(path.join(dir, n)) })).sort((a, b) => b.t - a.t || (a.n < b.n ? 1 : -1));
+    // The newest trim: by the manifest's own createdAt, else the timestamp in its name, and only then the file's time
+    // (a copy or a sync resets file times, and must not make an old trim look like the latest).
+    const when = (n) => {
+        try {
+            const t = Date.parse(JSON.parse(fs.readFileSync(path.join(dir, n), "utf8"))?.createdAt);
+            if (Number.isFinite(t))
+                return t;
+        }
+        catch { /* unreadable: go by the name */ }
+        const m = n.match(/(\d{4})-(\d{2})-(\d{2})(?:[T_-](\d{2})[-:]?(\d{2})[-:]?(\d{2})?)?/);
+        if (m) {
+            const t = Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] ?? 0), +(m[5] ?? 0), +(m[6] ?? 0));
+            if (Number.isFinite(t))
+                return t;
+        }
+        return mtime(path.join(dir, n));
+    };
+    const manifests = names.filter((n) => /^RESTORE-.*\.json$/.test(n)).map((n) => ({ n, t: when(n) })).sort((a, b) => b.t - a.t || (a.n < b.n ? 1 : -1));
     const protectedNames = new Map();
     const newest = manifests[0]?.n;
     if (newest) {
