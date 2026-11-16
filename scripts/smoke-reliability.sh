@@ -163,6 +163,17 @@ o=$(echo '{"session_id":"s9","prompt_id":"p9","prompt":"write python pytest regr
 ls $S/.skillrouter/usage.*.jsonl >/dev/null 2>&1; ok $? "usage log rotates past the limit"
 o=$(SKILLROUTER_SERVICE=0 node $A report 7 2>&1); has "$o" " 4  codex: read-only production website integrity"; ok $? "report still reads rows from the rotated log"
 
+echo "== a recurring request remembers the skill it used"
+RJ(){ printf '{"session_id":"rj%s","turn_id":"t%s","prompt":"Nightly run %s: confirm the storefront answers and nothing drifted since yesterday evening."}' "$1" "$1" "$1"; }
+RL(){ printf '{"session_id":"rj%s","turn_id":"t%s","tool_use_id":"r","tool_name":"mcp__skillrouter__read_skill","tool_input":{"id":"smoke-load"}}' "$1" "$1"; }
+mkdir -p $S/lib/smoke-load; printf -- '---\nname: smoke-load\ndescription: Kiln glaze schedule for stoneware pottery firing and cooling curves.\n---\nbody\n' > $S/lib/smoke-load/SKILL.md
+SKILLROUTER_SERVICE=0 node $A index >/dev/null 2>&1
+for n in 1 2; do RJ $n | SKILLROUTER_SERVICE=0 $L codex >/dev/null; RL $n | SKILLROUTER_SERVICE=0 $L codex gate >/dev/null; done
+o=$(RJ 3 | SKILLROUTER_SERVICE=0 $L codex); has "$o" "This same request was answered before with: smoke-load"; ok $? "third run of the same request is told the skill at once"
+o=$(SKILLROUTER_SERVICE=0 node $A recurring 2>&1); has "$o" "3 runs .*smoke-load x2" && ! has "$o" "storefront"; ok $? "recurring lists runs and skills, not the request's words"
+HD='{"hook_event_name":"post_llm_call","session_id":"hs1","extra":{"turn_id":"t1","assistant_response":"Done. Skills: none (nothing fit)"}}'
+o=$(echo "$HD" | SKILLROUTER_SERVICE=0 $L hermes decision); [ "$o" = "{}" ]; ok $? "hermes post_llm_call is answered with an empty object"
+
 echo "== backups"
 B=$S/.skillrouter/backups; mkdir -p $B/old-rules $B/new-rules; echo x > $B/old-rules/a; echo x > $B/new-rules/a
 touch -t 202001010000 $B/old-rules/a $B/old-rules

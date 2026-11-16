@@ -3,7 +3,8 @@ import { fromHost, silent } from "./hosts.js";
 import { sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, isWork, shellCommand } from "./triggers.js";
 import { skillLoadOf } from "./events.js";
-import { addSearched, claimDenial, gateProgress, gatedTurn, loadedSkills } from "./state.js";
+import { addLoaded, addSearched, claimDenial, gateProgress, gatedTurn, loadedSkills } from "./state.js";
+import { creditRequest } from "./recurring.js";
 /**
  * The search gate: the rule "search the skill library before you start work" as something the agent cannot skip.
  *
@@ -68,7 +69,7 @@ function gateDecision(agent, rawInput, enabled) {
     try {
         if (!enabled)
             return "";
-        const input = fromHost(agent, rawInput, true);
+        const input = fromHost(agent, rawInput, "gate");
         if (input === null)
             return "";
         const p = JSON.parse(input);
@@ -81,6 +82,17 @@ function gateDecision(agent, rawInput, enabled) {
         const lookup = lookupOf(p);
         if (lookup) {
             addSearched(session, turn, undefined, lookup);
+            if (lookup === "load") {
+                const load = skillLoadOf(typeof p.tool_name === "string" ? p.tool_name : "", p.tool_input);
+                if (load) {
+                    creditRequest(session, load.skill); // what this request used, for its next run (recurring.ts)
+                    // Hermes and Antigravity have no after-tool hook: the gate is where their skill loads are seen and logged.
+                    if (agent === "hermes" || agent === "antigravity") {
+                        addLoaded(session, load.skill);
+                        logUsage({ client: `hook/${agent}`, agent, tool: "skill_load", via: load.via, skill: load.skill, session, prompt: turn });
+                    }
+                }
+            }
             return "";
         }
         if (!isWork(actionFor(p)))

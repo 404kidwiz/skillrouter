@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { AgentId } from "./paths.js";
+import type { AgentId, HookAgent } from "./paths.js";
+import { creditRequest } from "./recurring.js";
+import { fromHost } from "./hosts.js";
 import { INDEX_FILE } from "./paths.js";
 import { getIndex, logUsage, search, type Hit } from "./search.js";
 import { coreIds } from "./core.js";
@@ -110,6 +112,7 @@ export async function toolEvent(agent: AgentId, input: string, inWorker: boolean
   const once = inWorker || firstUse(session, p?.tool_use_id);
   if (load && !inWorker && once) {
     addLoaded(session, load.skill, sub);
+    if (!sub) creditRequest(session, load.skill); // what this request used, for its next run (recurring.ts)
     // A held-back skill the agent went and loaded anyway was wanted: count it as accepted (once per session).
     if (suppressed(agent).has(bareSkill(load.skill)) && claim(session, `rescued-${bareSkill(load.skill)}`)) addVerdict(agent, [load.skill], []);
     logUsage({ client: `hook/${agent}`, agent, tool: "skill_load", via: load.via,
@@ -259,7 +262,7 @@ const altsOf = (hits: Hit[]): Record<string, string[]> => Object.fromEntries(hit
  * have answered checks shown later, so only loads count, as accepts. The log row lists everything; verdicts.json
  * counts a skill's decline once per session, so one long session can't hold a skill back by itself.
  */
-function recordVerdict(agent: AgentId, session: string | undefined, key: string, shown: string[], alts: Map<string, string[]>, decision: Decision | null, loads: Set<string>): void {
+function recordVerdict(agent: HookAgent, session: string | undefined, key: string, shown: string[], alts: Map<string, string[]>, decision: Decision | null, loads: Set<string>): void {
   if (!session || !shown.length || (!decision && !loads.size) || !claim(session, `verdict@${key.slice(0, 40)}`)) return;
   const loaded = new Set([...loads].map(bareSkill));
   const took = (id: string) => loaded.has(bareSkill(id)) || (!!decision && !decision.none && mentions(decision.text, id));
@@ -339,9 +342,9 @@ export function stopEvent(agent: AgentId, input: string): string {
  * OpenCode has no end-of-turn hook: its plugin sends each finished turn's assistant text
  * ({ session_id, prompt_id, text }) once a newer prompt shows the turn is over. Records the verdict only.
  */
-export function decisionEvent(agent: AgentId, input: string): string {
+export function decisionEvent(agent: HookAgent, rawInput: string): string {
   let p: any;
-  try { p = JSON.parse(input); } catch { return ""; }
+  try { const input = fromHost(agent, rawInput, "decision"); if (input === null) return ""; p = JSON.parse(input); } catch { return ""; }
   const session = sessionHash(sessionOf(p));
   const prompt = sessionHash(turnOf(p));
   if (!session || !prompt) return "";

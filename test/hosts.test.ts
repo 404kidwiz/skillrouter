@@ -75,8 +75,8 @@ test("Hermes payloads are read in Hermes's shape and answered in Hermes's shape"
   // Switched off, garbage, and a payload already in the generic shape.
   assert.equal(gateEvent("hermes", hermes("pre_tool_call", "h9", { turn_id: "t1" }, ["terminal", { command: "rm -rf x" }]), false), "{}");
   assert.equal(gateEvent("hermes", "not json"), "{}");
-  assert.equal(fromHost("hermes", JSON.stringify({ session_id: "s", prompt: "p" }), false), JSON.stringify({ session_id: "s", prompt: "p" }));
-  assert.equal(fromHost("codex", "anything", true), "anything");
+  assert.equal(fromHost("hermes", JSON.stringify({ session_id: "s", prompt: "p" }), "prompt"), JSON.stringify({ session_id: "s", prompt: "p" }));
+  assert.equal(fromHost("codex", "anything", "gate"), "anything");
 });
 
 test("Antigravity payloads: one check per user input, a decision on every tool call", async () => {
@@ -204,12 +204,14 @@ test("install hermes writes the MCP entry and both hooks into the main home and 
     assert.equal(again.hooks.pre_tool_call.length, 2);
     assert.equal(again.hooks.pre_llm_call.length, 1);
     const allow = read(h, "shell-hooks-allowlist.json").approvals;
-    assert.equal(allow.length, 3);
+    assert.equal(allow.length, 4);
     assert.deepEqual(allow[0], { event: "post_tool_call", command: "/mine/format.sh" });
-    assert.deepEqual(allow.slice(1).map((a: any) => [a.event, a.command]), [["pre_llm_call", again.hooks.pre_llm_call[0].command], ["pre_tool_call", again.hooks.pre_tool_call[1].command]]);
-    assert.equal(read(h, "profiles", "scout", "shell-hooks-allowlist.json").approvals.length, 2);
+    assert.deepEqual(allow.slice(1).map((a: any) => [a.event, a.command]), [["pre_llm_call", again.hooks.pre_llm_call[0].command], ["pre_tool_call", again.hooks.pre_tool_call[1].command], ["post_llm_call", again.hooks.post_llm_call[0].command]]);
+    assert.match(again.hooks.post_llm_call[0].command, /skillrouter-hint.* hermes decision$/);
+    assert.equal(again.hooks.post_llm_call.length, 1);
+    assert.equal(read(h, "profiles", "scout", "shell-hooks-allowlist.json").approvals.length, 3);
     install("hermes", h, undefined, { acceptHooks: true });
-    assert.equal(read(h, "shell-hooks-allowlist.json").approvals.length, 3, "approving twice adds nothing");
+    assert.equal(read(h, "shell-hooks-allowlist.json").approvals.length, 4, "approving twice adds nothing");
     assert.match(hostHooks("hermes", h), /approved in Hermes$/);
     // A user's own hook that wraps or mentions the launcher is theirs: it stays.
     const mine = read(h, "config.yaml");
@@ -360,4 +362,76 @@ test("skill gaps: a recurring job phrased many ways is one line, and jobs that s
   assert.match(lines[2], /kubernetes cluster/); assert.ok(count(lines[2]) >= 10 && count(lines[2]) <= 12, lines[2]);
   assert.ok(rows.some((r: any) => lines[0].endsWith(r.query.slice(0, 110))), "the label is one of the queries");
   assert.deepEqual(gapLines(rows), gapLines(rows), "the same rows give the same lines");
+});
+
+test("Hermes's end of turn records what was decided about the skill check", async () => {
+  await hint("hermes", hermes("pre_llm_call", "v1", { turn_id: "t1", user_message: PROMPT }));
+  const { decisionEvent } = await import("../src/events.js");
+  const before = readLog(1).filter((r: any) => r.tool === "verdict" && r.agent === "hermes").length;
+  assert.equal(decisionEvent("hermes", hermes("post_llm_call", "v1", { turn_id: "t1", user_message: PROMPT, assistant_response: "Done.\n\nSkills: python-testing", conversation_history: [] })), "");
+  const verdicts = readLog(1).filter((r: any) => r.tool === "verdict" && r.agent === "hermes");
+  assert.equal(verdicts.length, before + 1);
+  assert.deepEqual((verdicts.at(-1) as any).accepted, ["python-testing"]);
+  // A reply without the line, an unknown turn, and Antigravity (no end-of-turn hook) record nothing and never throw.
+  await hint("hermes", hermes("pre_llm_call", "v2", { turn_id: "t1", user_message: PROMPT }));
+  decisionEvent("hermes", hermes("post_llm_call", "v2", { turn_id: "t1", assistant_response: "All done." }));
+  decisionEvent("hermes", hermes("post_llm_call", "v3", { turn_id: "zz", assistant_response: "Skills: python-testing" }));
+  decisionEvent("antigravity", JSON.stringify({ conversationId: "x", lastUserInput: "y" }));
+  decisionEvent("hermes", "not json");
+  assert.equal(readLog(1).filter((r: any) => r.tool === "verdict" && r.agent === "hermes").length, before + 1);
+});
+
+test("a recurring request is told at once which skills it used before, and loading one opens the gate without a search", async () => {
+  const { recallRequest, creditRequest, promptKey, readRecurring, formatRecurring, forgetRecurring } = await import("../src/recurring.js");
+  fixture("canary-watch", "Monitor a deployed URL after releases: HTTP status, TLS certificate and page content checks.");
+  saveIndex(buildIndexFrom([root])); resetIndexCache();
+  // A scheduled job: the same words every run, with a date and a run number that change. Its wording matches no skill.
+  const job = (n: number) => `Nightly run ${n} on 2026-11-${10 + n}: confirm the storefront answers and nothing drifted since yesterday evening.`;
+  assert.equal(promptKey(job(1)), promptKey(job(2)), "numbers and dates do not make it a different request");
+  assert.equal(promptKey(job(1)), promptKey("  NIGHTLY run 7 on 2026-12-01:   confirm the storefront answers and nothing drifted since yesterday evening. "));
+  assert.notEqual(promptKey(job(1)), promptKey(job(1) + " Also check the cart."));
+  const run = async (n: number, load: boolean) => {
+    const session = `job-${n}`;
+    const out = await hint("codex", JSON.stringify({ session_id: session, turn_id: `t${n}`, prompt: job(n) }));
+    const tool = (name: string, input: object, id: string) => gateEvent("codex", JSON.stringify({ session_id: session, turn_id: `t${n}`, tool_use_id: id, tool_name: name, tool_input: input }));
+    if (load) tool("mcp__skillrouter__read_skill", { id: "canary-watch" }, "r");
+    return { out, work: () => tool("Bash", { command: "npm run deploy-check" }, "w") };
+  };
+  // Runs 1 and 2: nothing is known yet; each run loads canary-watch (after its own search).
+  assert.equal((await run(1, true)).out, "");
+  assert.equal((await run(2, true)).out, "");
+  // Run 3: the prompt check names it at once, as a skill to read, and says why.
+  const third = await run(3, false);
+  const text = JSON.parse(third.out).hookSpecificOutput.additionalContext;
+  assert.match(text, /- canary-watch — not preloaded: read_skill\("canary-watch"/);
+  assert.match(text, /This same request was answered before with: canary-watch\. Load it unless the task has changed; no new search is needed/);
+  // Without loading, the gate still holds the first work call; after the load it does not, with no search made.
+  assert.match(third.work(), /permissionDecision":"deny/);
+  const fourth = await run(4, true);
+  assert.match(fourth.out, /canary-watch/);
+  assert.equal(fourth.work(), "");
+  const rows = readLog(1);
+  assert.ok(rows.some((r: any) => r.tool === "recurring" && r.reason === "recalled" && r.skills?.[0] === "canary-watch"));
+  // What is kept: a hash, counts and skill names; never the request's words.
+  const stored = fs.readFileSync(path.join(process.env.SKILLROUTER_HOME!, "recurring.json"), "utf8");
+  assert.ok(!/storefront|Nightly|drifted/i.test(stored));
+  const entry = readRecurring().prompts[promptKey(job(1))];
+  assert.equal(entry.n, 4);
+  assert.equal(entry.skills["canary-watch"], 3);
+  assert.match(formatRecurring(), /4 runs .*canary-watch x3/);
+  // One session counts once, however often its hook runs or the skill is loaded; a skill loaded in one session only is not suggested.
+  recallRequest("s-once", "t", "some other recurring request with enough words"); recallRequest("s-once", "t", "some other recurring request with enough words");
+  creditRequest("s-once", "python-testing"); creditRequest("s-once", "python-testing~2");
+  const once = readRecurring().prompts[promptKey("some other recurring request with enough words")];
+  assert.equal(once.n, 1); assert.equal(once.skills["python-testing"], 1);
+  assert.deepEqual(recallRequest("s-twice", "t", "some other recurring request with enough words").skills, []);
+  // Odd skill names, sessions that asked nothing, a damaged file and the off switch are all harmless.
+  creditRequest("s-once", "../../etc/passwd"); creditRequest("never-prompted", "python-testing"); creditRequest(undefined, "python-testing");
+  assert.ok(!JSON.stringify(readRecurring()).includes("passwd"));
+  fs.writeFileSync(path.join(process.env.SKILLROUTER_HOME!, "recurring.json"), "{ broken");
+  assert.deepEqual(recallRequest("s-broken", "t", job(1)).skills, []);
+  process.env.SKILLROUTER_RECURRING = "0";
+  try { assert.deepEqual(recallRequest("s-off", "t", job(1)), { key: promptKey(job(1)), skills: [], runs: 0 }); } finally { delete process.env.SKILLROUTER_RECURRING; }
+  forgetRecurring();
+  assert.match(formatRecurring(), /No request has been seen twice yet/);
 });

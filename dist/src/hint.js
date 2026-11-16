@@ -3,7 +3,8 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { INDEX_FILE } from "./paths.js";
 import { fromHost } from "./hosts.js";
-import { getIndex, logUsage, search } from "./search.js";
+import { findSkill, getIndex, logUsage, search } from "./search.js";
+import { recallRequest } from "./recurring.js";
 import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
 import { addGateTask, addShown, bareSkill, loadedSkills, markTurn, sessionSearched } from "./state.js";
@@ -63,7 +64,7 @@ export async function hint(agent, rawInput, minRaw, k = 3) {
     const started = performance.now();
     let translated = rawInput;
     try {
-        translated = fromHost(agent, rawInput, false);
+        translated = fromHost(agent, rawInput, "prompt");
     }
     catch { /* judged as sent */ }
     if (translated === null)
@@ -109,6 +110,10 @@ export async function hint(agent, rawInput, minRaw, k = 3) {
         record("skipped_short_prompt");
         return formatHint(agent, "");
     }
+    // The same request as an earlier run (a scheduled job): the skills that run loaded are named first.
+    // (Not for a prompt that points back at the conversation: "go ahead with your plan" recurs everywhere and names no task.)
+    const recalled = isConversational(prompt) ? { key: "", skills: [], runs: 0 } : recallRequest(session, sessionHash(turnOf(payload)), prompt);
+    let remembered = [];
     let hits = [];
     let core = new Set();
     try {
@@ -128,13 +133,34 @@ export async function hint(agent, rawInput, minRaw, k = 3) {
         record(fs.existsSync(INDEX_FILE) ? "index_error" : "missing_index");
         return formatHint(agent, "");
     }
+    try {
+        const loaded = loadedSkills(session, undefined);
+        const held = suppressed(agent);
+        for (const id of recalled.skills) {
+            const found = findSkill(id);
+            const skill = found.length === 1 ? found[0] : undefined; // a name that now means several skills, or none, is not guessed
+            if (!skill || loaded.has(bareSkill(skill.id)) || held.has(bareSkill(skill.id)))
+                continue;
+            remembered.push(skill.id);
+            if (!hits.some((h) => bareSkill(h.skill.id) === bareSkill(skill.id)))
+                hits.unshift({ skill, score: 1, raw: 0, matched: 0 });
+        }
+        hits = hits.slice(0, Math.max(k, remembered.length));
+    }
+    catch {
+        remembered = [];
+    }
     record(hits.length ? "shown" : "no_match", hits);
+    if (remembered.length)
+        logUsage({ client: `hook/${agent}`, agent, tool: "recurring", reason: "recalled", session, prompt: sessionHash(turnOf(payload)), skills: remembered, runs: recalled.runs });
     if (!hits.length)
         return formatHint(agent, "");
     // Named siblings count as shown, so a later trigger this turn doesn't offer them again.
     addShown(session, hits.map((h) => h.skill.id), sessionHash(turnOf(payload)), Object.fromEntries(hits.filter((h) => h.similar?.length).map((h) => [h.skill.id, h.similar])));
     // Hermes and Antigravity keep their own skill folders: nothing is "preloaded" there, every suggestion is a read.
-    return formatHint(agent, hintText(hits, hint_id, agent === "hermes" || agent === "antigravity" ? new Set() : core, agent));
+    const text = hintText(hits, hint_id, agent === "hermes" || agent === "antigravity" ? new Set() : core, agent);
+    const note = remembered.length ? `\nThis same request was answered before with: ${remembered.join(", ")}. Load ${remembered.length > 1 ? "them" : "it"} unless the task has changed; no new search is needed for that.` : "";
+    return formatHint(agent, text + note);
 }
 /**
  * Which candidates become a hint. A hint costs context on every prompt, so only a confident match is shown; the

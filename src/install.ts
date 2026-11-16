@@ -249,7 +249,7 @@ export const HERMES_GATE_MATCHER = "^(?:terminal|write_file|patch|execute_code|s
 /** A hook entry of ours in a Hermes config: the launcher followed by `hermes`. */
 // Only a command that starts with the launcher (optionally through node, as on Windows) is ours: a user's own
 // script that wraps or merely mentions it is theirs and stays.
-const HERMES_HOOK = /^\s*(?:\S*node(?:\.exe)?['"]?\s+)?['"]?[^'"\s]*skillrouter-hint(?:\.mjs)?['"]?\s+hermes(?:\s+gate)?\s*$/;
+const HERMES_HOOK = /^\s*(?:\S*node(?:\.exe)?['"]?\s+)?['"]?[^'"\s]*skillrouter-hint(?:\.mjs)?['"]?\s+hermes(?:\s+(?:gate|decision))?\s*$/;
 
 /**
  * What Hermes's own Python does to one HERMES_HOME (the main one or a profile): set the MCP entry, replace our hook
@@ -341,6 +341,8 @@ function installHermes(home: string, bin: string, opts: InstallOptions): string[
   const hooks = {
     pre_llm_call: { command: `${bin} hermes`, timeout: 5 },
     pre_tool_call: { matcher: HERMES_GATE_MATCHER, command: `${bin} hermes gate`, timeout: 5 },
+    // The turn's final reply, for what was decided about the skill check (accept rates, held-back skills); nothing is answered.
+    post_llm_call: { command: `${bin} hermes decision`, timeout: 5 },
   };
   const spec = JSON.stringify({ mcp: { command: NODE, args: [target.cli, "mcp"], env: { SKILLROUTER_AGENT: "hermes" } }, hooks, marker: HERMES_HOOK.source, accept: !!opts.acceptHooks });
   const homes = [root];
@@ -359,7 +361,7 @@ function installHermes(home: string, bin: string, opts: InstallOptions): string[
       failed.push(`${label} (${(String(err.stderr ?? "").trim().split("\n").pop() || err.message.split("\n")[0]).slice(0, 160)})`);
     }
   }
-  const out = [`${cfg}: skillrouter MCP and hooks (prompt check, search gate) set via Hermes config API for ${done.length ? done.join(", ") : "no home"}${failed.length ? `; FAILED, not changed: ${failed.join("; ")}` : ""}`];
+  const out = [`${cfg}: skillrouter MCP and hooks (prompt check, search gate, end-of-turn record) set via Hermes config API for ${done.length ? done.join(", ") : "no home"}${failed.length ? `; FAILED, not changed: ${failed.join("; ")}` : ""}`];
   // A home Hermes's API could not write still gets its MCP lines repointed where the plain layout allows.
   if (failed.length) out[0] += patchHermesProfiles(home);
   if (!done.length) return out;

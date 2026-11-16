@@ -394,8 +394,12 @@ export async function serve() {
             return body.length > MAX_PROMPT_BYTES ? null : hint(host, body);
         if (mode === "gate")
             return gateEvent(host, body, true); // the hook checked its own SKILLROUTER_GATE before asking
+        if (mode === "decision" && host === "hermes") {
+            decisionEvent(host, body);
+            return "{}";
+        } // Hermes's post_llm_call: the verdict is recorded, nothing is answered
         if (host === "hermes" || host === "antigravity")
-            return null; // these hosts have the prompt check and the gate only
+            return null; // otherwise these hosts have the prompt check and the gate only
         const agent = host;
         if (mode === "tool") {
             const first = await toolEvent(agent, body, false);

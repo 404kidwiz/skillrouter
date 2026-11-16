@@ -12,6 +12,8 @@
   - `report` counts strong, weak, empty, exploratory and failed searches and lists skill gaps: repeated searches that found nothing, and reads of names that are not in the index.
   - Hermes gets hooks: `install hermes` writes a prompt check (`pre_llm_call`) and the search gate (`pre_tool_call`) into the main home and every profile through Hermes's own config API, next to the MCP entry. Hermes runs them once approved there; `--accept-hooks` records that approval for unattended profiles. Checked against Hermes's own hook runner (payload, matcher, allowlist and response parsing).
   - Antigravity gets opt-in hooks: `install antigravity --hooks` writes a `PreInvocation` prompt check and a `PreToolUse` search gate into `~/.gemini/config/hooks.json`. Experimental: built to the documented contract, not run against a live app.
+  - Recurring requests: the prompt check remembers, per request (a hash of its text, numbers flattened; the text is not stored), which skills were loaded while answering it, and names them at once the next time the same request comes in, so a scheduled job no longer has to search again to find the skill it used the run before. `skillrouter recurring` lists what is remembered; `SKILLROUTER_RECURRING=0` turns it off.
+  - Hermes also gets an end-of-turn record (`post_llm_call`), so accept rates and held-back skills work there.
   - `skillrouter backups [--older-than DAYS] [--apply]` lists the backups folder and removes old entries on request, never the newest trim's restore manifest and archives.
   - The hook launcher's fallback Node must be version 20 or newer.
   - Skill gaps: one recurring job phrased many ways is reported as one line.

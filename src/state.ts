@@ -138,6 +138,17 @@ export function firstUse(session: string | undefined, useId: unknown): boolean {
   return true;
 }
 
+/** The request (a hash of its text, see recurring.ts) each of this session's turns is answering; the latest is the current one. */
+export function setPromptKey(session: string | undefined, turn: string | undefined, key: string): void {
+  const last = rows(session, "pkey.jsonl").pop();
+  if (last && last.key === key && last.turn === turn) return;
+  append(session, "pkey.jsonl", { turn, key });
+}
+export function promptKeyOf(session: string | undefined): string | undefined {
+  const last = rows(session, "pkey.jsonl").pop();
+  return typeof last?.key === "string" && /^[a-f0-9]{32}$/.test(last.key) ? last.key : undefined;
+}
+
 /**
  * For a host that sends no turn id (Antigravity): the turn is identified by `key` (a hash of the user input). With
  * `open`, a key different from the last one starts a new turn (`fresh`); without it, the turn is returned only when

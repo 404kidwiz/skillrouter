@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { creditRequest } from "./recurring.js";
+import { fromHost } from "./hosts.js";
 import { INDEX_FILE } from "./paths.js";
 import { getIndex, logUsage, search } from "./search.js";
 import { coreIds } from "./core.js";
@@ -134,6 +136,8 @@ export async function toolEvent(agent, input, inWorker, ctx) {
     const once = inWorker || firstUse(session, p?.tool_use_id);
     if (load && !inWorker && once) {
         addLoaded(session, load.skill, sub);
+        if (!sub)
+            creditRequest(session, load.skill); // what this request used, for its next run (recurring.ts)
         // A held-back skill the agent went and loaded anyway was wanted: count it as accepted (once per session).
         if (suppressed(agent).has(bareSkill(load.skill)) && claim(session, `rescued-${bareSkill(load.skill)}`))
             addVerdict(agent, [load.skill], []);
@@ -409,9 +413,12 @@ export function stopEvent(agent, input) {
  * OpenCode has no end-of-turn hook: its plugin sends each finished turn's assistant text
  * ({ session_id, prompt_id, text }) once a newer prompt shows the turn is over. Records the verdict only.
  */
-export function decisionEvent(agent, input) {
+export function decisionEvent(agent, rawInput) {
     let p;
     try {
+        const input = fromHost(agent, rawInput, "decision");
+        if (input === null)
+            return "";
         p = JSON.parse(input);
     }
     catch {

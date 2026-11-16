@@ -23,6 +23,7 @@ const USAGE = `skillrouter — a big skill library without the context bloat
                                           wire MCP + hooks: claude codex cursor gemini opencode hermes; MCP only: openclaude antigravity
                                           --accept-hooks: approve the router's hooks in Hermes (needed for gateway/cron profiles)
                                           --hooks: also install Antigravity's hooks (experimental)
+  skillrouter recurring [reset]          requests seen more than once and the skills they used (named at once next time); reset forgets
   skillrouter backups [--older-than DAYS] [--apply]
                                           list ~/.skillrouter/backups; --apply removes entries older than DAYS (default 30),
                                           never the newest trim's restore manifest and archives (dry run by default)
@@ -70,7 +71,8 @@ async function main(argv: string[]): Promise<void> {
       const { silent } = await import("./hosts.js");
       const worker = cmd === "hint-worker";
       // Hermes and Antigravity have the prompt check and the gate; any other mode there has nothing to do.
-      if ((agent === "hermes" || agent === "antigravity") && mode && mode !== "gate") return finish(silent(agent, false), worker);
+      // Hermes and Antigravity have the prompt check and the gate, Hermes also the end-of-turn record; any other mode there has nothing to do.
+      if ((agent === "hermes" || agent === "antigravity") && mode && mode !== "gate" && !(agent === "hermes" && mode === "decision")) return finish(silent(agent, false), worker);
       const input = await readHintInput(agent, 1500, mode ? 8 * 1024 * 1024 : 256 * 1024);
       if (input === null) return finish(mode ? silent(agent, mode === "gate") : formatHint(agent, ""), worker);
       // SKILLROUTER_GATE=0 is the hook's own environment: the warm service has its own and must not be asked.
@@ -85,6 +87,7 @@ async function main(argv: string[]): Promise<void> {
         }
       }
       if (mode === "gate") { const { gateEvent } = await import("./gate.js"); return finish(gateEvent(agent, input), worker); }
+      if (agent === "hermes" && mode === "decision") { const { decisionEvent } = await import("./events.js"); decisionEvent(agent, input); return finish("{}", worker); }
       if (agent === "hermes" || agent === "antigravity") {
         // The prompt check, in this process: these hosts allow seconds, and the killable-worker path below is not needed for them.
         return finish(await hint(agent, input), worker);
@@ -228,6 +231,12 @@ async function main(argv: string[]): Promise<void> {
       }
       if (!apply) console.log("Nothing changed. Re-run with --apply.");
       else console.log("Restored to original agent folders. Re-run skillrouter index if needed.");
+      break;
+    }
+    case "recurring": {
+      const { formatRecurring, forgetRecurring } = await import("./recurring.js");
+      if (args[0] === "reset") { forgetRecurring(); console.log("Forgot every remembered request."); break; }
+      console.log(formatRecurring());
       break;
     }
     case "backups": {

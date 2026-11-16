@@ -10,7 +10,8 @@ import { hostTurn } from "./state.js";
  *
  * Hermes (shell hooks in config.yaml, docs: user-guide/features/hooks.md, "Shell Hooks"):
  *   stdin  { hook_event_name, tool_name, tool_input, session_id, cwd, profile, extra: { user_message, turn_id, tool_call_id, … } }
- *   events pre_llm_call (once per user turn; answer { context }) and pre_tool_call (answer { decision: "block", reason })
+ *   events pre_llm_call (once per user turn; answer { context }), pre_tool_call (answer { decision: "block", reason })
+ *          and post_llm_call (the final reply in extra.assistant_response; nothing is answered)
  *   tools  terminal{command} write_file{path} patch{path} read_file{path} skill_view{name} mcp_<server>_<tool>
  *
  * Antigravity (hooks.json, docs: antigravity.google/docs/hooks):
@@ -23,7 +24,9 @@ import { hostTurn } from "./state.js";
  * Returns the rewritten JSON, the input itself when it is not in the host's shape (already generic: tests, probes),
  * or null when there is nothing to do for this event (Antigravity's second and later model calls of a turn).
  */
-export function fromHost(agent: HookAgent, input: string, gate: boolean): string | null {
+export type HostMode = "prompt" | "gate" | "decision";
+export function fromHost(agent: HookAgent, input: string, mode: HostMode): string | null {
+  const gate = mode === "gate";
   if (agent !== "hermes" && agent !== "antigravity") return input;
   let p: any;
   try { p = JSON.parse(input); } catch { return input; }
@@ -32,11 +35,14 @@ export function fromHost(agent: HookAgent, input: string, gate: boolean): string
     if (typeof p.hook_event_name !== "string") return input;
     const extra = p.extra && typeof p.extra === "object" ? p.extra : {};
     const base = { session_id: str(p.session_id), prompt_id: str(extra.turn_id), cwd: str(p.cwd) };
+    // post_llm_call: the turn's final reply, read for its `Skills:` line (what was decided about the skill check).
+    if (mode === "decision") return JSON.stringify({ ...base, text: typeof extra.assistant_response === "string" ? extra.assistant_response : "" });
     if (!gate) return JSON.stringify({ ...base, prompt: textOf(extra.user_message) });
     const tool = hermesTool(str(p.tool_name) ?? "", p.tool_input);
     return JSON.stringify({ ...base, tool_use_id: str(extra.tool_call_id), ...tool });
   }
   if (typeof p.conversationId !== "string") return input;
+  if (mode === "decision") return null; // Antigravity has no end-of-turn hook wired here
   const session = sha(p.conversationId), prompt = typeof p.lastUserInput === "string" ? p.lastUserInput : "";
   const base = { session_id: p.conversationId, cwd: Array.isArray(p.workspacePaths) ? str(p.workspacePaths[0]) : undefined };
   if (!gate) {
