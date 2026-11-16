@@ -126,6 +126,8 @@ export function markTurn(session, turn) {
         return;
     append(session, "turns.jsonl", { turn });
 }
+/** Whether the prompt hook has ever marked a turn in this session. False for a whole session means the host sent tool events but no prompt event. */
+export function turnSeen(session) { return rows(session, "turns.jsonl").length > 0; }
 export function addTool(session, turn, sub) { append(session, "tools.jsonl", { turn, sub }); }
 /**
  * True the first time a tool call (its host-given id) is seen in this session, and records it. A hook run again after

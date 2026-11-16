@@ -4,7 +4,7 @@ import { fromHost, silent } from "./hosts.js";
 import { sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, isWork, shellCommand } from "./triggers.js";
 import { skillLoadOf } from "./events.js";
-import { addLoaded, addSearched, claim, claimDenial, gateProgress, gatedTurn, loadedSkills } from "./state.js";
+import { addLoaded, addSearched, claim, claimDenial, gateProgress, gatedTurn, loadedSkills, turnSeen } from "./state.js";
 import { creditRequest, knownSkill } from "./recurring.js";
 
 /**
@@ -79,6 +79,10 @@ function gateDecision(agent: HookAgent, rawInput: string, enabled: boolean): str
     const session = sessionHash(sessionOf(p));
     if (!session) return "";
     const turn = sessionHash(turnOf(p));
+    // A tool event in a session whose prompt was never seen: the host ran this hook but not the prompt hook (Cursor's CLI
+    // sends no beforeSubmitPrompt; a Codex prompt hook not yet trusted). The gate cannot arm without a prompt, so nothing
+    // else would be logged and doctor would read the host as silent. One row per session says what did happen.
+    if (!turnSeen(session) && claim(session, "no-prompt-event")) logUsage({ client: `hook/${agent}`, agent, tool: "gate", reason: "no_prompt_event", session });
     const lookup = lookupOf(p);
     if (lookup) {
       addSearched(session, turn, undefined, lookup);

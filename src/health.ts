@@ -142,8 +142,14 @@ export function health(home = HOME): string[] {
     for (const row of hooks) reasons.set(row.reason ?? "legacy/unknown", (reasons.get(row.reason ?? "legacy/unknown") ?? 0) + 1);
     const count = (tool: string, reason: string) => own.filter((r) => r.tool === tool && r.reason === reason).length;
     // Configured but silent: either the host was not used, or its hooks stopped firing. Only a prompt there tells which.
-    const quiet = /^(configured|plugin present)/.test(config.hook) && !hooks.length
-      ? `\n    NOTE: hooks are configured but none ran in 7 days. If you used ${agent} this week its hooks are not firing: send one prompt there, then rerun doctor.` : "";
+    // Tool hooks ran but the prompt hook never did (gate.ts logs one "no_prompt_event" row per such session): the hooks
+    // are firing, yet with no prompt to check, the prompt check and the search gate do nothing there. Saying "not firing"
+    // would send the user after the wrong problem.
+    const toolOnly = own.filter((r) => r.tool === "gate" && r.reason === "no_prompt_event").sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+    const quiet = !/^(configured|plugin present)/.test(config.hook) || hooks.length ? ""
+      : toolOnly.length
+        ? `\n    NOTE: tool hooks ran (last ${toolOnly[0].ts}, ${toolOnly.length} session${toolOnly.length === 1 ? "" : "s"}) but no prompt event arrived in 7 days, so the prompt check and search gate did nothing there.${agent === "cursor" ? " Cursor's CLI (cursor-agent) does not send beforeSubmitPrompt; its editor does." : " Check that the host trusts the prompt hook."}`
+        : `\n    NOTE: hooks are configured but none ran in 7 days. If you used ${agent} this week its hooks are not firing: send one prompt there, then rerun doctor.`;
     out.push(`  ${agent}: hook ${config.hook}; MCP ${config.mcp}${extra}${quiet}`,
       `    last hook: ${hooks[0]?.ts ?? "not observed"}; last MCP activity: ${mcp[0]?.ts ?? "not observed"}; failures: ${failures}`,
       `    hook outcomes: ${[...reasons].map(([reason, n]) => `${reason}=${n}`).join(", ") || "none observed"}`,

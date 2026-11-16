@@ -113,6 +113,9 @@ export function markTurn(session: string | undefined, turn?: string): void {
   append(session, "turns.jsonl", { turn });
 }
 
+/** Whether the prompt hook has ever marked a turn in this session. False for a whole session means the host sent tool events but no prompt event. */
+export function turnSeen(session: string | undefined): boolean { return rows(session, "turns.jsonl").length > 0; }
+
 export function addTool(session: string | undefined, turn?: string, sub?: string): void { append(session, "tools.jsonl", { turn, sub }); }
 
 /**
