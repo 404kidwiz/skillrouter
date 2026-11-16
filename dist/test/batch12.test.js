@@ -243,6 +243,11 @@ svc("hostile or broken clients can't hurt it: garbage, oversize, stalls, floods"
     for (let i = 0; i < 50 && !(still = await query("claude", "-", promptBody(`ho-1-${i}`), PATIENT)); i++)
         await sleep(200);
     assert.match(still, /python-testing/, "still answering after all of it");
+    // The 400 ms receive limit above is there to make the stalled-client checks quick. The size and concurrency checks below
+    // are not about stalls, and under that limit a busy machine could not deliver a 1.5 MB body in time (the service dropped
+    // it, as it should). They get a service with a limit no honest client reaches.
+    await down();
+    await up({ SKILLROUTER_SERVICE_RECEIVE_MS: String(PATIENT) });
     assert.equal(await query("claude", "tool", JSON.stringify({ session_id: "ho-2", tool_name: "Bash", tool_input: { command: "ls" }, tool_response: "x".repeat(900_000) }), PATIENT), "", "a 900 KB tool payload is fine");
     assert.equal(await query("claude", "tool", JSON.stringify({ session_id: "ho-2b", tool_name: "Bash", tool_input: { command: "ls" }, tool_response: "x".repeat(1_500_000) })), null, "beyond 1 MB clients keep the work (the hook is faster than shipping it)");
     assert.equal(await raw(`SR1 claude tool ${Buffer.byteLength(JSON.stringify({ session_id: "ho-2c", tool_name: "Bash", tool_input: { command: "ls" }, pad: "x".repeat(1_500_000) }))}\n${JSON.stringify({ session_id: "ho-2c", tool_name: "Bash", tool_input: { command: "ls" }, pad: "x".repeat(1_500_000) })}`, PATIENT), "OK 0\n", "the service itself still accepts such a payload, up to its own 8 MB limit");
@@ -296,10 +301,15 @@ svc("the launcher: falls back and starts the service when there is none, then us
     const warm = call("ln-2");
     assert.equal(mask(warm.stdout), mask(cold.stdout.replace(/ln-1/g, "ln-2")));
     assert.equal((await status()).requests, requests + 1, "the warm call went through the service");
-    const t0 = Date.now();
-    for (let i = 0; i < 5; i++)
-        call(`ln-t${i}`, ["claude", "tool"], {}, JSON.stringify({ session_id: "ln-tool", tool_name: "Bash", tool_input: { command: "ls" } }));
-    assert.ok((Date.now() - t0) / 5 < 250, `tool hooks through the service take ${(Date.now() - t0) / 5} ms each`);
+    // What the service path adds on top of starting sh and perl, which the launcher cannot avoid and which is all a busy
+    // machine changes: the best of five, less the best bare `sh -c 'perl -e 1'`. The mean of five on the clock read 260.8 ms
+    // on a Mac at load average 135, where starting any process took that long.
+    const timed = (f) => { const t = performance.now(); f(); return performance.now() - t; };
+    const bare = Math.min(...Array.from({ length: 5 }, () => timed(() => spawnSync("sh", ["-c", "perl -e 1"]))));
+    const before = (await status()).requests;
+    const each = Array.from({ length: 5 }, (_, i) => timed(() => call(`ln-t${i}`, ["claude", "tool"], {}, JSON.stringify({ session_id: "ln-tool", tool_name: "Bash", tool_input: { command: "ls" } }))));
+    assert.equal((await status()).requests, before + 5, "the tool hooks went through the service");
+    assert.ok(Math.min(...each) - bare < 250, `tool hooks through the service add ${Math.round(Math.min(...each) - bare)} ms (calls ${each.map(Math.round).join(", ")}; bare sh+perl ${Math.round(bare)})`);
     const off = call("ln-3", ["claude"], { SKILLROUTER_SERVICE: "0" });
     assert.match(off.stdout, /python-testing/);
     assert.equal((await status()).requests, requests + 6, "SKILLROUTER_SERVICE=0 bypasses it");
@@ -790,6 +800,9 @@ svc("a cold burst of hooks starts one service, and tool calls are counted once",
     assert.equal(await ping(socketPath(), 200), "dead");
     fs.rmSync(path.join(runDir(), "svc.starting"), { recursive: true, force: true });
     const startedBefore = usageRows((r) => r.tool === "service" && r.reason === "started").length;
+    // How long this machine takes to start Node at all, right now: the yardstick for the answers below.
+    const bare = Math.min(...Array.from({ length: 3 }, () => { const t = performance.now(); spawnSync(process.execPath, ["-e", "0"]); return performance.now() - t; }));
+    const timeoutsBefore = usageRows((r) => r.tool === "hint" && r.reason === "timeout").length;
     const outs = await Promise.all(Array.from({ length: 10 }, (_, i) => new Promise((resolve) => {
         const c = spawn("sh", [launcherPath, "claude"], { stdio: ["pipe", "pipe", "ignore"], env: process.env });
         let out = "";
@@ -797,7 +810,17 @@ svc("a cold burst of hooks starts one service, and tool calls are counted once",
         c.on("close", () => resolve(out));
         c.stdin.end(promptBody("cb-" + i));
     })));
-    assert.ok(outs.every((o) => /python-testing/.test(o)), "every hook still answered");
+    // A cold hook gives its worker 1.5 s and then answers with nothing, so a prompt is never held up. Ten at once fit in that
+    // easily on a machine that starts Node in its usual 30 to 60 ms, and every one must answer. Where starting Node alone takes
+    // five times that (a Mac at load average 66 failed this), a hook may run out of time: it must then have given up the
+    // designed way, with an empty answer and a "timeout" row, never with a crash or half an answer.
+    const unanswered = outs.filter((o) => !/python-testing/.test(o));
+    if (bare < 250)
+        assert.equal(unanswered.length, 0, `every hook still answered (Node starts in ${Math.round(bare)} ms)`);
+    else {
+        assert.ok(unanswered.every((o) => o.trim() === ""), "a hook that ran out of time answers with nothing");
+        assert.ok(usageRows((r) => r.tool === "hint" && r.reason === "timeout").length - timeoutsBefore >= unanswered.length, "and says so in the log");
+    }
     assert.ok(await waitFor(aliveNow, 10000), "and a service came up");
     await sleep(500);
     assert.equal(usageRows((r) => r.tool === "service" && r.reason === "started").length - startedBefore, 1, "exactly one service was started by the burst");

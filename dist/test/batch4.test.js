@@ -33,11 +33,20 @@ saveIndex({ builtAt: INDEX_BUILT, roots: [], tokenizer: 2, skills: [
 test("a worker killed after writing its answer keeps that answer (slow model load)", async () => {
     const late = path.join(home, "late.cjs");
     fs.writeFileSync(late, `process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:"kept"}}) + "\\n"); setInterval(() => {}, 1000);`);
-    const out = await runHint("claude", "{}", late, 300);
+    // The worker never exits, so each run lasts its whole timeout: short first, longer only if Node had not started and
+    // written by then. On a Mac at load average 116, 300 ms was not enough to start Node, and there was no answer to keep.
+    // An answer that is really dropped is missing at every length.
+    let out = "", waited = 0;
+    for (waited of [300, 2000, 10000]) {
+        out = await runHint("claude", "{}", late, waited);
+        if (out)
+            break;
+    }
     assert.equal(JSON.parse(out).hookSpecificOutput.additionalContext, "kept");
     const partial = path.join(home, "partial.cjs");
     fs.writeFileSync(partial, `process.stdout.write('{"hookSpecific'); setInterval(() => {}, 1000);`);
-    assert.equal(await runHint("claude", "{}", partial, 300), "", "a cut-off answer is not passed on");
+    // Same wait as the run that had time to write: the cut-off text is there when the worker is killed.
+    assert.equal(await runHint("claude", "{}", partial, waited), "", "a cut-off answer is not passed on");
 });
 test("vectors built for another index are stale: semantic layer reports it and the lexical gate decides", async () => {
     saveVectors(["python-testing"], [Array(384).fill(0.05)], "some-other-index");

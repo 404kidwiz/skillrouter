@@ -230,13 +230,22 @@ test("one session's repeated declines count once", () => {
 
 test("verdicts.json: concurrent writers lose nothing; bad files are set aside; bad entries are skipped", () => {
   resetVerdicts();
+  // A writer that cannot get the lock in half a second drops its count on purpose (a hook must not stall), and says so.
+  // The writers here try again, so the totals test the lock (no recorded count is ever lost) and not the machine: on a Mac
+  // at load average 70, 3 of 240 writers gave up and the old exact total failed.
+  const lock = path.join(process.env.SKILLROUTER_HOME!, "verdicts.json.lock");
+  fs.mkdirSync(process.env.SKILLROUTER_HOME!, { recursive: true }); fs.writeFileSync(lock, "");
+  assert.equal(addVerdict("claude", [], ["held-out"]), false, "the lock is held: the count is dropped and the caller is told");
+  fs.rmSync(lock);
+  assert.equal(addVerdict("claude", [], ["held-out"]), true);
+  assert.equal(readVerdicts().agents.claude["held-out"].declined, 1, "only the recorded one counted");
   const lib = pathToFileURL(fileURLToPath(new URL("../src/verdicts.js", import.meta.url))).href;
   const procs = Array.from({ length: 8 }, () => spawnSync(process.execPath, ["--input-type=module", "-e",
-    `const m = await import(${JSON.stringify(lib)}); for (let i = 0; i < 15; i++) m.addVerdict("claude", [], ["race-skill"]);`], { env: process.env }));
+    `const m = await import(${JSON.stringify(lib)}); for (let i = 0; i < 15; i++) while (!m.addVerdict("claude", [], ["race-skill"]));`], { env: process.env }));
   assert.ok(procs.every((p) => p.status === 0));
   // spawnSync runs them one after another; run them truly in parallel too:
   return Promise.all(Array.from({ length: 8 }, () => new Promise((r) => spawn(process.execPath, ["--input-type=module", "-e",
-    `const m = await import(${JSON.stringify(lib)}); for (let i = 0; i < 15; i++) m.addVerdict("claude", ["race-skill"], []);`], { env: process.env }).on("exit", r)))).then(() => {
+    `const m = await import(${JSON.stringify(lib)}); for (let i = 0; i < 15; i++) while (!m.addVerdict("claude", ["race-skill"], []));`], { env: process.env }).on("exit", r)))).then(() => {
     const e = readVerdicts().agents.claude["race-skill"];
     assert.deepEqual([e.declined, e.accepted], [120, 120]);
     const file = path.join(process.env.SKILLROUTER_HOME!, "verdicts.json");
@@ -319,7 +328,10 @@ test("second QA pass: namespaced ids, early lines, lapsed holds, per-host holds,
   assert.equal(readVerdicts().agents.gemini["gemini-noise"].accepted, 1);
   assert.deepEqual([...suppressed("gemini")], []);
   // Parsing stays linear.
-  const t0 = Date.now(); decisionOf([("Skills: none (x)\n").repeat(20000)]); assert.ok(Date.now() - t0 < 500, `took ${Date.now() - t0} ms`);
+  // Measured in CPU time, not on the clock: this takes about 10 ms, and on a Mac at load average 116 the process was simply
+  // not scheduled for half a second (`took 517 ms`). A parser gone quadratic costs seconds of CPU either way.
+  const c0 = process.cpuUsage(); decisionOf([("Skills: none (x)\n").repeat(20000)]); const cpu = process.cpuUsage(c0);
+  assert.ok((cpu.user + cpu.system) / 1000 < 500, `took ${Math.round((cpu.user + cpu.system) / 1000)} ms of CPU`);
   // Odd skill names are plain keys.
   addVerdict("claude", [], ["constructor", "__proto__"]);
   assert.equal(({} as any).shown, undefined);
