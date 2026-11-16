@@ -306,16 +306,21 @@ test("tool hooks with no prompt event are recorded once per session, and doctor 
   assert.equal(rows().filter((r) => r.reason === "no_prompt_event").length, before + 1, "one row for the session, not one per call");
   const row = rows().filter((r) => r.reason === "no_prompt_event").pop();
   assert.deepEqual([row.client, row.agent, row.tool], ["hook/cursor", "cursor", "gate"]);
+  // Cursor's CLI runs Claude Code's hooks too, on the same session id: that copy must not use up Cursor's row.
+  const both = session();
+  gate("claude", { session_id: both, tool_name: "Bash", tool_input: { command: "ls" } });
+  gate("cursor", { conversation_id: both, generation_id: both, tool_name: "Shell", tool_input: { command: "ls" } });
+  assert.deepEqual(rows().filter((r) => r.reason === "no_prompt_event").slice(-2).map((r) => r.agent), ["claude", "cursor"]);
   // A session whose prompt was seen is not such a session.
   const seen = session(); await prompt(seen, "g1", task, "cursor");
   gate("cursor", { conversation_id: seen, generation_id: "g1", tool_name: "Shell", tool_input: { command: "ls" } });
-  assert.equal(rows().filter((r) => r.reason === "no_prompt_event").length, before + 1);
+  assert.equal(rows().filter((r) => r.reason === "no_prompt_event").length, before + 3);
 
   const h = fs.mkdtempSync(path.join(os.tmpdir(), "sr-gate-quiet-"));
   for (const a of ["cursor", "gemini"] as const) install(a, h);
   // Doctor reads the last week of the log: leave only what a CLI-only week would hold.
   fs.writeFileSync(log, rows().filter((r) => r.reason === "no_prompt_event" && r.agent === "cursor").map((r) => JSON.stringify(r)).join("\n") + "\n");
   const text = health(h).join("\n");
-  assert.match(text, /cursor: [^\n]*\n    NOTE: tool hooks ran \(last [^,]+, 1 session\) but no prompt event arrived in 7 days[^\n]*cursor-agent\) does not send beforeSubmitPrompt/);
+  assert.match(text, /cursor: [^\n]*\n    NOTE: tool hooks ran \(last [^,]+, 2 sessions\) but no prompt event arrived in 7 days[^\n]*cursor-agent\) does not send beforeSubmitPrompt/);
   assert.match(text, /gemini: [^\n]*\n    NOTE: hooks are configured but none ran in 7 days/, "a host with no rows at all keeps the old note");
 });

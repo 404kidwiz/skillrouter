@@ -82,7 +82,9 @@ function gateDecision(agent, rawInput, enabled) {
         // A tool event in a session whose prompt was never seen: the host ran this hook but not the prompt hook (Cursor's CLI
         // sends no beforeSubmitPrompt; a Codex prompt hook not yet trusted). The gate cannot arm without a prompt, so nothing
         // else would be logged and doctor would read the host as silent. One row per session says what did happen.
-        if (!turnSeen(session) && claim(session, "no-prompt-event"))
+        // (Per host: Cursor's CLI also runs Claude Code's hooks from ~/.claude/settings.json on the same session id, and that
+        // copy would otherwise take the session's one row and label it "claude".)
+        if (!turnSeen(session) && claim(session, `no-prompt-event-${agent}`))
             logUsage({ client: `hook/${agent}`, agent, tool: "gate", reason: "no_prompt_event", session });
         const lookup = lookupOf(p);
         if (lookup) {
