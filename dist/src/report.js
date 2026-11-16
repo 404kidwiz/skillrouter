@@ -78,7 +78,7 @@ export function gapLines(rows, min = 3) {
     const groups = [];
     const byWord = new Map(); // word -> groups whose first query has it, so a query meets only groups it can share words with
     const MAX_GROUPS = 3000; // a log of nothing but distinct queries: groups seen once make way for new ones
-    const COMMON = 200; // a word in this many groups says little about which group a query belongs to, and walking them all is the slow part
+    const COMMON = 1500; // a word in this many groups says nothing about which one a query belongs to, and walking them all is the slow part
     const reindex = () => { byWord.clear(); groups.forEach((g, i) => { for (const t of g.words) {
         const list = byWord.get(t);
         if (list)
@@ -110,21 +110,23 @@ export function gapLines(rows, min = 3) {
                 bestShared = both;
             }
         }
+        let g;
         if (best >= 0) {
-            const g = groups[best];
+            g = groups[best];
             g.n++;
             g.agents.add(agentOf(r));
-            if (w.size >= 2 && q.length < g.sample.length)
-                g.sample = q;
+            if (g.members.length < 60)
+                g.members.push(q);
         }
         else {
             if (groups.length >= MAX_GROUPS) {
-                const kept = groups.filter((g) => g.n > 1);
+                const kept = groups.filter((x) => x.n > 1);
                 groups.length = 0;
                 groups.push(...kept);
                 reindex();
             }
-            groups.push({ words: w, n: 1, agents: new Set([agentOf(r)]), sample: q });
+            g = { words: w, n: 1, agents: new Set([agentOf(r)]), members: [q], seen: new Map() };
+            groups.push(g);
             for (const t of w) {
                 const list = byWord.get(t);
                 if (list)
@@ -133,11 +135,30 @@ export function gapLines(rows, min = 3) {
                     byWord.set(t, [groups.length - 1]);
             }
         }
+        for (const t of w)
+            g.seen.set(t, (g.seen.get(t) ?? 0) + 1);
     }
+    // The line shown for a group: the member that carries most of the words the group's queries have in common, the
+    // shortest such one (the shortest member alone can be an outlier that merely shares the boilerplate).
+    const sampleOf = (g) => {
+        const core = new Set([...g.seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([t]) => t));
+        let pick = g.members[0], score = -1;
+        for (const m of g.members) {
+            let n = 0;
+            for (const t of words(m))
+                if (core.has(t))
+                    n++;
+            if (n > score || (n === score && m.length < pick.length)) {
+                pick = m;
+                score = n;
+            }
+        }
+        return pick;
+    };
     const out = [];
     const repeated = groups.filter((g) => g.n >= min).sort((a, b) => b.n - a.n).slice(0, 10);
     if (repeated.length)
-        out.push("", "Skill gaps (repeated searches that found nothing; write or add a skill, or reword the job):", ...repeated.map((g) => `  ${String(g.n).padStart(4)}  ${[...g.agents].sort().join("+")}: ${g.sample.slice(0, 110)}`));
+        out.push("", "Skill gaps (repeated searches that found nothing; write or add a skill, or reword the job):", ...repeated.map((g) => `  ${String(g.n).padStart(4)}  ${[...g.agents].sort().join("+")}: ${sampleOf(g).slice(0, 110)}`));
     const missing = new Map();
     for (const r of rows)
         if (r.tool === "read_skill" && r.found === false && r.skill && !r.reason)

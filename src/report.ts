@@ -68,10 +68,11 @@ export function gapLines(rows: Row[], min = 3): string[] {
   // Words that say nothing about the task; without this list "the" or "for" alone tie unrelated queries together.
   const STOP = new Set("the and for with from into that this those these your our are was were has have had not but can use using via per its".split(" "));
   const words = (q: string) => new Set(q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w)));
-  const groups: { words: Set<string>; n: number; agents: Set<string>; sample: string }[] = [];
+  interface Group { words: Set<string>; n: number; agents: Set<string>; members: string[]; seen: Map<string, number> }
+  const groups: Group[] = [];
   const byWord = new Map<string, number[]>(); // word -> groups whose first query has it, so a query meets only groups it can share words with
   const MAX_GROUPS = 3000; // a log of nothing but distinct queries: groups seen once make way for new ones
-  const COMMON = 200; // a word in this many groups says little about which group a query belongs to, and walking them all is the slow part
+  const COMMON = 1500; // a word in this many groups says nothing about which one a query belongs to, and walking them all is the slow part
   const reindex = () => { byWord.clear(); groups.forEach((g, i) => { for (const t of g.words) { const list = byWord.get(t); if (list) list.push(i); else byWord.set(t, [i]); } }); };
   for (const r of rows) {
     const q = (r as { query?: unknown }).query;
@@ -87,17 +88,28 @@ export function gapLines(rows: Row[], min = 3): string[] {
       const same = both / small >= 0.5 && (both >= Math.min(3, small)) && (both >= 2 || large === 1);
       if (same && both > bestShared) { best = g; bestShared = both; }
     }
-    if (best >= 0) { const g = groups[best]; g.n++; g.agents.add(agentOf(r)); if (w.size >= 2 && q.length < g.sample.length) g.sample = q; }
+    let g: Group;
+    if (best >= 0) { g = groups[best]; g.n++; g.agents.add(agentOf(r)); if (g.members.length < 60) g.members.push(q); }
     else {
-      if (groups.length >= MAX_GROUPS) { const kept = groups.filter((g) => g.n > 1); groups.length = 0; groups.push(...kept); reindex(); }
-      groups.push({ words: w, n: 1, agents: new Set([agentOf(r)]), sample: q });
+      if (groups.length >= MAX_GROUPS) { const kept = groups.filter((x) => x.n > 1); groups.length = 0; groups.push(...kept); reindex(); }
+      g = { words: w, n: 1, agents: new Set([agentOf(r)]), members: [q], seen: new Map() };
+      groups.push(g);
       for (const t of w) { const list = byWord.get(t); if (list) list.push(groups.length - 1); else byWord.set(t, [groups.length - 1]); }
     }
+    for (const t of w) g.seen.set(t, (g.seen.get(t) ?? 0) + 1);
   }
+  // The line shown for a group: the member that carries most of the words the group's queries have in common, the
+  // shortest such one (the shortest member alone can be an outlier that merely shares the boilerplate).
+  const sampleOf = (g: Group) => {
+    const core = new Set([...g.seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([t]) => t));
+    let pick = g.members[0], score = -1;
+    for (const m of g.members) { let n = 0; for (const t of words(m)) if (core.has(t)) n++; if (n > score || (n === score && m.length < pick.length)) { pick = m; score = n; } }
+    return pick;
+  };
   const out: string[] = [];
   const repeated = groups.filter((g) => g.n >= min).sort((a, b) => b.n - a.n).slice(0, 10);
   if (repeated.length) out.push("", "Skill gaps (repeated searches that found nothing; write or add a skill, or reword the job):",
-    ...repeated.map((g) => `  ${String(g.n).padStart(4)}  ${[...g.agents].sort().join("+")}: ${g.sample.slice(0, 110)}`));
+    ...repeated.map((g) => `  ${String(g.n).padStart(4)}  ${[...g.agents].sort().join("+")}: ${sampleOf(g).slice(0, 110)}`));
   const missing = new Map<string, number>();
   for (const r of rows) if (r.tool === "read_skill" && r.found === false && r.skill && !r.reason) missing.set(r.skill, (missing.get(r.skill) ?? 0) + 1);
   const names = [...missing.entries()].filter(([, n]) => n >= min).sort((a, b) => b[1] - a[1]).slice(0, 10);
