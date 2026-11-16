@@ -149,7 +149,11 @@ test("the Windows process query takes only a real pid, and its answer parses", (
 svc("a process's command line and age are read on this OS, so only a real service can be killed", async () => {
   const bystander = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)", "bystander-marker"], { stdio: "ignore", windowsHide: true });
   bystander.unref(); procs.push(bystander);
-  const info = processInfo(bystander.pid!);
+  // On Windows the read goes through PowerShell, which processInfo gives 10 s. A cold start on a busy CI runner has
+  // taken longer (this test failed at 10,093 ms, then passed on a rerun); null there means "cannot tell", which the
+  // service treats as "do not kill". The test is about what a read returns, so it asks again once PowerShell is warm.
+  const read = (pid: number) => processInfo(pid) ?? processInfo(pid) ?? processInfo(pid);
+  const info = read(bystander.pid!);
   assert.ok(info, "found it");
   assert.match(info!.command, /bystander-marker/);
   assert.ok(!isServiceCommand(info!.command));
@@ -158,7 +162,7 @@ svc("a process's command line and age are read on this OS, so only a real servic
   assert.ok(await waitFor(() => gone(bystander)));
   const service = startService();
   assert.ok(await waitFor(aliveNow), "a service came up");
-  const real = processInfo(service.pid!);
+  const real = read(service.pid!);
   assert.ok(real && isServiceCommand(real.command), `a running service reads as one: ${real?.command}`);
   assert.equal(processInfo(2 ** 22 - 3), null, "a pid nobody has");
 });
