@@ -1,0 +1,205 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "skillrouter-rel2-"));
+process.env.HOME = home;
+process.env.USERPROFILE = home;
+process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
+process.env.SKILLROUTER_SERVICE = "0";
+process.on("exit", () => fs.rmSync(home, { recursive: true, force: true }));
+
+const { buildIndexFrom, saveIndex } = await import("../src/index.js");
+const { resetIndexCache, findSkill, logUsage, usageArchives } = await import("../src/search.js");
+const { routeSearch, selectWeak, formatSearch } = await import("../src/routing.js");
+const { volatileNode, launcherScript, writeLauncher, snapshotApp, patchHermesProfiles, setInstallCli, pinProblems, NODE } = await import("../src/install.js");
+const { gapLines, readLog } = await import("../src/report.js");
+const posix = process.platform !== "win32";
+
+const root = path.join(home, "skills");
+function fixture(name: string, description: string) {
+  const dir = path.join(root, name); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\nbody of ${name}\n`);
+}
+fixture("python-testing", "Write Python pytest tests with fixtures and mocks for regression coverage.");
+fixture("vercel-deployment", "Deploy Next.js applications to Vercel with environment configuration and domains.");
+for (let i = 0; i < 80; i++) fixture(`filler-${i}`, `Pottery kiln glaze clay wheel hobby ${i}`);
+const built = buildIndexFrom([root]);
+saveIndex(built); resetIndexCache();
+
+const hit = (id: string, over: Record<string, unknown>) => ({ skill: { id, name: id, description: "A description long enough to count as one.", path: "/x", tokens: [] } as any, score: 1, raw: 0, matched: 0, ...over }) as any;
+
+test("the weak tier keeps candidates with real evidence and drops the rest", () => {
+  const picked = selectWeak([
+    hit("meaning-and-a-word", { score: 1, cos: 0.44, matched: 1, raw: 9 }),
+    hit("words-with-some-meaning", { score: 0.95, cos: 0.34, matched: 2, raw: 16 }),
+    hit("meaning-without-a-word", { score: 0.9, cos: 0.47, matched: 0, raw: 0 }),
+    hit("one-word-little-meaning", { score: 0.9, cos: 0.36, matched: 1, raw: 18 }),
+    hit("far-behind-the-best", { score: 0.5, cos: 0.45, matched: 2, raw: 18 }),
+  ], 20);
+  assert.deepEqual(picked.map((h: any) => h.skill.id), ["meaning-and-a-word", "words-with-some-meaning"]);
+  // Without the semantic layer: two matched words at 75% of the lexical floor.
+  assert.deepEqual(selectWeak([hit("a", { raw: 15.5, matched: 2 }), hit("b", { score: 0.9, raw: 14, matched: 2 }), hit("c", { score: 0.9, raw: 30, matched: 1 })], 20).map((h: any) => h.skill.id), ["a"]);
+  // Never more than three, and a skill without a real description is not offered.
+  assert.equal(selectWeak([1, 2, 3, 4, 5].map((i) => hit(`s${i}`, { cos: 0.45, matched: 2, raw: 20 })), 20, 5).length, 3);
+  const bare = hit("bare", { cos: 0.6, matched: 3, raw: 40 }); bare.skill.description = "short";
+  assert.equal(selectWeak([bare], 20).length, 0);
+  process.env.SKILLROUTER_WEAK = "0";
+  try { assert.equal(selectWeak([hit("a", { cos: 0.6, matched: 3, raw: 40 })], 20).length, 0); } finally { delete process.env.SKILLROUTER_WEAK; }
+});
+
+test("a search with no strong match answers with labeled weak candidates, and a strong match is unchanged", async () => {
+  const strong = await routeSearch("write python pytest regression tests", { lexicalOnly: true });
+  assert.equal(strong.weak, false);
+  assert.equal(strong.hits[0]?.skill.name, "python-testing");
+  assert.doesNotMatch(formatSearch(strong), /No strong match/);
+  // A result made of weak candidates is worded as such, each one labeled, with no instruction to load them all.
+  const weak = { ...strong, weak: true, decisions: strong.decisions.map((d: any) => ({ ...d, accepted: false })) };
+  const text = formatSearch(weak);
+  assert.match(text, /^No strong match\. Weak candidates follow/);
+  assert.match(text, /; weak\)/);
+  assert.doesNotMatch(text, /relevant\)/);
+  const none = await routeSearch("zzqx unrelated gibberish", { lexicalOnly: true });
+  assert.equal(none.hits.length, 0);
+  assert.match(formatSearch(none), /^No matching skills/);
+});
+
+test("a retired name is answered by the active skill of that name, or by the list when there are several", () => {
+  const withRetired = (extra: Record<string, string>) => { saveIndex({ ...built, identityAliases: { ...(built.identityAliases ?? {}), ...extra } }); resetIndexCache(); };
+  try {
+    const active = built.skills.find((s: any) => s.name === "python-testing")!;
+    // The index after a consolidation: the bare name is reserved for an identity that is gone, the skill lives on as ~2.
+    const renamed = { ...built, skills: built.skills.map((s: any) => (s === active ? { ...s, id: "python-testing~2", aliases: [] } : s)),
+      identityAliases: { ...(built.identityAliases ?? {}), "python-testing": "python-testing@retired000000000000000000" } };
+    saveIndex(renamed); resetIndexCache();
+    assert.deepEqual(findSkill("python-testing").map((s: any) => s.id), ["python-testing~2"]);
+    assert.deepEqual(findSkill("Python-Testing").map((s: any) => s.id), ["python-testing~2"]);
+    // Two active skills of that name: both are named, none is picked silently.
+    saveIndex({ ...renamed, skills: [...renamed.skills, { ...active, id: "python-testing~3", stableId: "python-testing@000000000000000000000003", path: active.path + "-other", aliases: [] }] }); resetIndexCache();
+    assert.deepEqual(findSkill("python-testing").map((s: any) => s.id).sort(), ["python-testing~2", "python-testing~3"]);
+    // A retired name with no skill of that name left still finds nothing.
+    withRetired({ "gone-skill": "gone-skill@retired000000000000000000" });
+    assert.equal(findSkill("gone-skill").length, 0);
+  } finally { saveIndex(built); resetIndexCache(); }
+});
+
+test("a Node path in a versioned or managed folder is recognized as one that will not survive an update", () => {
+  for (const p of ["/Users/x/.local/share/vite-plus/js_runtime/node/26.13.1/bin/node", "/Users/x/.nvm/versions/node/v22.4.0/bin/node", "/opt/homebrew/Cellar/node/26.1.0/bin/node",
+    "/Users/x/.hermes/node/bin/node", "/opt/hostedtoolcache/node/22.11.0/x64/bin/node", "C:\\Users\\x\\AppData\\Roaming\\nvm\\v20.11.1\\node.exe"]) assert.equal(volatileNode(p), true, p);
+  for (const p of ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node", "C:\\Program Files\\nodejs\\node.exe"]) assert.equal(volatileNode(p), false, p);
+});
+
+test("the launcher falls back to another Node when the pinned one is gone", { skip: !posix }, () => {
+  const text = launcherScript("/pinned/node", "/x/cli.js", "/x/client.pl", "/x", "/x/sock");
+  assert.match(text, /^NODE='\/pinned\/node'$/m);
+  assert.match(text, /exec "\$NODE" '\/x\/cli\.js' hint "\$@"/);
+  const launcher = path.join(home, "fallback", "bin", "skillrouter-hint");
+  const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
+  writeLauncher(path.join(home, "no-such-node"), cli, launcher);
+  const before = readLog(1).length;
+  // The hook still runs (an empty payload is logged as invalid input) because a working Node was found on its own.
+  const run = spawnSync(launcher, ["codex"], { input: "{}", encoding: "utf8", env: { ...process.env, PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH}`, SKILLROUTER_SERVICE: "0" }, timeout: 20000 });
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(readLog(1).length > before, "the hook ran and logged");
+});
+
+test("install runs a private copy of a checkout's code and switches copies atomically", { skip: !posix }, () => {
+  const checkout = path.join(home, "checkout"), src = path.join(checkout, "dist", "src"), sr = path.join(home, "sr-app");
+  fs.mkdirSync(src, { recursive: true }); fs.mkdirSync(path.join(checkout, ".git")); fs.mkdirSync(path.join(checkout, "node_modules", "dep"), { recursive: true });
+  fs.writeFileSync(path.join(checkout, "package.json"), JSON.stringify({ version: "9.9.9" }));
+  fs.writeFileSync(path.join(src, "cli.js"), "export const v = 1;\n"); fs.writeFileSync(path.join(src, "other.js"), "export const o = 1;\n");
+  const first = snapshotApp(path.join(src, "cli.js"), sr, "linux");
+  assert.equal(first.cli, path.join(sr, "app", "current", "dist", "src", "cli.js"));
+  assert.equal(fs.readFileSync(first.cli, "utf8"), "export const v = 1;\n");
+  assert.ok(fs.existsSync(path.join(sr, "app", "current", "node_modules", "dep")), "dependencies are reachable from the copy");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(sr, "app", "current", "package.json"), "utf8")).version, "9.9.9");
+  const firstName = fs.readlinkSync(path.join(sr, "app", "current"));
+  assert.match(firstName, /^9\.9\.9-[a-f0-9]{10}$/);
+  // A rebuild in the checkout does not reach the installed copy until install runs again.
+  fs.writeFileSync(path.join(src, "cli.js"), "export const v = 2;\n");
+  assert.equal(fs.readFileSync(first.cli, "utf8"), "export const v = 1;\n");
+  const second = snapshotApp(path.join(src, "cli.js"), sr, "linux");
+  assert.equal(second.cli, first.cli, "configs keep one path across upgrades");
+  assert.equal(fs.readFileSync(second.cli, "utf8"), "export const v = 2;\n");
+  assert.notEqual(fs.readlinkSync(path.join(sr, "app", "current")), firstName);
+  assert.ok(fs.existsSync(path.join(sr, "app", firstName, ".complete")), "the previous copy is kept for a while");
+  // Same code again: the same copy is reused.
+  assert.equal(snapshotApp(path.join(src, "cli.js"), sr, "linux").note, second.note);
+  // Old copies beyond the newest three go.
+  for (const v of [3, 4, 5]) { fs.writeFileSync(path.join(src, "cli.js"), `export const v = ${v};\n`); snapshotApp(path.join(src, "cli.js"), sr, "linux"); }
+  assert.equal(fs.readdirSync(path.join(sr, "app")).filter((d) => d !== "current").length, 3);
+  // Running from the installed copy, an installed package, Windows, and the switch all leave the code where it is.
+  assert.equal(snapshotApp(fs.realpathSync(first.cli), sr, "linux").cli, first.cli);
+  fs.rmSync(path.join(checkout, ".git"), { recursive: true });
+  assert.equal(snapshotApp(path.join(src, "cli.js"), sr, "linux").cli, path.join(src, "cli.js"));
+  fs.mkdirSync(path.join(checkout, ".git"));
+  assert.equal(snapshotApp(path.join(src, "cli.js"), sr, "win32").cli, path.join(src, "cli.js"));
+  process.env.SKILLROUTER_SNAPSHOT = "0";
+  try { assert.equal(snapshotApp(path.join(src, "cli.js"), sr, "linux").cli, path.join(src, "cli.js")); } finally { delete process.env.SKILLROUTER_SNAPSHOT; }
+});
+
+test("Hermes profiles get the same Node and code as the main config, and nothing else in them changes", () => {
+  const h = path.join(home, "hermes-home"), profile = (n: string) => path.join(h, ".hermes", "profiles", n, "config.yaml");
+  const body = (cmd: string, cli: string) => `model: x\nmcp_servers:\n  other:\n    command: /bin/other\n    args:\n      - /other/cli.js\n  skillrouter:\n    command: ${cmd}\n    args:\n      - ${cli}\n      - mcp\n    env:\n      SKILLROUTER_AGENT: hermes\n  after:\n    command: /bin/after\ntail: keep\n`;
+  for (const n of ["a", "b"]) { fs.mkdirSync(path.dirname(profile(n)), { recursive: true }); fs.writeFileSync(profile(n), body("/old/versioned/26.1.0/bin/node", "/old/checkout/dist/src/cli.js"), { mode: 0o600 }); }
+  fs.mkdirSync(path.dirname(profile("odd")), { recursive: true }); fs.writeFileSync(profile("odd"), "mcp_servers:\n  skillrouter:\n    command: /x/node\n    args: [/x/cli.js, mcp]\n");
+  fs.mkdirSync(path.dirname(profile("none")), { recursive: true }); fs.writeFileSync(profile("none"), "model: y\n");
+  setInstallCli("/new/app/current/dist/src/cli.js");
+  try {
+    const note = patchHermesProfiles(h);
+    assert.match(note, /2 profiles pointed at the same Node and code/);
+    assert.match(note, /left as found \(unrecognized layout\): odd/);
+    assert.equal(fs.readFileSync(profile("a"), "utf8"), body(JSON.stringify(NODE), JSON.stringify("/new/app/current/dist/src/cli.js")));
+    if (posix) assert.equal(fs.statSync(profile("a")).mode & 0o777, 0o600);
+    assert.ok(fs.existsSync(profile("a") + ".bak-skillrouter"));
+    assert.equal(fs.readFileSync(profile("none"), "utf8"), "model: y\n");
+    assert.match(patchHermesProfiles(h), /2 profiles/); // repeatable
+    assert.equal(patchHermesProfiles(path.join(home, "no-hermes")), "");
+  } finally { setInstallCli(fileURLToPath(new URL("../src/cli.js", import.meta.url))); }
+});
+
+test("doctor's pin check names a missing or unstable Node and missing code", () => {
+  const here = fileURLToPath(new URL("../src/cli.js", import.meta.url));
+  const problems = pinProblems([
+    { host: "fine", command: process.execPath, args: [here, "mcp"] },
+    { host: "gone-node", command: path.join(home, "missing", "node"), args: [here, "mcp"] },
+    { host: "gone-code", command: process.execPath, args: [path.join(home, "missing", "cli.js"), "mcp"] },
+  ], path.join(home, "no-launcher"));
+  assert.ok(problems.some((p: string) => /^gone-node: Node .* is missing/.test(p)), problems.join("\n"));
+  assert.ok(problems.some((p: string) => /^gone-code: code .* is missing/.test(p)), problems.join("\n"));
+  assert.ok(!problems.some((p: string) => /^fine: .*missing/.test(p)), problems.join("\n"));
+});
+
+test("the report groups repeated empty searches and unknown skill names as gaps", () => {
+  const now = new Date().toISOString();
+  const s = (query: string, hits: unknown[] = [], agent = "codex") => ({ ts: now, client: "x", agent, tool: "search_skills", query, hits }) as any;
+  const lines = gapLines([
+    s("read-only production website integrity verification TLS"), s("production website integrity guard verify TLS certificate"), s("run read-only production website integrity checks", [], "hermes"),
+    s("configure xbox controller"), s("python testing", [["python-testing", 1]]),
+    ...[1, 2, 3].map(() => ({ ts: now, client: "x", agent: "codex", tool: "read_skill", skill: "prompt-mini", found: false }) as any),
+    { ts: now, client: "x", agent: "codex", tool: "read_skill", skill: "once", found: false } as any,
+  ]).join("\n");
+  assert.match(lines, /Skill gaps/);
+  assert.match(lines, /3 {2}codex\+hermes: /);
+  assert.doesNotMatch(lines, /xbox/);
+  assert.match(lines, /3 {2}prompt-mini/);
+  assert.doesNotMatch(lines, /once/);
+  assert.deepEqual(gapLines([s("python testing", [["python-testing", 1]])]), []);
+});
+
+test("the usage log rotates past its size limit and reports still read every row", () => {
+  const before = readLog(1).length;
+  process.env.SKILLROUTER_LOG_MAX_MB = "0.0005"; // about 500 bytes
+  try { for (let i = 0; i < 40; i++) logUsage({ client: "rotation-test", tool: "probe", n: i }); } finally { delete process.env.SKILLROUTER_LOG_MAX_MB; }
+  assert.ok(usageArchives().length >= 1, "an archive was written");
+  assert.ok(usageArchives().length <= 3, "old archives are pruned");
+  const rows = readLog(1).filter((r: any) => r.client === "rotation-test");
+  assert.ok(rows.length >= 3 && rows.length <= 40);
+  assert.ok(readLog(1).length >= before || usageArchives().length === 3);
+  logUsage({ client: "rotation-test", tool: "probe", n: 99 });
+  assert.ok(readLog(1).some((r: any) => (r as any).n === 99));
+});

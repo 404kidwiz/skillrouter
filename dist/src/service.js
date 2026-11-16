@@ -259,6 +259,12 @@ function codeStamp() {
         return "-";
     }
 }
+/**
+ * Minutes without a request before the service exits. It was 30: over two weeks on the author's Mac the service
+ * cold-started 69 times, and each cold start is a slow first hook (Codex's prompt check timed out on 1.5% of prompts).
+ * Two hours spans a working session's pauses; the cost is ~420 MB held that much longer. SKILLROUTER_SERVICE_IDLE_MIN sets it.
+ */
+export const DEFAULT_IDLE_MIN = 120;
 const HEADER = new RegExp(`^${PROTOCOL} (${AGENTS.join("|")}|-) (-|tool|stop|decision|gate|status|shutdown|hang) (\\d{1,8})$`);
 export async function serve() {
     if (!stateDirPrivate()) {
@@ -298,7 +304,7 @@ export async function serve() {
             catch { /* none */ } // a pipe has no file: it goes with its process
     }
     const startedAt = new Date();
-    const idleMs = Math.max(200, Number(process.env.SKILLROUTER_SERVICE_IDLE_MIN ?? 30) * 60e3);
+    const idleMs = Math.max(200, Number(process.env.SKILLROUTER_SERVICE_IDLE_MIN ?? DEFAULT_IDLE_MIN) * 60e3);
     const stats = { requests: 0, fallbacks: 0, lastAt: null, byMode: new Map() };
     let dataSeen = dataStamp();
     let codeSeen = codeStamp();

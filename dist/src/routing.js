@@ -3,6 +3,25 @@ import { semanticScores } from './embed.js';
 import { applicabilityReason } from './applicability.js';
 import { coreIds } from './core.js';
 import { minRawFor, selectHints, isConversational } from './hint.js';
+/**
+ * The weak tier of an explicit search. A hint is unsolicited and costs context on every prompt, so it needs a confident
+ * match; a search is the agent asking, and "nothing" there ends the lookup (measured 2026-11-15 on this machine's log:
+ * 62% of Codex searches came back empty once the hint bar was applied to them, and 3% were retried in exploratory mode).
+ * So when nothing clears the hint bar, the best candidates that still show real evidence are returned, labeled weak:
+ * meaning 0.42 with a matched word, or meaning 0.33 with two matched words at 75% of the lexical floor; without the
+ * semantic layer, two matched words at 75% of the floor. At most 3, within 75% of the best one's ranking score.
+ * Calibrated on 314 distinct real queries that had returned nothing: 71% now get candidates. SKILLROUTER_WEAK=0 turns it off.
+ */
+export function selectWeak(hits, minRaw, k = 3) {
+    if (process.env.SKILLROUTER_WEAK === "0")
+        return [];
+    const floor = 0.75 * minRaw;
+    const passing = hits.filter((h) => h.skill.description.trim().length >= 20 && (h.cos !== undefined
+        ? (h.cos >= 0.42 && h.matched >= 1) || (h.cos >= 0.33 && h.matched >= 2 && h.raw >= floor)
+        : h.matched >= 2 && h.raw >= floor));
+    const top = passing[0]?.score ?? 0;
+    return passing.filter((h) => h.score >= 0.75 * top).slice(0, Math.max(1, Math.min(3, k)));
+}
 /** Explicit search uses the same evidence floor as hints, without forcing users to accept weak candidates. */
 export async function routeSearch(query, options = {}) {
     const k = Math.max(1, Math.min(20, options.k ?? 5));
@@ -22,6 +41,7 @@ export async function routeSearch(query, options = {}) {
     const selected = exact.length ? [] : selectHints(candidates, minRaw, k, { conversational: isConversational(query) });
     const relevant = [...exact, ...selected.filter(h => !exact.some(e => e.skill.id === h.skill.id))].slice(0, k);
     const accepted = new Set(relevant.map(h => h.skill.id));
+    const weakHits = relevant.length || options.exploratory ? [] : selectWeak(candidates, minRaw, k);
     const defaultHints = selectHints(candidates, minRaw, 3, { conversational: isConversational(query) });
     const gateOptions = { conversational: isConversational(query) };
     const withinMargin = new Set(selectHints(candidates, minRaw, candidates.length, gateOptions).map(h => h.skill.id));
@@ -33,16 +53,18 @@ export async function routeSearch(query, options = {}) {
                 : 'passes relevance floor and ranking margin';
         return { hit, accepted: acceptedHit, hintAccepted: defaultHints.includes(hit), reason };
     });
-    return { hits: options.exploratory && !exact.length ? [...exact, ...candidates.filter(h => !exact.some(e => e.skill.id === h.skill.id))].slice(0, k) : relevant,
-        decisions, trace: trace.filter(t => !exact.some(h => h.skill.id === t.id)), semantic: sem.status, ...(sem.error ? { semanticError: sem.error } : {}), minRaw, exploratory: !!options.exploratory };
+    return { hits: options.exploratory && !exact.length ? [...exact, ...candidates.filter(h => !exact.some(e => e.skill.id === h.skill.id))].slice(0, k) : relevant.length ? relevant : weakHits,
+        decisions, trace: trace.filter(t => !exact.some(h => h.skill.id === t.id)), semantic: sem.status, ...(sem.error ? { semanticError: sem.error } : {}), minRaw, exploratory: !!options.exploratory, weak: weakHits.length > 0 };
 }
 export function formatSearch(result) {
     if (!result.hits.length)
-        return 'No strong matching skills. Try a more specific task or exploratory mode for weaker candidates.';
+        return 'No matching skills for this query. Rephrase with the concrete tool, framework or deliverable, or continue without a skill.';
     const lines = result.hits.map(h => {
         const accepted = result.decisions.find(d => d.hit.skill.id === h.skill.id)?.accepted;
-        return `- ${h.skill.stableId ?? h.skill.id} (ranking score ${h.score.toFixed(2)}; ${accepted ? 'relevant' : 'weak/exploratory'}): ${h.skill.description || '(no description)'}\n  alias: ${h.skill.id}\n  path: ${h.skill.path}${h.similar?.length ? `\n  [similar: ${h.similar.join(', ')}]` : ''}`;
+        return `- ${h.skill.stableId ?? h.skill.id} (ranking score ${h.score.toFixed(2)}; ${accepted ? 'relevant' : result.weak ? 'weak' : 'weak/exploratory'}): ${h.skill.description || '(no description)'}\n  alias: ${h.skill.id}\n  path: ${h.skill.path}${h.similar?.length ? `\n  [similar: ${h.similar.join(', ')}]` : ''}`;
     });
+    if (result.weak)
+        return 'No strong match. Weak candidates follow: load one with read_skill(id) only if its description fits this task; otherwise continue without a skill.\n' + lines.join('\n');
     return 'Ranking scores are relative, not probabilities.\n' + lines.join('\n') + '\n\nLoad applicable results with read_skill(id).';
 }
 export function formatExplanation(result) {
@@ -51,6 +73,6 @@ export function formatExplanation(result) {
         'Ranking score is relative, not a probability. Search and hint decisions below use default thresholds (no session history or host endorsements).',
         ...result.decisions.map(d => `${d.accepted ? 'PASS' : 'SKIP'} ${d.hit.skill.id}: ${d.reason}; default hint ${d.hintAccepted ? 'pass' : 'skip'}; ranking score ${d.hit.score}, raw ${d.hit.raw}, cosine ${d.hit.cos ?? 'unavailable'}, matched ${d.hit.matched}, specific ${d.hit.specific ?? d.hit.matched}`),
         ...result.trace.map(t => `SKIP ${t.id}: ${t.reason}${t.kept ? ` -> ${t.kept}` : ''}`),
-        result.hits.length ? `Returned: ${result.hits.map(h => h.skill.id).join(', ')}` : 'No strong matching skills.',
+        result.hits.length ? `Returned${result.weak ? ' (weak tier, no strong match)' : ''}: ${result.hits.map(h => h.skill.id).join(', ')}` : 'No matching skills.',
     ].join('\n');
 }

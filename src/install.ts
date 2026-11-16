@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { HOME, SR_DIR, AGENTS, antigravityConfigPaths, type AgentId } from "./paths.js";
 import { PERL_CLIENT, socketPath } from "./service-client.js";
 import { NO_WINDOW, fwd, hookPrefix, launcherFile, parseJson, renameSyncRetry, windowsLauncher, type Platform } from "./platform.js";
@@ -15,17 +16,45 @@ export type McpOnlyId = (typeof MCP_ONLY)[number];
 export type InstallTarget = AgentId | McpOnlyId;
 export const INSTALL_TARGETS: InstallTarget[] = [...AGENTS, ...MCP_ONLY];
 
-/** A Node binary another tool does not manage: the one running us, unless it lives under a managed
- * tree (~/.hermes, node_modules, …), then the first `node` on PATH that doesn't. SKILLROUTER_NODE overrides. */
+/** Folders a tool manages for itself: a Node under one can vanish or change with that tool. */
+const MANAGED = [".hermes", "node_modules", "vite-plus", ".nvm", ".fnm", ".volta", ".asdf", ".nodenv", ".nodebrew", ".n"].map((m) => `${path.sep}${m}${path.sep}`);
+/**
+ * A Node path that will not survive an update: under a managed tree, or with a version number as a folder
+ * (`…/js_runtime/node/26.13.1/bin/node`, `…/nvm/v22.4.0/…`, `…/Cellar/node/26.1.0/…`). On 2026-11-15 every hook and
+ * Codex's MCP server on the author's Mac were pinned to such a folder, one cleanup away from failing all at once.
+ */
+export function volatileNode(p: string): boolean {
+  return MANAGED.some((m) => p.includes(m)) || /(?:^|[\\/])v?\d+\.\d+\.\d+(?:[\\/]|$)/.test(p);
+}
+/** Stable homes of Node, tried after PATH. */
+export const NODE_FALLBACKS = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"];
+
+/**
+ * The Node hooks and MCP entries are pinned to: the one running us when its path is stable; otherwise the first
+ * stable `node` on PATH, then in the usual system locations, that is new enough (>= 20). The path is judged as
+ * written, so a stable link (/opt/homebrew/bin/node) counts even though it resolves into a versioned folder; a
+ * link into a managed tree does not. SKILLROUTER_NODE overrides. With nothing stable, the running Node is kept
+ * (and `doctor` says so).
+ */
 export function resolveNode(): string {
   if (process.env.SKILLROUTER_NODE) return process.env.SKILLROUTER_NODE;
-  const managed = (p: string) => [`${path.sep}.hermes${path.sep}`, `${path.sep}node_modules${path.sep}`].some((m) => p.includes(m));
   const real = (p: string) => { try { return fs.realpathSync(p); } catch { return p; } };
+  const managed = (p: string) => MANAGED.some((m) => p.includes(m));
+  if (!volatileNode(process.execPath) && !managed(real(process.execPath))) return process.execPath;
+  const usable = (cand: string) => {
+    try {
+      if (!fs.statSync(cand).isFile() || volatileNode(cand) || managed(real(cand))) return false;
+      if (real(cand) === real(process.execPath)) return true; // the same binary under a stable name
+      const v = execFileSync(cand, ["-v"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], ...NO_WINDOW }).trim();
+      return Number(v.replace(/^v/, "").split(".")[0]) >= 20;
+    } catch { return false; }
+  };
+  const name = process.platform === "win32" ? "node.exe" : "node";
+  const onPath = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, name));
+  for (const cand of [...onPath, ...(process.platform === "win32" ? [] : NODE_FALLBACKS)]) if (usable(cand)) return cand;
+  // Nothing stable: at least avoid a managed tree, as before.
   if (!managed(real(process.execPath))) return process.execPath;
-  for (const dir of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
-    const cand = path.join(dir, process.platform === "win32" ? "node.exe" : "node");
-    try { if (fs.statSync(cand).isFile() && !managed(real(cand))) return cand; } catch { /* not here */ }
-  }
+  for (const cand of onPath) { try { if (fs.statSync(cand).isFile() && !managed(real(cand))) return cand; } catch { /* not here */ } }
   return process.execPath;
 }
 
@@ -37,8 +66,11 @@ const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
  * rewrites what the launcher execs.
  */
 export const LAUNCHER = path.join(SR_DIR, "bin", "skillrouter-hint");
-const MCP_CMD = { command: NODE, args: [CLI, "mcp"] };
-const TOML_MCP = `command = ${JSON.stringify(NODE)}\nargs = [${JSON.stringify(CLI)}, "mcp"]`;
+/** What the configs are pointed at: this package's CLI, or the snapshot `skillrouter install` made of it (snapshotApp). */
+const target = { cli: CLI };
+export function setInstallCli(cli: string): void { target.cli = cli; }
+const mcpCmd = () => ({ command: NODE, args: [target.cli, "mcp"] });
+const tomlMcp = () => `command = ${JSON.stringify(NODE)}\nargs = [${JSON.stringify(target.cli)}, "mcp"]`;
 
 /**
  * The launcher every hook calls. With Perl available it hands the hook to the Perl client (see PERL_CLIENT), which
@@ -49,12 +81,19 @@ const TOML_MCP = `command = ${JSON.stringify(NODE)}\nargs = [${JSON.stringify(CL
 export function launcherScript(node: string, cli: string, perlClient: string, dir: string, sock: string): string {
   return `#!/bin/sh
 # skillrouter hook launcher. Rewritten by \`skillrouter install\`; hook configs point here so their text never changes.
+NODE=${quote(node)}
+# The pinned Node is gone (an update or cleanup removed it): use another one rather than fail every hook.
+if [ ! -x "$NODE" ]; then
+  for c in ${NODE_FALLBACKS.map(quote).join(" ")} "$(command -v node 2>/dev/null)"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then NODE="$c"; break; fi
+  done
+fi
 if [ "\${SKILLROUTER_SERVICE:-1}" != 0 ] && [ -f ${quote(perlClient)} ] && command -v perl >/dev/null 2>&1; then
-  perl ${quote(perlClient)} ${quote(dir)} ${quote(sock)} ${quote(node)} ${quote(cli)} "$@"
+  perl ${quote(perlClient)} ${quote(dir)} ${quote(sock)} "$NODE" ${quote(cli)} "$@"
   rc=$?
   if [ $rc -ne 2 ] && [ $rc -ne 255 ]; then exit $rc; fi
 fi
-exec ${quote(node)} ${quote(cli)} hint "$@"
+exec "$NODE" ${quote(cli)} hint "$@"
 `;
 }
 
@@ -136,14 +175,14 @@ export const CODEX_TOOL_MATCHER = "Bash|apply_patch|mcp__skillrouter__read_skill
 export const CURSOR_TOOL_MATCHER = "Shell|Write|StrReplace|Edit|MultiEdit|ApplyPatch|MCP:read_skill";
 export const GEMINI_TOOL_MATCHER = "write_file|replace|run_shell_command|activate_skill|mcp_skillrouter_read_skill";
 
-const mcpEntry = (agent: string, prev: any = {}) => ({ ...prev, ...MCP_CMD, env: { ...prev?.env, SKILLROUTER_AGENT: agent } });
+const mcpEntry = (agent: string, prev: any = {}) => ({ ...prev, ...mcpCmd(), env: { ...prev?.env, SKILLROUTER_AGENT: agent } });
 
 /** Wire the MCP server and (where the host has one) the prompt hook into one agent's user-scope config. Backs up every file it touches. */
 export function install(agent: InstallTarget, home = HOME, platform: Platform = process.platform): string[] {
   const out: string[] = [];
   const base = home === HOME ? LAUNCHER : path.join(home, ".skillrouter", "bin", "skillrouter-hint");
   const launcher = launcherFile(base, platform);
-  if ((AGENTS as string[]).includes(agent)) out.push(writeLauncher(NODE, CLI, base, platform));
+  if ((AGENTS as string[]).includes(agent)) out.push(writeLauncher(NODE, target.cli, base, platform));
   // How a hook command starts the launcher, in a form the host's shell accepts (see hookPrefix).
   const bin = hookPrefix(launcher, platform);
   switch (agent) {
@@ -164,7 +203,7 @@ export function install(agent: InstallTarget, home = HOME, platform: Platform = 
         addHook(d, "PostToolUse", { matcher: CODEX_TOOL_MATCHER, hooks: [{ type: "command", command: `${bin} codex tool`, timeout: 5 }] }),
         addHook(d, "Stop", { hooks: [{ type: "command", command: `${bin} codex stop`, timeout: 5 }] }),
       ].join(", ")));
-      out.push(appendToml(path.join(home, ".codex", "config.toml"), `\n[mcp_servers.skillrouter]\n${TOML_MCP}\n[mcp_servers.skillrouter.env]\nSKILLROUTER_AGENT = "codex"\n`, "[mcp_servers.skillrouter]"));
+      out.push(appendToml(path.join(home, ".codex", "config.toml"), `\n[mcp_servers.skillrouter]\n${tomlMcp()}\n[mcp_servers.skillrouter.env]\nSKILLROUTER_AGENT = "codex"\n`, "[mcp_servers.skillrouter]"));
       out.push("Codex asks you to trust each new hook once (/hooks in Codex); after that the launcher keeps its command text stable across reinstalls.");
       break;
     case "cursor":
@@ -191,7 +230,7 @@ export function install(agent: InstallTarget, home = HOME, platform: Platform = 
       break;
     case "opencode": {
       const cfg = path.join(home, ".config", "opencode", "opencode.json");
-      out.push(patchJson(cfg, (d) => { (d.mcp ??= {}).skillrouter = { ...d.mcp.skillrouter, type: "local", command: [MCP_CMD.command, ...MCP_CMD.args], enabled: true, environment: { ...d.mcp.skillrouter?.environment, SKILLROUTER_AGENT: agent } }; return "skillrouter MCP set"; }));
+      out.push(patchJson(cfg, (d) => { (d.mcp ??= {}).skillrouter = { ...d.mcp.skillrouter, type: "local", command: [mcpCmd().command, ...mcpCmd().args], enabled: true, environment: { ...d.mcp.skillrouter?.environment, SKILLROUTER_AGENT: agent } }; return "skillrouter MCP set"; }));
       const plugin = path.join(home, ".config", "opencode", "plugins", "skillrouter-hints.js");
       fs.mkdirSync(path.dirname(plugin), { recursive: true });
       // The plugin spawns without a shell: the POSIX launcher directly, on Windows node with the launcher module.
@@ -232,16 +271,16 @@ function installHermes(home: string): string {
   const agentDir = path.join(home, ".hermes", "hermes-agent");
   const py = ["venv", ".venv"].flatMap((v) => [path.join(agentDir, v, "bin", "python"), path.join(agentDir, v, "Scripts", "python.exe")]).find((p) => fs.existsSync(p));
   if (!fs.existsSync(cfg)) return `${cfg}: missing (Hermes not installed); skipped`;
-  if (!py) return `${cfg}: Hermes's Python not found under ~/.hermes/hermes-agent; add mcp_servers.skillrouter by hand: command ${NODE}, args [${CLI}, "mcp"], env SKILLROUTER_AGENT=hermes`;
+  if (!py) return `${cfg}: Hermes's Python not found under ~/.hermes/hermes-agent; add mcp_servers.skillrouter by hand: command ${NODE}, args [${target.cli}, "mcp"], env SKILLROUTER_AGENT=hermes${patchHermesProfiles(home)}`;
   backup(cfg, fs.statSync(cfg).mode & 0o777);
   const script = `import sys, json; sys.path.insert(0, ${JSON.stringify(path.join(home, ".hermes", "hermes-agent"))})
 from hermes_cli.config import load_config, save_config
 c = load_config(); c.setdefault("mcp_servers", {})["skillrouter"] = json.loads(sys.argv[1]); save_config(c); print("ok")`;
   try {
-    execFileSync(py, ["-c", script, JSON.stringify({ command: NODE, args: [CLI, "mcp"], env: { SKILLROUTER_AGENT: "hermes" } })], { cwd: path.join(home, ".hermes", "hermes-agent"), stdio: ["ignore", "pipe", "pipe"], timeout: 60000, ...NO_WINDOW });
-    return `${cfg}: skillrouter MCP set via Hermes config API (no hooks on this host)`;
+    execFileSync(py, ["-c", script, JSON.stringify({ command: NODE, args: [target.cli, "mcp"], env: { SKILLROUTER_AGENT: "hermes" } })], { cwd: path.join(home, ".hermes", "hermes-agent"), stdio: ["ignore", "pipe", "pipe"], timeout: 60000, ...NO_WINDOW });
+    return `${cfg}: skillrouter MCP set via Hermes config API (no hooks on this host)${patchHermesProfiles(home)}`;
   } catch (e) {
-    return `${cfg}: Hermes config API failed (${(e as Error).message.split("\n")[0]}); not changed`;
+    return `${cfg}: Hermes config API failed (${(e as Error).message.split("\n")[0]}); not changed${patchHermesProfiles(home)}`;
   }
 }
 
@@ -345,3 +384,101 @@ export const SkillrouterHints = async (ctx) => ({
   },
 });
 `; }
+
+/**
+ * A private copy of the compiled CLI under ~/.skillrouter/app/<version>-<hash>, reached through the link
+ * ~/.skillrouter/app/current. Hooks and MCP entries of every host run that copy, so a rebuild (or a half-finished
+ * one) in a development checkout no longer changes what all agents execute: the copy changes only when `install`
+ * runs, and then by one atomic rename of the link. Only a git checkout is copied; an installed package is used in
+ * place, as is anything on Windows (no links there yet) or with SKILLROUTER_SNAPSHOT=0. Dependencies are linked, not
+ * copied (the optional embedding model alone is hundreds of MB), so the checkout's node_modules must stay put;
+ * `doctor` checks that. The three newest copies are kept.
+ */
+export function snapshotApp(cli = CLI, srDir = SR_DIR, platform: Platform = process.platform): { cli: string; note: string } {
+  const src = path.dirname(cli), root = path.resolve(src, "..", "..");
+  const appDir = path.join(srDir, "app"), current = path.join(appDir, "current");
+  const currentCli = path.join(current, "dist", "src", "cli.js");
+  const real = (p: string) => { try { return fs.realpathSync(p); } catch { return p; } };
+  if (platform === "win32" || process.env.SKILLROUTER_SNAPSHOT === "0") return { cli, note: `Code: ${cli} (used in place)` };
+  if (real(src).startsWith(real(appDir) + path.sep)) return { cli: currentCli, note: `Code: ${currentCli} (already the installed copy)` };
+  if (!fs.existsSync(path.join(root, ".git"))) return { cli, note: `Code: ${cli} (installed package, used in place)` };
+  try {
+    const files = fs.readdirSync(src).filter((f) => f.endsWith(".js")).sort();
+    const hash = createHash("sha256");
+    for (const f of files) hash.update(f).update(fs.readFileSync(path.join(src, f)));
+    let version = "0";
+    try { version = String(JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version); } catch { /* unnamed */ }
+    const name = `${version.replace(/[^\w.-]/g, "_")}-${hash.digest("hex").slice(0, 10)}`;
+    const dest = path.join(appDir, name);
+    if (!fs.existsSync(path.join(dest, ".complete"))) {
+      const tmp = `${dest}.tmp-${process.pid}`;
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.mkdirSync(path.join(tmp, "dist", "src"), { recursive: true, mode: 0o700 });
+      for (const f of files) fs.copyFileSync(path.join(src, f), path.join(tmp, "dist", "src", f));
+      fs.copyFileSync(path.join(root, "package.json"), path.join(tmp, "package.json"));
+      for (const dir of ["node_modules", "eval"]) if (fs.existsSync(path.join(root, dir))) fs.symlinkSync(real(path.join(root, dir)), path.join(tmp, dir), "dir");
+      fs.writeFileSync(path.join(tmp, ".complete"), `${new Date().toISOString()} from ${root}\n`);
+      fs.rmSync(dest, { recursive: true, force: true }); // an incomplete earlier attempt
+      fs.renameSync(tmp, dest);
+    }
+    const link = `${current}.tmp-${process.pid}`;
+    try { fs.unlinkSync(link); } catch { /* none */ }
+    fs.symlinkSync(name, link, "dir");
+    fs.renameSync(link, current); // atomic: a hook sees the old copy or the new one, never neither
+    const old = fs.readdirSync(appDir).filter((d) => d !== "current" && d !== name && fs.existsSync(path.join(appDir, d, ".complete")))
+      .map((d) => ({ d, t: fs.statSync(path.join(appDir, d, ".complete")).mtimeMs })).sort((a, b) => b.t - a.t);
+    for (const { d } of old.slice(2)) fs.rmSync(path.join(appDir, d), { recursive: true, force: true });
+    return { cli: currentCli, note: `Code: ${currentCli} -> ${name} (copied from ${root}; rebuilds there take effect at the next \`install\`)` };
+  } catch (e) {
+    return { cli, note: `Code: ${cli} (could not make a private copy: ${(e as Error).message.split("\n")[0]})` };
+  }
+}
+
+/**
+ * Hermes profiles (~/.hermes/profiles/<name>/config.yaml) each carry their own copy of the MCP entry, which the config
+ * API call above does not reach. Only the two values this installer owns are rewritten, inside the skillrouter block of
+ * mcp_servers, and only when that block has the plain shape the installer writes; anything else is left and named.
+ */
+export function patchHermesProfiles(home: string): string {
+  const dir = path.join(home, ".hermes", "profiles");
+  let names: string[] = [];
+  try { names = fs.readdirSync(dir).sort(); } catch { return ""; }
+  let done = 0; const left: string[] = [];
+  for (const name of names) {
+    const file = path.join(dir, name, "config.yaml");
+    let text: string;
+    try { text = fs.readFileSync(file, "utf8"); } catch { continue; }
+    const block = text.match(/^mcp_servers:[ \t]*\r?\n(?:(?:[ \t]+.*|[ \t]*)\r?\n)*?([ \t]+)skillrouter:[ \t]*\r?\n((?:\1[ \t]+.*(?:\r?\n|$))+)/m);
+    if (!block) continue;
+    const body = block[2];
+    const command = /^([ \t]+command:[ \t]*).*$/m, arg = /^([ \t]+-[ \t]*)["']?[^\r\n"']*cli\.js["']?[ \t]*$/m;
+    if (!command.test(body) || !arg.test(body)) { left.push(name); continue; }
+    const next = body.replace(command, (_m, lead) => `${lead}${JSON.stringify(NODE)}`).replace(arg, (_m, lead) => `${lead}${JSON.stringify(target.cli)}`);
+    if (next === body) { done++; continue; }
+    const mode = fs.statSync(file).mode & 0o777;
+    backup(file, mode);
+    const at = block.index! + block[0].length - body.length;
+    fs.writeFileSync(file + ".tmp", text.slice(0, at) + next + text.slice(at + body.length), { mode });
+    fs.chmodSync(file + ".tmp", mode);
+    renameSyncRetry(file + ".tmp", file);
+    done++;
+  }
+  return done || left.length ? `; ${done} profile${done === 1 ? "" : "s"} pointed at the same Node and code${left.length ? `, left as found (unrecognized layout): ${left.join(", ")}` : ""}` : "";
+}
+
+/** What `doctor` says about the pins: each configured Node and CLI path must exist, and a Node path should be stable. */
+export function pinProblems(specs: { host: string; command: string; args: string[] }[], launcher = LAUNCHER): string[] {
+  const out: string[] = [];
+  const check = (host: string, node: string | undefined, cli: string | undefined) => {
+    if (node && path.isAbsolute(node) && !fs.existsSync(node)) out.push(`${host}: Node ${node} is missing; run \`skillrouter install\``);
+    else if (node && volatileNode(node)) out.push(`${host}: Node ${node} sits in a versioned or managed folder and can vanish on an update; run \`skillrouter install\` (or set SKILLROUTER_NODE)`);
+    if (cli && path.isAbsolute(cli) && !fs.existsSync(cli)) out.push(`${host}: code ${cli} is missing; run \`skillrouter install\``);
+    else if (cli) { const mods = path.resolve(path.dirname(cli), "..", "..", "node_modules"); try { fs.lstatSync(mods); if (!fs.existsSync(mods)) out.push(`${host}: dependencies of ${cli} are gone (${mods} points nowhere); run \`skillrouter install\` from the checkout`); } catch { /* an installed package keeps them elsewhere */ } }
+  };
+  for (const s of specs) check(s.host, s.command, s.args.find((a) => /cli\.js$/.test(a)));
+  try {
+    const text = fs.readFileSync(launcher, "utf8");
+    check("hooks (launcher)", text.match(/^NODE='([^']+)'/m)?.[1] ?? text.match(/^exec '([^']+)'/m)?.[1], text.match(/'([^']*cli\.js)' hint/)?.[1]);
+  } catch { /* no launcher: no hooks installed, or Windows */ }
+  return out;
+}

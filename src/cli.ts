@@ -89,6 +89,34 @@ async function main(argv: string[]): Promise<void> {
       const live = flag(args, "--live");
       const { doctor } = await import("./report.js");
       console.log(doctor());
+      {
+        // Pins: what each host's config and the hook launcher actually point at.
+        const { mcpSpec, hermesSpec } = await import("./live.js");
+        const { INSTALL_TARGETS, pinProblems } = await import("./install.js");
+        const { HOME, SR_DIR, BACKUP_DIR, USAGE_LOG } = await import("./paths.js");
+        const fs = await import("node:fs"), path = await import("node:path");
+        const specs: { host: string; command: string; args: string[] }[] = [];
+        for (const t of INSTALL_TARGETS) { try { const sp = mcpSpec(t as any); if (sp) specs.push({ host: `${t} MCP`, command: sp.command, args: sp.args }); } catch { /* unreadable config: reported above */ } }
+        try {
+          for (const name of fs.readdirSync(path.join(HOME, ".hermes", "profiles"))) {
+            try { const sp = hermesSpec(fs.readFileSync(path.join(HOME, ".hermes", "profiles", name, "config.yaml"), "utf8")); if (sp) specs.push({ host: `hermes profile ${name} MCP`, command: sp.command, args: sp.args }); } catch { /* no config */ }
+          }
+        } catch { /* no profiles */ }
+        const problems = pinProblems(specs);
+        const codes = new Set(specs.map((x) => x.args.find((a) => /cli\.js$/.test(a))).filter(Boolean));
+        if (codes.size > 1) problems.push(`hosts run ${codes.size} different copies of the code (${[...codes].join(", ")}); run \`skillrouter install\` so all use one`);
+        console.log(problems.length ? "\nPins (Node and code paths the hosts are configured with):\n  " + problems.join("\n  ") : `\nPins: ${specs.length} configured Node and code paths exist and are stable.`);
+        try {
+          const { readCore } = await import("./core.js");
+          const { findSkill } = await import("./search.js");
+          const lost = readCore().filter((id) => { try { return findSkill(id).length === 0; } catch { return false; } });
+          if (lost.length) console.log(`Core entries that match no indexed skill (edit core.txt or reindex): ${lost.join(", ")}`);
+        } catch { /* no index */ }
+        const size = (p: string): number => { try { const st = fs.lstatSync(p); if (!st.isDirectory()) return st.size; return fs.readdirSync(p).reduce((n, f) => n + size(path.join(p, f)), 0); } catch { return 0; } };
+        const mb = (n: number) => `${(n / 1048576).toFixed(1)} MB`;
+        console.log(`Disk: usage log ${mb(size(USAGE_LOG))} (rotates at ${process.env.SKILLROUTER_LOG_MAX_MB ?? 32} MB); backups ${mb(size(BACKUP_DIR))} in ${BACKUP_DIR} (never deleted automatically; remove old ones by hand once you no longer need to restore)`);
+        void SR_DIR;
+      }
       if (live) {
         const { liveCheck } = await import("./live.js");
         const { INSTALL_TARGETS } = await import("./install.js");
@@ -185,7 +213,11 @@ async function main(argv: string[]): Promise<void> {
       break;
     }
     case "install": {
-      const { install, NODE, INSTALL_TARGETS } = await import("./install.js");
+      const { install, NODE, INSTALL_TARGETS, snapshotApp, setInstallCli, volatileNode } = await import("./install.js");
+      const app = snapshotApp();
+      setInstallCli(app.cli);
+      console.log(app.note);
+      if (volatileNode(NODE)) console.log(`Warning: no stable Node found; pinned ${NODE}, which sits in a versioned or managed folder. Set SKILLROUTER_NODE=/path/to/node and install again.`);
       const targets = args.filter((x) => (INSTALL_TARGETS as string[]).includes(x));
       console.log(process.platform === "win32" ? `Node for MCP: ${NODE} (override with SKILLROUTER_NODE=C:/path/to/node.exe); hooks run the node on PATH` : `Node pinned for hooks and MCP: ${NODE} (override with SKILLROUTER_NODE=/path/to/node)`);
       const seen = new Set<string>();

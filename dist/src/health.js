@@ -138,7 +138,10 @@ export function health(home = HOME) {
         for (const row of hooks)
             reasons.set(row.reason ?? "legacy/unknown", (reasons.get(row.reason ?? "legacy/unknown") ?? 0) + 1);
         const count = (tool, reason) => own.filter((r) => r.tool === tool && r.reason === reason).length;
-        out.push(`  ${agent}: hook ${config.hook}; MCP ${config.mcp}${extra}`, `    last hook: ${hooks[0]?.ts ?? "not observed"}; last MCP activity: ${mcp[0]?.ts ?? "not observed"}; failures: ${failures}`, `    hook outcomes: ${[...reasons].map(([reason, n]) => `${reason}=${n}`).join(", ") || "none observed"}`, `    triggers shown: ${count("trigger", "shown")}; turns decided: ${count("decision", "decided")}; nudged: ${count("decision", "nudged")}`);
+        // Configured but silent: either the host was not used, or its hooks stopped firing. Only a prompt there tells which.
+        const quiet = /^(configured|plugin present)/.test(config.hook) && !hooks.length
+            ? `\n    NOTE: hooks are configured but none ran in 7 days. If you used ${agent} this week its hooks are not firing: send one prompt there, then rerun doctor.` : "";
+        out.push(`  ${agent}: hook ${config.hook}; MCP ${config.mcp}${extra}${quiet}`, `    last hook: ${hooks[0]?.ts ?? "not observed"}; last MCP activity: ${mcp[0]?.ts ?? "not observed"}; failures: ${failures}`, `    hook outcomes: ${[...reasons].map(([reason, n]) => `${reason}=${n}`).join(", ") || "none observed"}`, `    triggers shown: ${count("trigger", "shown")}; turns decided: ${count("decision", "decided")}; nudged: ${count("decision", "nudged")}`);
     }
     for (const target of ["openclaude", "antigravity", "hermes"]) {
         const own = rows.filter((r) => r.agent === target);

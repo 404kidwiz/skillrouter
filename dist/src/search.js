@@ -169,18 +169,53 @@ export function findSkill(nameOrId) {
     const resolved = resolveSkillReference(index, nameOrId);
     if (resolved)
         return [resolved];
-    if (Object.keys(index.identityAliases ?? {}).some(a => a.toLowerCase() === n))
-        return [];
+    // A retired name (its reserved identity is no longer indexed, e.g. after a consolidation) is not handed to another
+    // skill in the index, but a read by that name must still load something: the active skills of the same bare name
+    // answer it, one directly or several as the "use one of" list. (2026-11-15: read_skill("prompt-mini") had failed
+    // 58 times in two weeks while prompt-mini~2 was the only skill of that name.)
+    if (Object.keys(index.identityAliases ?? {}).some(a => a.toLowerCase() === n)) {
+        const bare = bareSkill(n);
+        return index.skills.filter((s) => bareSkill(s.id).toLowerCase() === bare || bareSkill(s.name).toLowerCase() === bare);
+    }
     return index.skills.filter((s) => s.name.toLowerCase() === n || path.basename(s.path).toLowerCase() === n);
 }
 export function readSkill(skill) {
     return fs.readFileSync(path.join(skill.path, "SKILL.md"), "utf8");
+}
+/** Past logs set aside by rotation (usage.<time>.jsonl), oldest first; readers take them together with the live file. */
+export function usageArchives() {
+    try {
+        return fs.readdirSync(SR_DIR).filter((f) => /^usage\.\d+\.jsonl$/.test(f)).sort((x, y) => Number(x.split(".")[1]) - Number(y.split(".")[1])).map((f) => path.join(SR_DIR, f));
+    }
+    catch {
+        return [];
+    }
+}
+/**
+ * The log grew without bound (6.4 MB in three weeks on the author's Mac, read whole by every report and doctor run).
+ * Past SKILLROUTER_LOG_MAX_MB (default 32) the file is renamed aside under a unique name, so two processes rotating at
+ * once cannot overwrite an archive, and the three newest archives are kept.
+ */
+function rotateUsage() {
+    const max = Number(process.env.SKILLROUTER_LOG_MAX_MB ?? 32) * 1024 * 1024;
+    if (!(max > 0) || fs.statSync(USAGE_LOG).size <= max)
+        return;
+    fs.renameSync(USAGE_LOG, path.join(SR_DIR, `usage.${Date.now()}${String(process.pid % 1000).padStart(3, "0")}.jsonl`));
+    for (const old of usageArchives().slice(0, -3))
+        try {
+            fs.unlinkSync(old);
+        }
+        catch { /* another process took it */ }
 }
 /** One JSON line per event. Prompt text is never logged; queries written by the model are. */
 export function logUsage(event) {
     try {
         fs.mkdirSync(SR_DIR, { recursive: true });
         fs.appendFileSync(USAGE_LOG, JSON.stringify({ ts: new Date().toISOString(), ...event }) + "\n");
+        try {
+            rotateUsage();
+        }
+        catch { /* rotation is best effort */ }
     }
     catch { /* never block a tool on logging */ }
 }

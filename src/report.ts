@@ -4,6 +4,7 @@ import { AGENT_SKILL_DIRS, AGENTS, USAGE_LOG } from "./paths.js";
 import { health } from "./health.js";
 import { parseFrontmatter } from "./index.js";
 import { bareSkill } from "./state.js";
+import { usageArchives } from "./search.js";
 import { funnelLines, gateFunnel } from "./funnel.js";
 import { readVerdicts, suppressAfter, suppressedByAgent, endorsed, endorseAfter } from "./verdicts.js";
 
@@ -42,11 +43,49 @@ export function isSynthetic(row: Row): boolean {
 
 export function readLog(days: number): Row[] {
   const since = Date.now() - days * 86400e3;
-  try {
-    return fs.readFileSync(USAGE_LOG, "utf8").split("\n").filter(Boolean)
-      .map((l) => { try { return JSON.parse(l) as Row; } catch { return null; } })
-      .filter((r): r is Row => validRow(r) && Date.parse(r.ts) >= since && Date.parse(r.ts) <= Date.now());
-  } catch { return []; }
+  const out: Row[] = [];
+  // Rotated logs first (oldest to newest), skipping those that ended before the window.
+  for (const file of [...usageArchives(), USAGE_LOG]) {
+    try {
+      if (file !== USAGE_LOG && fs.statSync(file).mtimeMs < since) continue;
+      for (const l of fs.readFileSync(file, "utf8").split("\n")) {
+        if (!l) continue;
+        let r: unknown; try { r = JSON.parse(l); } catch { continue; }
+        if (validRow(r) && Date.parse(r.ts) >= since && Date.parse(r.ts) <= Date.now()) out.push(r);
+      }
+    } catch { /* missing or unreadable: the others still count */ }
+  }
+  return out;
+}
+
+/**
+ * Skill gaps: searches that came back with nothing, grouped when they share most of their words, and reads of names
+ * that do not exist. A group that keeps recurring is either a skill worth writing (or adding to the library) or a
+ * recurring job whose wording never matches the skill it should use. (2026-11-15: one scheduled Codex check made up
+ * about two thirds of a sample of empty searches, and nothing surfaced it.)
+ */
+export function gapLines(rows: Row[], min = 3): string[] {
+  const words = (q: string) => new Set(q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2));
+  const groups: { words: Set<string>; n: number; agents: Set<string>; sample: string }[] = [];
+  for (const r of rows) {
+    const q = (r as { query?: unknown }).query;
+    if (r.tool !== "search_skills" || typeof q !== "string" || (r.hits?.length ?? 0) > 0 || (r as { exploratory?: unknown }).exploratory) continue;
+    const w = words(q);
+    if (!w.size) continue;
+    const g = groups.find((x) => { let both = 0; for (const t of w) if (x.words.has(t)) both++; const small = Math.min(w.size, x.words.size); return both / small >= 0.5 && both >= Math.min(3, small); });
+    if (g) { g.n++; g.agents.add(agentOf(r)); if (q.length < g.sample.length) g.sample = q; }
+    else groups.push({ words: w, n: 1, agents: new Set([agentOf(r)]), sample: q });
+  }
+  const out: string[] = [];
+  const repeated = groups.filter((g) => g.n >= min).sort((a, b) => b.n - a.n).slice(0, 10);
+  if (repeated.length) out.push("", "Skill gaps (repeated searches that found nothing; write or add a skill, or reword the job):",
+    ...repeated.map((g) => `  ${String(g.n).padStart(4)}  ${[...g.agents].sort().join("+")}: ${g.sample.slice(0, 110)}`));
+  const missing = new Map<string, number>();
+  for (const r of rows) if (r.tool === "read_skill" && r.found === false && r.skill && !r.reason) missing.set(r.skill, (missing.get(r.skill) ?? 0) + 1);
+  const names = [...missing.entries()].filter(([, n]) => n >= min).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  if (names.length) out.push("", "Reads of names that are not in the index (a rule or skill refers to them; fix the reference or reindex):",
+    ...names.map(([id, n]) => `  ${String(n).padStart(4)}  ${id}`));
+  return out;
 }
 
 export function readCounts(days: number): Map<string, number> {
@@ -104,6 +143,9 @@ export function report(days = 7, rows = readLog(days)): string {
     out.push(`Turn endings after hints: ${by("decided")} decided (loaded or wrote \`Skills:\`), ${by("nudged")} nudged, ${by("trivial")} too small to ask, ${by("no_hints")} without hints.`);
   }
   out.push(...funnelLines(gateFunnel(organic, agentOf, Date.now() - days * 86400e3), days));
+  const empty = searches.filter((r) => !(r.hits?.length)).length, weak = searches.filter((r) => (r as { weak?: unknown }).weak === true).length;
+  if (searches.length) out.push("", `Searches: ${searches.length}; ${searches.length - empty - weak} with a strong match, ${weak} with weak candidates only, ${empty} with nothing (${Math.round((100 * empty) / searches.length)}%).`);
+  out.push(...gapLines(organic));
   out.push(...verdictLines(rows.filter((r) => r.tool === "verdict")));
   out.push("", "A load is not proof a skill was applied. Native loads (Claude's Skill tool, Gemini's activate_skill, OpenCode's skill tool, SKILL.md reads) " +
     "are seen through each host's tool hook (Claude Code, Codex once its hooks are trusted, Cursor, Gemini CLI, OpenCode); Antigravity, OpenClaude and Hermes count router read_skill loads only.");

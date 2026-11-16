@@ -2,6 +2,15 @@
 
 ## 0.2.0-beta.1 — unreleased
 
+- Reliability pass (2026-11-15), from two weeks of real logs on the author's Mac:
+  - `search_skills` returns up to three labeled weak candidates when nothing clears the hint bar, instead of nothing. The hint bar had been applied to explicit search: 62% of Codex searches (55% Hermes, 39% Claude Code) came back empty and 3% were retried in exploratory mode. Replayed on 319 distinct real queries that had returned nothing, 75% now get candidates; 150 that had results are unaffected. `SKILLROUTER_WEAK=0` restores the old behavior.
+  - `read_skill` by a name whose reserved identity was retired loads the active skill of that name (or lists them when there are several).
+  - `install` pins a Node whose path survives updates (not one inside a versioned or managed folder such as `…/node/26.13.1/bin/node`), and the hook launcher falls back to another Node if the pinned one is gone.
+  - `install` from a git checkout runs a private copy of the compiled code under `~/.skillrouter/app/current`, switched atomically; a rebuild in the checkout takes effect at the next `install`. `SKILLROUTER_SNAPSHOT=0` uses the checkout in place.
+  - `install hermes` also points every Hermes profile's MCP entry at the same Node and code.
+  - `doctor` checks the Node and code paths in every host config and the launcher, names core entries that match no skill, notes hosts whose hooks are configured but silent, and reports log and backup sizes.
+  - `report` counts strong, weak and empty searches and lists skill gaps: repeated searches that found nothing, and reads of names that are not in the index.
+  - The warm service stays up for 120 idle minutes (was 30); the usage log rotates at 32 MB (`SKILLROUTER_LOG_MAX_MB`), keeping three archives that reports still read.
 - GitHub documentation now separates the merged routing update's 2026-10-26 validation from the historical 245-real-prompt benchmark. The README links to the merged PR and its exact CI run, retains the prepared hero and install prompt, and clarifies host-acceptance limits; asset provenance no longer links to an unpublished local gallery.
 - Explicit search gates weak matches and labels exploratory results; `explain` reports relevance, semantic state, applicability and duplicate decisions. See the [search reference](docs/REFERENCE.md#relevance-and-explanations).
 - Source-qualified skill IDs preserve same-name sources, historical aliases and removed-alias reservations across index rebuilds. Core selection and MCP reads resolve canonical references; optional applicability metadata helps filter unrelated skills. See [identity and applicability](docs/REFERENCE.md#identity-and-applicability-metadata).

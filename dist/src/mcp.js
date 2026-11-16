@@ -16,7 +16,7 @@ export async function serveMcp() {
     };
     server.registerTool("search_skills", {
         description: "Find skills for a task. Call this before non-trivial work when no preloaded skill clearly fits. Query = the task intent as one short phrase.",
-        inputSchema: { query: z.string(), top_k: z.number().int().min(1).max(20).default(5), exploratory: z.boolean().default(false).describe("Include weaker candidates, explicitly labeled; default returns only strong matches") },
+        inputSchema: { query: z.string(), top_k: z.number().int().min(1).max(20).default(5), exploratory: z.boolean().default(false).describe("Include every weaker candidate, labeled; by default strong matches are returned, or a few labeled weak ones when there is no strong match") },
     }, async ({ query, top_k, exploratory }) => {
         let result;
         try {
@@ -26,7 +26,7 @@ export async function serveMcp() {
             logUsage({ ...context(), client: client(), tool: "search_skills", reason: "index_error" });
             return { isError: true, content: [{ type: "text", text: "Index unavailable. Run skillrouter index." }] };
         }
-        logUsage({ ...context(), client: client(), tool: "search_skills", query, exploratory, sem: result.semantic, hits: result.hits.map((h) => [h.skill.id, h.score]) });
+        logUsage({ ...context(), client: client(), tool: "search_skills", query, exploratory, ...(result.weak ? { weak: true } : {}), sem: result.semantic, hits: result.hits.map((h) => [h.skill.id, h.score]) });
         const text = formatSearch(result);
         return { content: [{ type: "text", text }] };
     });
