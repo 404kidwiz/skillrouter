@@ -11,7 +11,7 @@ process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 process.env.SKILLROUTER_SERVICE = "0";
 fs.mkdirSync(process.env.SKILLROUTER_HOME, { recursive: true });
 delete process.env.SKILLROUTER_GATE;
-const { gateEvent, formatGate, GATE_MAX_DENIALS, GATE_REASON } = await import("../src/gate.js");
+const { gateEvent, formatGate, GATE_MAX_DENIALS, GATE_REASON, GATE_REASON_NO_PROMPT } = await import("../src/gate.js");
 const { toolEvent } = await import("../src/events.js");
 const { hint } = await import("../src/hint.js");
 const { saveIndex } = await import("../src/index.js");
@@ -338,8 +338,8 @@ test("tool hooks with no prompt event are recorded once per session, and doctor 
     const rows = () => fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
     const before = rows().filter((r) => r.reason === "no_prompt_event").length;
     const c = session();
-    for (const command of ["ls", "pytest -q", "npm test"])
-        assert.equal(gate("cursor", { conversation_id: c, generation_id: c, tool_name: "Shell", tool_input: { command } }), "", "with no prompt the gate still lets the call through");
+    for (const command of ["ls", "cat a", "git status"])
+        assert.equal(gate("cursor", { conversation_id: c, generation_id: c, tool_name: "Shell", tool_input: { command } }), "", "reads are never refused");
     assert.equal(rows().filter((r) => r.reason === "no_prompt_event").length, before + 1, "one row for the session, not one per call");
     const row = rows().filter((r) => r.reason === "no_prompt_event").pop();
     assert.deepEqual([row.client, row.agent, row.tool], ["hook/cursor", "cursor", "gate"]);
@@ -359,6 +359,38 @@ test("tool hooks with no prompt event are recorded once per session, and doctor 
     // Doctor reads the last week of the log: leave only what a CLI-only week would hold.
     fs.writeFileSync(log, rows().filter((r) => r.reason === "no_prompt_event" && r.agent === "cursor").map((r) => JSON.stringify(r)).join("\n") + "\n");
     const text = health(h).join("\n");
-    assert.match(text, /cursor: [^\n]*\n    NOTE: tool hooks ran \(last [^,]+, 2 sessions\) but no prompt event arrived in 7 days[^\n]*cursor-agent\) does not send beforeSubmitPrompt/);
+    assert.match(text, /cursor: [^\n]*\n    NOTE: tool hooks ran \(last [^,]+, 2 sessions\) but no prompt event arrived in 7 days[^\n]*search gate asked once per session[^\n]*cursor-agent\) does not send beforeSubmitPrompt/);
     assert.match(text, /gemini: [^\n]*\n    NOTE: hooks are configured but none ran in 7 days/, "a host with no rows at all keeps the old note");
+});
+test("a Cursor session whose prompt was never seen is asked to search once, before its first work call", async () => {
+    // cursor-agent sends preToolUse but no beforeSubmitPrompt, so no turn is ever marked as a task and the gate never armed there.
+    const shell = (s, command, agent = "cursor") => gate(agent, agent === "cursor" ? { conversation_id: s, generation_id: s, tool_name: "Shell", tool_input: { command } } : { session_id: s, tool_name: "Bash", tool_input: { command } });
+    const refusal = formatGate("cursor", GATE_REASON_NO_PROMPT);
+    const a = session();
+    assert.equal(shell(a, "ls"), "", "a read is let through");
+    assert.equal(shell(a, "pytest -q"), refusal, "the first work call is refused, in Cursor's shape");
+    assert.equal(gate("cursor", { conversation_id: a, generation_id: a, tool_name: "MCP:search_skills", tool_input: { query: "python tests" } }), "", "the search itself is let through");
+    assert.equal(shell(a, "pytest -q"), "", "after a search the same call goes through");
+    assert.equal(shell(a, "npm test"), "", "and so does later work: once per session, there are no turns to ask by");
+    // An agent that cannot search is refused twice in the whole session, never a third time.
+    const b = session();
+    const answers = ["pytest -q", "npm test", "pytest -q", "make build"].map((c) => shell(b, c));
+    assert.deepEqual(answers.map((x) => x !== ""), [true, true, false, false]);
+    assert.equal(GATE_MAX_DENIALS, 2);
+    // Other hosts are left alone: the CLI also runs Claude Code's hooks on the same session, and one call must not be refused twice.
+    const c = session();
+    for (const other of ["claude", "codex", "gemini"])
+        assert.equal(shell(c, "pytest -q", other), "", `${other} without a prompt is not gated`);
+    assert.equal(shell(c, "pytest -q"), refusal, "Cursor's own hook still asks on that session");
+    // The editor sends the prompt first: its sessions keep the per-turn rule (and its wording), not this one.
+    const d = session();
+    await prompt(d, "t1", task, "cursor");
+    assert.equal(gate("cursor", { conversation_id: d, generation_id: "t1", tool_name: "Shell", tool_input: { command: "pytest -q" } }), formatGate("cursor", GATE_REASON));
+    process.env.SKILLROUTER_GATE = "0";
+    try {
+        assert.equal(shell(session(), "pytest -q"), "", "SKILLROUTER_GATE=0 turns this off too");
+    }
+    finally {
+        delete process.env.SKILLROUTER_GATE;
+    }
 });
