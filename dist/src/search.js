@@ -197,8 +197,10 @@ export function usageArchives() {
  * once cannot overwrite an archive, and the three newest archives are kept.
  */
 function rotateUsage() {
-    const max = Number(process.env.SKILLROUTER_LOG_MAX_MB ?? 32) * 1024 * 1024;
-    if (!(max > 0) || fs.statSync(USAGE_LOG).size <= max)
+    // An empty or unreadable setting means the default, not "never" (0 turns rotation off).
+    const raw = process.env.SKILLROUTER_LOG_MAX_MB;
+    const mb = raw !== undefined && raw.trim() !== "" && Number.isFinite(Number(raw)) ? Number(raw) : 32;
+    if (!(mb > 0) || fs.statSync(USAGE_LOG).size <= mb * 1024 * 1024)
         return;
     fs.renameSync(USAGE_LOG, path.join(SR_DIR, `usage.${Date.now()}${String(process.pid % 1000).padStart(3, "0")}.jsonl`));
     for (const old of usageArchives().slice(0, -3))
