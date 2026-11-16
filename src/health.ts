@@ -53,6 +53,23 @@ export function mcpOnlyConfiguration(target: "openclaude" | "antigravity" | "her
   return entry?.disabled === true || (target === "antigravity" && entry?.enabled === false) ? "disabled" : entry && typeof entry.command === "string" ? "configured (connection unverified)" : cfg.status;
 }
 
+/** Hermes and Antigravity: whether the router's hooks are in the host's config, and (Hermes) approved there. */
+export function hostHooks(target: "hermes" | "antigravity", home = HOME): string {
+  const file = (...p: string[]) => path.join(home, ...p);
+  if (target === "antigravity") {
+    const group = json(file(".gemini", "config", "hooks.json")).data?.skillrouter;
+    if (!group || typeof group !== "object") return "not installed (experimental: `skillrouter install antigravity --hooks`)";
+    return group.enabled === false ? "installed but switched off (\"enabled\": false)" : "configured: prompt check + search gate (experimental; activation unverified)";
+  }
+  let text: string;
+  try { text = fs.readFileSync(file(".hermes", "config.yaml"), "utf8"); } catch { return "missing"; }
+  const ours = /skillrouter-hint(?:\.mjs)?['"]?\s+hermes\b/;
+  if (!ours.test(text)) return "not installed (run `skillrouter install hermes`)";
+  let approved = false;
+  try { const a = JSON.parse(fs.readFileSync(file(".hermes", "shell-hooks-allowlist.json"), "utf8"))?.approvals; approved = Array.isArray(a) && a.some((e) => typeof e?.command === "string" && ours.test(e.command)); } catch { /* no allowlist yet */ }
+  return `configured: prompt check + search gate; ${approved ? "approved in Hermes" : "NOT yet approved in Hermes, so they do not run (accept them in `hermes chat`, or `skillrouter install hermes --accept-hooks`)"}`;
+}
+
 /** Where each host keeps its after-tool (trigger), end-of-turn (decision nudge) and before-tool (search gate) hooks. OpenCode has triggers only. */
 const ACTION_HOOKS: Record<AgentId, { file: string[]; tool: string; stop?: string; gate?: string }> = {
   claude: { file: [".claude", "settings.json"], tool: "PostToolUse", stop: "Stop", gate: "PreToolUse" },
@@ -134,7 +151,11 @@ export function health(home = HOME): string[] {
   for (const target of ["openclaude", "antigravity", "hermes"] as const) {
     const own = rows.filter((r) => r.agent === target);
     const last = own.filter((r) => r.tool === "search_skills" || r.tool === "read_skill").sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))[0]?.ts;
-    out.push(`  ${target}: no hooks on this host; MCP ${mcpOnlyConfiguration(target, home)}`, `    last MCP activity: ${last ?? "not observed"}`);
+    if (target === "openclaude") { out.push(`  ${target}: no hooks on this host; MCP ${mcpOnlyConfiguration(target, home)}`, `    last MCP activity: ${last ?? "not observed"}`); continue; }
+    const hooks = rows.filter((r) => r.client === `hook/${target}` && r.tool === "hint").sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+    const denied = rows.filter((r) => r.client === `hook/${target}` && r.tool === "gate" && r.reason === "denied").length;
+    out.push(`  ${target}: hooks ${hostHooks(target, home)}; MCP ${mcpOnlyConfiguration(target, home)}`,
+      `    last hook: ${hooks[0]?.ts ?? "not observed"}; last MCP activity: ${last ?? "not observed"}; gate refusals: ${denied}`);
   }
   out.push("Configuration presence does not prove hook trust/activation or MCP connectivity (run `doctor --live` to start each server). Plugin/project configs and legacy MCP clients without agent identity may be unobserved.");
   return out;

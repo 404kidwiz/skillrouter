@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { AGENTS, SR_DIR } from "./paths.js";
+import { AGENTS, HOOK_AGENTS, SR_DIR } from "./paths.js";
 // Everything else is imported where used: hooks run on every prompt and tool call, so they load only what they need.
 const USAGE = `skillrouter — a big skill library without the context bloat
 
@@ -18,7 +18,13 @@ const USAGE = `skillrouter — a big skill library without the context bloat
                                           move everything except core out of agent folders (dry run by default)
   skillrouter restore <manifest.json> [--apply]
                                           restore what trim removed, skill by skill (dry run; skips and lists skills changed since)
-  skillrouter install <agent>...         wire MCP + hooks: claude codex cursor gemini opencode; MCP only: openclaude antigravity hermes
+  skillrouter install <agent>... [--accept-hooks] [--hooks]
+                                          wire MCP + hooks: claude codex cursor gemini opencode hermes; MCP only: openclaude antigravity
+                                          --accept-hooks: approve the router's hooks in Hermes (needed for gateway/cron profiles)
+                                          --hooks: also install Antigravity's hooks (experimental)
+  skillrouter backups [--older-than DAYS] [--apply]
+                                          list ~/.skillrouter/backups; --apply removes entries older than DAYS (default 30),
+                                          never the newest trim's restore manifest and archives (dry run by default)
   skillrouter eval [-v] [--ci]           routing quality on the bundled fixture (what CI runs)
   skillrouter eval --live [file] [--lexical] [-v] [--ci]
                                           the same on the real index and ~/.skillrouter/eval.jsonl
@@ -67,18 +73,22 @@ async function main(argv) {
         case "hint-worker": {
             const agent = args[0];
             const mode = args[1];
-            if (!AGENTS.includes(agent))
+            if (!HOOK_AGENTS.includes(agent))
                 return;
             const { readHintInput, runHint, formatHint, hint } = await import("./hint.js");
+            const { silent } = await import("./hosts.js");
             const worker = cmd === "hint-worker";
+            // Hermes and Antigravity have the prompt check and the gate; any other mode there has nothing to do.
+            if ((agent === "hermes" || agent === "antigravity") && mode && mode !== "gate")
+                return finish(silent(agent, false), worker);
             const input = await readHintInput(agent, 1500, mode ? 8 * 1024 * 1024 : 256 * 1024);
             if (input === null)
-                return finish(mode ? "" : formatHint(agent, ""), worker);
+                return finish(mode ? silent(agent, mode === "gate") : formatHint(agent, ""), worker);
             // SKILLROUTER_GATE=0 is the hook's own environment: the warm service has its own and must not be asked.
             if (mode === "gate") {
                 const { gateEnabled } = await import("./gate.js");
                 if (!gateEnabled())
-                    return finish("", worker);
+                    return finish(silent(agent, true), worker);
             }
             // The warm service answers in milliseconds when it is running; any failure falls through to doing the work here.
             if (!worker) {
@@ -94,6 +104,10 @@ async function main(argv) {
             if (mode === "gate") {
                 const { gateEvent } = await import("./gate.js");
                 return finish(gateEvent(agent, input), worker);
+            }
+            if (agent === "hermes" || agent === "antigravity") {
+                // The prompt check, in this process: these hosts allow seconds, and the killable-worker path below is not needed for them.
+                return finish(await hint(agent, input), worker);
             }
             if (mode === "stop") {
                 const { stopEvent } = await import("./events.js");
@@ -174,7 +188,7 @@ async function main(argv) {
                 const { usageArchives, logMaxMB } = await import("./search.js");
                 const archives = usageArchives();
                 const limit = logMaxMB() > 0 ? `rotates at ${logMaxMB()} MB` : "rotation off";
-                console.log(`Disk: usage log ${mb(size(USAGE_LOG))}${archives.length ? ` + ${archives.length} rotated (${mb(archives.reduce((n, f) => n + size(f), 0))})` : ""} (${limit}); backups ${mb(size(BACKUP_DIR))} in ${BACKUP_DIR} (never deleted automatically; remove old ones by hand once you no longer need to restore)`);
+                console.log(`Disk: usage log ${mb(size(USAGE_LOG))}${archives.length ? ` + ${archives.length} rotated (${mb(archives.reduce((n, f) => n + size(f), 0))})` : ""} (${limit}); backups ${mb(size(BACKUP_DIR))} in ${BACKUP_DIR} (never deleted automatically; "skillrouter backups" lists them and can remove old ones)`);
                 void SR_DIR;
             }
             if (live) {
@@ -293,8 +307,18 @@ async function main(argv) {
                 console.log("Restored to original agent folders. Re-run skillrouter index if needed.");
             break;
         }
+        case "backups": {
+            const { backupPlan, pruneBackups, formatBackups } = await import("./backups.js");
+            const apply = flag(args, "--apply");
+            const raw = opt(args, "--older-than")[0];
+            const days = raw !== undefined && Number.isFinite(Number(raw)) && Number(raw) >= 0 ? Number(raw) : 30;
+            const plan = backupPlan(days);
+            console.log(formatBackups(plan, days, apply ? pruneBackups(plan) : undefined));
+            break;
+        }
         case "install": {
             const { install, NODE, INSTALL_TARGETS, snapshotApp, setInstallCli, volatileNode } = await import("./install.js");
+            const installOptions = { acceptHooks: flag(args, "--accept-hooks"), hooks: flag(args, "--hooks") };
             const app = snapshotApp();
             setInstallCli(app.cli);
             console.log(app.note);
@@ -309,7 +333,7 @@ async function main(argv) {
             console.log(process.platform === "win32" ? `Node for MCP: ${NODE} (override with SKILLROUTER_NODE=C:/path/to/node.exe); hooks run the node on PATH` : `Node pinned for hooks and MCP: ${NODE} (override with SKILLROUTER_NODE=/path/to/node)`);
             const seen = new Set();
             for (const a of (targets.length ? targets : INSTALL_TARGETS))
-                for (const line of install(a))
+                for (const line of install(a, undefined, undefined, installOptions))
                     if (!seen.has(line)) {
                         seen.add(line);
                         console.log(line);

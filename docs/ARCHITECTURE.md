@@ -23,7 +23,11 @@ What each host gets from `install`:
 | Cursor | `beforeSubmitPrompt` | `postToolUse` | `stop` sends one `followup_message` (`loop_limit: 1`); counts edits and commands only, and waits for the final text in the transcript |
 | Gemini CLI | `BeforeAgent` | `AfterTool` | `AfterAgent` retries with the nudge as the prompt |
 | OpenCode | plugin `chat.message` | plugin `tool.execute.after` (appended to the tool result) | none |
-| Antigravity, OpenClaude, Hermes | MCP only; save a standing rule separately (see INSTALL.md) | | |
+| Hermes | shell hook `pre_llm_call` (answers `{context}`) | none | none; the search gate is a `pre_tool_call` shell hook |
+| Antigravity (opt-in, experimental) | `PreInvocation` (answers `{injectSteps}`), once per user input | none | none; the search gate is a `PreToolUse` hook that always answers with a decision |
+| OpenClaude | MCP only; save a standing rule separately (see INSTALL.md) | | |
+
+Hermes and Antigravity send payloads in their own shapes and tool names; `src/hosts.ts` rewrites them into the shape the prompt check and the gate already read, and the answers are shaped back per host. Hermes runs a hook only once it is approved there (its first-use prompt, or `skillrouter install hermes --accept-hooks` for unattended profiles).
 
 Skill loads count wherever they happen: the router's `read_skill` under each host's MCP naming, Claude's Skill tool, Gemini's `activate_skill`, OpenCode's `skill` tool, and reads of a `SKILL.md` file.
 

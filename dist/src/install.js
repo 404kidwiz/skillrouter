@@ -82,10 +82,10 @@ export function launcherScript(node, cli, perlClient, dir, sock) {
     return `#!/bin/sh
 # skillrouter hook launcher. Rewritten by \`skillrouter install\`; hook configs point here so their text never changes.
 NODE=${quote(node)}
-# The pinned Node is gone (an update or cleanup removed it): use another one rather than fail every hook.
+# The pinned Node is gone (an update or cleanup removed it): use another one, new enough, rather than fail every hook.
 if [ ! -x "$NODE" ]; then
   for c in "$(command -v node 2>/dev/null)" ${NODE_FALLBACKS.map(quote).join(" ")}; do
-    if [ -n "$c" ] && [ -x "$c" ]; then NODE="$c"; break; fi
+    if [ -n "$c" ] && [ -x "$c" ] && "$c" -e 'process.exit(+process.versions.node.split(".")[0] >= 20 ? 0 : 1)' 2>/dev/null; then NODE="$c"; break; fi
   done
 fi
 if [ "\${SKILLROUTER_SERVICE:-1}" != 0 ] && [ -f ${quote(perlClient)} ] && command -v perl >/dev/null 2>&1; then
@@ -172,12 +172,12 @@ export const CODEX_TOOL_MATCHER = "Bash|apply_patch|mcp__skillrouter__read_skill
 export const CURSOR_TOOL_MATCHER = "Shell|Write|StrReplace|Edit|MultiEdit|ApplyPatch|MCP:read_skill";
 export const GEMINI_TOOL_MATCHER = "write_file|replace|run_shell_command|activate_skill|mcp_skillrouter_read_skill";
 const mcpEntry = (agent, prev = {}) => ({ ...prev, ...mcpCmd(), env: { ...prev?.env, SKILLROUTER_AGENT: agent } });
-/** Wire the MCP server and (where the host has one) the prompt hook into one agent's user-scope config. Backs up every file it touches. */
-export function install(agent, home = HOME, platform = process.platform) {
+export function install(agent, home = HOME, platform = process.platform, opts = {}) {
     const out = [];
     const base = home === HOME ? LAUNCHER : path.join(home, ".skillrouter", "bin", "skillrouter-hint");
     const launcher = launcherFile(base, platform);
-    if (AGENTS.includes(agent))
+    const hooked = AGENTS.includes(agent) || (agent === "hermes" && fs.existsSync(path.join(home, ".hermes", "config.yaml"))) || (agent === "antigravity" && !!opts.hooks);
+    if (hooked)
         out.push(writeLauncher(NODE, target.cli, base, platform));
     // How a hook command starts the launcher, in a form the host's shell accepts (see hookPrefix).
     const bin = hookPrefix(launcher, platform);
@@ -256,36 +256,143 @@ export function install(agent, home = HOME, platform = process.platform) {
                         catch { /* missing/invalid legacy files aren't authoritative */ }
                     }
                 (d.mcpServers ??= {}).skillrouter = mcpEntry(agent, previous);
-                return `skillrouter MCP set (no hooks on this host)${migrated ? `; migrated router settings from ${migrated} (legacy file retained)` : ""}`;
+                return `skillrouter MCP set${migrated ? `; migrated router settings from ${migrated} (legacy file retained)` : ""}`;
             }));
+            out.push(opts.hooks ? installAntigravityHooks(home, bin) : "Antigravity hooks (prompt check and search gate) are available but experimental; add them with `skillrouter install antigravity --hooks`.");
             break;
         }
         case "hermes":
-            out.push(installHermes(home));
+            out.push(...installHermes(home, bin, opts));
             break;
     }
     return out;
 }
-/** Hermes keeps MCP servers in ~/.hermes/config.yaml; its own config API writes it, so its comments and layout survive. */
-function installHermes(home) {
-    const cfg = path.join(home, ".hermes", "config.yaml");
-    const agentDir = path.join(home, ".hermes", "hermes-agent");
-    const py = ["venv", ".venv"].flatMap((v) => [path.join(agentDir, v, "bin", "python"), path.join(agentDir, v, "Scripts", "python.exe")]).find((p) => fs.existsSync(p));
-    if (!fs.existsSync(cfg))
-        return `${cfg}: missing (Hermes not installed); skipped`;
-    if (!py)
-        return `${cfg}: Hermes's Python not found under ~/.hermes/hermes-agent; add mcp_servers.skillrouter by hand: command ${NODE}, args [${target.cli}, "mcp"], env SKILLROUTER_AGENT=hermes${patchHermesProfiles(home)}`;
-    backup(cfg, fs.statSync(cfg).mode & 0o777);
-    const script = `import sys, json; sys.path.insert(0, ${JSON.stringify(path.join(home, ".hermes", "hermes-agent"))})
+/** Hermes tools the search gate looks at: work calls, skill loads, and the router's own two tools (to see a search). */
+export const HERMES_GATE_MATCHER = "^(?:terminal|write_file|patch|skill_view|mcp_skillrouter_(?:read_skill|search_skills))$";
+/** A hook entry of ours in a Hermes config: the launcher followed by `hermes`. */
+const HERMES_HOOK = /skillrouter-hint(?:\.mjs)?['"]?\s+hermes\b/;
+/**
+ * What Hermes's own Python does to one HERMES_HOME (the main one or a profile): set the MCP entry, replace our hook
+ * entries under `hooks:` (other hooks stay), and, when asked, record Hermes's consent for exactly those hooks in
+ * shell-hooks-allowlist.json, in the format its docs give for manual allowlisting. Hermes's config API writes the
+ * YAML, so comments and layout survive.
+ */
+const HERMES_SCRIPT = `import sys, json, os, re, datetime
+sys.path.insert(0, sys.argv[2])
 from hermes_cli.config import load_config, save_config
-c = load_config(); c.setdefault("mcp_servers", {})["skillrouter"] = json.loads(sys.argv[1]); save_config(c); print("ok")`;
+spec = json.loads(sys.argv[1])
+c = load_config()
+servers = c.get("mcp_servers")
+if not isinstance(servers, dict):
+    servers = {}
+    c["mcp_servers"] = servers
+prev = servers.get("skillrouter")
+prev = dict(prev) if isinstance(prev, dict) else {}
+env = dict(prev.get("env")) if isinstance(prev.get("env"), dict) else {}
+env.update(spec["mcp"]["env"])
+prev.update({"command": spec["mcp"]["command"], "args": spec["mcp"]["args"], "env": env})
+servers["skillrouter"] = prev
+ours = re.compile(spec["marker"])
+hooks = c.get("hooks")
+if not isinstance(hooks, dict):
+    hooks = {}
+    c["hooks"] = hooks
+for event, entry in spec["hooks"].items():
+    kept = [e for e in (hooks.get(event) if isinstance(hooks.get(event), list) else []) if not (isinstance(e, dict) and ours.search(str(e.get("command", ""))))]
+    kept.append(entry)
+    hooks[event] = kept
+save_config(c)
+if spec.get("accept"):
+    path = os.path.join(os.environ["HERMES_HOME"], "shell-hooks-allowlist.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    approvals = data.get("approvals") if isinstance(data.get("approvals"), list) else []
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    for event, entry in spec["hooks"].items():
+        approvals = [a for a in approvals if not (isinstance(a, dict) and a.get("event") == event and a.get("command") == entry["command"])]
+        approvals.append({"event": event, "command": entry["command"], "approved_at": now})
+    data["approvals"] = approvals
+    tmp = path + ".tmp-" + str(os.getpid())
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+print("ok")
+`;
+/**
+ * Hermes: the MCP server and, through its shell hooks (config.yaml `hooks:`), the prompt check (pre_llm_call) and
+ * the search gate (pre_tool_call), for the main home and every profile. Hermes runs a new hook only once the user
+ * has approved it (first use in \`hermes chat\`); gateway, cron and other unattended profiles never ask, so
+ * `acceptHooks` records that approval for these hooks alone. Without Hermes's Python nothing can write its YAML
+ * safely: the MCP lines of profiles are still repointed (patchHermesProfiles) and the rest is named for doing by hand.
+ */
+function installHermes(home, bin, opts) {
+    const root = path.join(home, ".hermes"), cfg = path.join(root, "config.yaml");
+    const agentDir = path.join(root, "hermes-agent");
+    const py = process.env.SKILLROUTER_HERMES_PYTHON || ["venv", ".venv"].flatMap((v) => [path.join(agentDir, v, "bin", "python"), path.join(agentDir, v, "Scripts", "python.exe")]).find((p) => fs.existsSync(p));
+    if (!fs.existsSync(cfg))
+        return [`${cfg}: missing (Hermes not installed); skipped`];
+    if (!py)
+        return [`${cfg}: Hermes's Python not found under ~/.hermes/hermes-agent (set SKILLROUTER_HERMES_PYTHON to it); add mcp_servers.skillrouter by hand: command ${NODE}, args [${target.cli}, "mcp"], env SKILLROUTER_AGENT=hermes${patchHermesProfiles(home)}`,
+            "Hermes hooks not installed: they are written through Hermes's own config API, which needs its Python."];
+    const hooks = {
+        pre_llm_call: { command: `${bin} hermes`, timeout: 5 },
+        pre_tool_call: { matcher: HERMES_GATE_MATCHER, command: `${bin} hermes gate`, timeout: 5 },
+    };
+    const spec = JSON.stringify({ mcp: { command: NODE, args: [target.cli, "mcp"], env: { SKILLROUTER_AGENT: "hermes" } }, hooks, marker: HERMES_HOOK.source, accept: !!opts.acceptHooks });
+    const homes = [root];
     try {
-        execFileSync(py, ["-c", script, JSON.stringify({ command: NODE, args: [target.cli, "mcp"], env: { SKILLROUTER_AGENT: "hermes" } })], { cwd: path.join(home, ".hermes", "hermes-agent"), stdio: ["ignore", "pipe", "pipe"], timeout: 60000, ...NO_WINDOW });
-        return `${cfg}: skillrouter MCP set via Hermes config API (no hooks on this host)${patchHermesProfiles(home)}`;
+        for (const name of fs.readdirSync(path.join(root, "profiles")).sort()) {
+            const dir = path.join(root, "profiles", name);
+            if (fs.existsSync(path.join(dir, "config.yaml")))
+                homes.push(dir);
+        }
     }
-    catch (e) {
-        return `${cfg}: Hermes config API failed (${e.message.split("\n")[0]}); not changed${patchHermesProfiles(home)}`;
+    catch { /* no profiles */ }
+    const done = [], failed = [];
+    for (const dir of homes) {
+        const file = path.join(dir, "config.yaml"), label = dir === root ? "main" : path.basename(dir);
+        try {
+            backup(file, fs.statSync(file).mode & 0o777);
+            const env = { ...process.env, HERMES_HOME: dir };
+            execFileSync(py, ["-c", HERMES_SCRIPT, spec, agentDir], { cwd: fs.existsSync(agentDir) ? agentDir : dir, env, stdio: ["ignore", "pipe", "pipe"], timeout: 60000, ...NO_WINDOW });
+            done.push(label);
+        }
+        catch (e) {
+            const err = e;
+            failed.push(`${label} (${(String(err.stderr ?? "").trim().split("\n").pop() || err.message.split("\n")[0]).slice(0, 160)})`);
+        }
     }
+    const out = [`${cfg}: skillrouter MCP and hooks (prompt check, search gate) set via Hermes config API for ${done.length ? done.join(", ") : "no home"}${failed.length ? `; FAILED, not changed: ${failed.join("; ")}` : ""}`];
+    if (failed.includes("main") || failed.some((f) => f.startsWith("main ")))
+        out[0] += patchHermesProfiles(home);
+    if (!done.length)
+        return out;
+    out.push(opts.acceptHooks
+        ? "Hermes hooks approved for these homes (shell-hooks-allowlist.json): they run from the next session. `hermes hooks list` shows them."
+        : "Hermes runs a new hook only after you approve it: `hermes chat` asks once per profile. Gateway, cron and other unattended profiles never ask; approve for all of them with `skillrouter install hermes --accept-hooks`.");
+    return out;
+}
+/**
+ * Antigravity's hooks (~/.gemini/config/hooks.json, one named group): the prompt check before a model call and the
+ * search gate before a tool call. Opt-in (`install antigravity --hooks`): its docs do not say what happens when a
+ * hook fails or times out, and this integration has been tested against the documented contract, not a running app.
+ */
+function installAntigravityHooks(home, bin) {
+    return patchJson(path.join(home, ".gemini", "config", "hooks.json"), (d) => {
+        const prev = d.skillrouter && typeof d.skillrouter === "object" ? d.skillrouter : {};
+        d.skillrouter = {
+            ...prev, enabled: prev.enabled ?? true,
+            PreInvocation: [{ type: "command", command: `${bin} antigravity`, timeout: 5 }],
+            // Every tool, so a search through the router's MCP tools is seen whatever name the app gives them.
+            PreToolUse: [{ matcher: "", hooks: [{ type: "command", command: `${bin} antigravity gate`, timeout: 5 }] }],
+        };
+        return "skillrouter hooks set (PreInvocation prompt check, PreToolUse search gate); experimental, turn off with \"enabled\": false or SKILLROUTER_GATE=0";
+    });
 }
 function appendToml(file, block, marker) {
     const cur = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";

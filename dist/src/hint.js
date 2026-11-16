@@ -2,6 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { INDEX_FILE } from "./paths.js";
+import { fromHost } from "./hosts.js";
 import { getIndex, logUsage, search } from "./search.js";
 import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
@@ -11,6 +12,11 @@ const EVENT = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
 const TOOL_EVENT = { gemini: "AfterTool" }; // claude/codex: PostToolUse
 /** The host's hook answer carrying context for the model. `tool`: after a tool call rather than on a prompt. */
 export function formatHint(agent, text, tool = false) {
+    // Hermes appends `context` to the turn's user message; Antigravity injects a step before the model call.
+    if (agent === "hermes")
+        return JSON.stringify(text && !tool ? { context: text } : {});
+    if (agent === "antigravity")
+        return JSON.stringify(text && !tool ? { injectSteps: [{ ephemeralMessage: text }] } : {});
     if (agent === "cursor")
         return JSON.stringify(text ? { ...(tool ? {} : { continue: true }), additional_context: text } : tool ? {} : { continue: true });
     if (!text)
@@ -53,8 +59,16 @@ export function minRawFor(skills) {
     return Math.round(20 * Math.log(Math.max(2, skills)) / Math.log(4500) * 10) / 10;
 }
 /** Reads the hook JSON on stdin, prints the agent-specific hook output. Never blocks a prompt. */
-export async function hint(agent, input, minRaw, k = 3) {
+export async function hint(agent, rawInput, minRaw, k = 3) {
     const started = performance.now();
+    let translated = rawInput;
+    try {
+        translated = fromHost(agent, rawInput, false);
+    }
+    catch { /* judged as sent */ }
+    if (translated === null)
+        return formatHint(agent, ""); // nothing to check for this event
+    const input = translated;
     const hint_id = randomUUID();
     let payload = {};
     let semStatus;
@@ -119,7 +133,8 @@ export async function hint(agent, input, minRaw, k = 3) {
         return formatHint(agent, "");
     // Named siblings count as shown, so a later trigger this turn doesn't offer them again.
     addShown(session, hits.map((h) => h.skill.id), sessionHash(turnOf(payload)), Object.fromEntries(hits.filter((h) => h.similar?.length).map((h) => [h.skill.id, h.similar])));
-    return formatHint(agent, hintText(hits, hint_id, core, agent));
+    // Hermes and Antigravity keep their own skill folders: nothing is "preloaded" there, every suggestion is a read.
+    return formatHint(agent, hintText(hits, hint_id, agent === "hermes" || agent === "antigravity" ? new Set() : core, agent));
 }
 /**
  * Which candidates become a hint. A hint costs context on every prompt, so only a confident match is shown; the

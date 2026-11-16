@@ -16,6 +16,7 @@ export function antigravityConfigPaths(home = HOME) {
     };
 }
 export const AGENTS = ["claude", "codex", "cursor", "gemini", "opencode"];
+export const HOOK_AGENTS = [...AGENTS, "hermes", "antigravity"];
 /** Folders each agent auto-loads at startup (user scope). First entry is where core links go. */
 export const AGENT_SKILL_DIRS = {
     claude: [path.join(HOME, ".claude", "skills")],

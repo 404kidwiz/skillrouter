@@ -60,12 +60,49 @@ for a in claude codex cursor gemini opencode; do
 done
 o=$(echo '{"session_id":"s2","prompt_id":"p2","prompt":"write python pytest regression tests for the parser module"}' | SKILLROUTER_SERVICE=0 $L codex); has "$o" "Skill check \(skillrouter\)"; ok $? "prompt hook shows a skill check"
 o=$(echo '{"session_id":"s2","turn_id":"p2","tool_name":"Bash","tool_input":{"command":"npm install left-pad"}}' | SKILLROUTER_SERVICE=0 $L codex gate); has "$o" "permissionDecision\":\"deny"; ok $? "search gate refuses the first work call"
+echo "== Hermes and Antigravity hooks through the launcher, in each host's own payload and answer shapes"
+HP='{"hook_event_name":"pre_llm_call","tool_name":null,"tool_input":null,"session_id":"hs1","cwd":"/w","profile":"default","extra":{"turn_id":"t1","user_message":"write python pytest regression tests for the parser module"}}'
+hg(){ printf '{"hook_event_name":"pre_tool_call","tool_name":"%s","tool_input":%s,"session_id":"hs1","cwd":"/w","extra":{"turn_id":"t1","tool_call_id":"%s"}}' "$1" "$2" "$3"; }
+o=$(echo "$HP" | SKILLROUTER_SERVICE=0 $L hermes); has "$o" '^\{"context":"Skill check \(skillrouter\)'; ok $? "hermes pre_llm_call -> {context}"
+o=$(hg terminal '{"command":"ls -la"}' c0 | SKILLROUTER_SERVICE=0 $L hermes gate); [ "$o" = "{}" ]; ok $? "hermes: read-only command passes"
+o=$(hg terminal '{"command":"npm install left-pad"}' c1 | SKILLROUTER_SERVICE=0 $L hermes gate); has "$o" '^\{"decision":"block","reason":"skillrouter:'; ok $? "hermes pre_tool_call -> block until a search"
+o=$(hg mcp_skillrouter_search_skills '{"query":"pytest"}' c2 | SKILLROUTER_SERVICE=0 $L hermes gate); [ "$o" = "{}" ]; ok $? "hermes: the router search is seen"
+o=$(hg write_file '{"path":"/w/a.py","content":"x"}' c3 | SKILLROUTER_SERVICE=0 $L hermes gate); [ "$o" = "{}" ]; ok $? "hermes: work passes after the search"
+AP='{"conversationId":"ag1","workspacePaths":["/w"],"lastUserInput":"write python pytest regression tests for the parser module","invocationNum":0}'
+ag(){ printf '{"conversationId":"ag1","workspacePaths":["/w"],"lastUserInput":"write python pytest regression tests for the parser module","stepIdx":%s,"toolCall":{"name":"%s","args":%s}}' "$3" "$1" "$2"; }
+o=$(echo "$AP" | SKILLROUTER_SERVICE=0 $L antigravity); has "$o" '^\{"injectSteps":\[\{"ephemeralMessage":"Skill check \(skillrouter\)'; ok $? "antigravity PreInvocation -> {injectSteps}"
+o=$(echo "$AP" | SKILLROUTER_SERVICE=0 $L antigravity); [ "$o" = "{}" ]; ok $? "antigravity: later model calls of the turn add nothing"
+o=$(ag view_file '{"AbsolutePath":"/w/a"}' 1 | SKILLROUTER_SERVICE=0 $L antigravity gate); [ "$o" = '{"decision":"allow"}' ]; ok $? "antigravity: a read is allowed, with an explicit decision"
+o=$(ag run_command '{"CommandLine":"npm install left-pad"}' 2 | SKILLROUTER_SERVICE=0 $L antigravity gate); has "$o" '^\{"decision":"deny","reason":"skillrouter:'; ok $? "antigravity PreToolUse -> deny until a search"
+o=$(ag mcp_skillrouter_search_skills '{"query":"pytest"}' 3 | SKILLROUTER_SERVICE=0 $L antigravity gate); [ "$o" = '{"decision":"allow"}' ]; ok $? "antigravity: the router search is seen"
+o=$(ag write_to_file '{"TargetFile":"/w/a.py"}' 4 | SKILLROUTER_SERVICE=0 $L antigravity gate); [ "$o" = '{"decision":"allow"}' ]; ok $? "antigravity: work passes after the search"
+o=$(echo 'garbage' | SKILLROUTER_SERVICE=0 $L antigravity gate); [ "$o" = '{"decision":"allow"}' ]; ok $? "antigravity: unreadable input still gets a decision"
+o=$(node $CLI install antigravity --hooks 2>&1); has "$o" "skillrouter hooks set" && grep -q "skillrouter-hint' antigravity gate" $S/.gemini/config/hooks.json; ok $? "install antigravity --hooks writes hooks.json"
+PY=$(command -v python3 || true)
+if [ -n "$PY" ]; then
+  # A stand-in for Hermes's config package (JSON is valid YAML), so install's real code path runs: Hermes's Python, per home.
+  mkdir -p $S/.hermes/hermes-agent/hermes_cli $S/.hermes/profiles/beta
+  : > $S/.hermes/hermes-agent/hermes_cli/__init__.py
+  printf 'import json, os\ndef _p(): return os.path.join(os.environ["HERMES_HOME"], "config.yaml")\ndef load_config():\n    with open(_p()) as f: return json.load(f)\ndef save_config(c):\n    with open(_p(), "w") as f: json.dump(c, f, indent=2)\n' > $S/.hermes/hermes-agent/hermes_cli/config.py
+  cp $S/.hermes/config.yaml $S/hermes-main.keep; cp $S/.hermes/profiles/alpha/config.yaml $S/hermes-alpha.keep
+  echo '{"model":"x","hooks":{"post_tool_call":[{"command":"/mine/format.sh"}]}}' > $S/.hermes/config.yaml
+  echo '{"model":"alpha"}' > $S/.hermes/profiles/alpha/config.yaml; echo '{"model":"beta"}' > $S/.hermes/profiles/beta/config.yaml
+  o=$(SKILLROUTER_HERMES_PYTHON=$PY node $CLI install hermes --accept-hooks 2>&1)
+  has "$o" "set via Hermes config API for main, alpha, beta" && has "$o" "Hermes hooks approved"; ok $? "install hermes --accept-hooks: main and profiles through Hermes's Python"
+  grep -q "skillrouter-hint' hermes gate" $S/.hermes/profiles/beta/config.yaml && grep -q "/mine/format.sh" $S/.hermes/config.yaml && grep -q '"pre_llm_call"' $S/.hermes/shell-hooks-allowlist.json && grep -q '"pre_tool_call"' $S/.hermes/profiles/alpha/shell-hooks-allowlist.json; ok $? "hermes: hooks written beside the user's own, consent recorded per home"
+  o=$(SKILLROUTER_SERVICE=0 node $A doctor 2>&1); has "$o" "hermes: hooks configured: prompt check \+ search gate; approved in Hermes" && has "$o" "antigravity: hooks configured: prompt check \+ search gate"; ok $? "doctor reports both hosts' hooks"
+  cp $S/hermes-main.keep $S/.hermes/config.yaml; cp $S/hermes-alpha.keep $S/.hermes/profiles/alpha/config.yaml; rm -rf $S/.hermes/hermes-agent $S/.hermes/profiles/beta
+else echo "SKIP  no python3: install hermes not exercised"; fi
+
 echo "== 3 launcher fallback when the pinned Node is gone"
 sed "s#^NODE='[^']*'#NODE='/gone/node/26.13.1/bin/node'#" $L > $S/launcher-broken && chmod +x $S/launcher-broken
 o=$(echo '{"session_id":"s3","prompt_id":"p3","prompt":"write python pytest regression tests for the parser module"}' | SKILLROUTER_SERVICE=0 $S/launcher-broken codex); rc=$?; [ $rc = 0 ] && has "$o" "Skill check"; ok $? "broken pin: hook still answers via fallback Node"
 
 echo "== warm service through the launcher"
 if command -v perl >/dev/null; then
+  o=$(echo '{"hook_event_name":"pre_llm_call","session_id":"hs7","extra":{"turn_id":"t7","user_message":"write python pytest regression tests for the parser module"}}' | $L hermes); sleep 3
+  o=$(echo '{"hook_event_name":"pre_llm_call","session_id":"hs8","extra":{"turn_id":"t8","user_message":"write python pytest regression tests for the lexer module"}}' | $L hermes); has "$o" '^\{"context":"Skill check'; ok $? "hermes hook answered through the warm service"
+  o=$(echo '{"conversationId":"ag8","lastUserInput":"x","stepIdx":1,"toolCall":{"name":"view_file","args":{}}}' | $L antigravity gate); [ "$o" = '{"decision":"allow"}' ]; ok $? "antigravity gate answered through the warm service"
   o=$(echo '{"session_id":"s4","prompt_id":"p4","prompt":"write python pytest regression tests for the parser module"}' | $L codex); sleep 3
   o=$(echo '{"session_id":"s4","prompt_id":"p5","prompt":"write python pytest regression tests for the parser module again"}' | $L codex); has "$o" "Skill check"; ok $? "hook answers with the service enabled"
   o=$(node $A service status 2>&1); echo "   $o" | head -2 | cut -c1-160; has "$o" "running"; ok $? "service is running from the copy"
@@ -125,6 +162,12 @@ before=$(SKILLROUTER_SERVICE=0 node $A report 7 2>&1 | grep -c .)
 o=$(echo '{"session_id":"s9","prompt_id":"p9","prompt":"write python pytest regression tests for the parser module"}' | SKILLROUTER_SERVICE=0 SKILLROUTER_LOG_MAX_MB=0.001 $L codex)
 ls $S/.skillrouter/usage.*.jsonl >/dev/null 2>&1; ok $? "usage log rotates past the limit"
 o=$(SKILLROUTER_SERVICE=0 node $A report 7 2>&1); has "$o" " 4  codex: read-only production website integrity"; ok $? "report still reads rows from the rotated log"
+
+echo "== backups"
+B=$S/.skillrouter/backups; mkdir -p $B/old-rules $B/new-rules; echo x > $B/old-rules/a; echo x > $B/new-rules/a
+touch -t 202001010000 $B/old-rules/a $B/old-rules
+o=$(SKILLROUTER_SERVICE=0 node $A backups 2>&1); has "$o" "would remove  old-rules" && has "$o" "keep \(newer than 30 days\)  new-rules" && [ -d $B/old-rules ]; ok $? "backups: dry run lists, removes nothing"
+o=$(SKILLROUTER_SERVICE=0 node $A backups --apply 2>&1); has "$o" "REMOVED  old-rules" && [ ! -d $B/old-rules ] && [ -d $B/new-rules ]; ok $? "backups --apply removes only what is old"
 
 echo "== upgrade: second install switches the copy, configs keep one path"
 first=$(readlink $S/.skillrouter/app/current); echo "// v2" >> $REPO/dist/src/routing.js

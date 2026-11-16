@@ -21,8 +21,9 @@ Merged commit `7902505` passed the [full CI matrix on 2026-10-26](https://github
 | Cursor | Installed server | Interactive mode | Both interactive; headless behavior differs | `preToolUse` |
 | Gemini CLI | Installed server | Yes | Both; final nudge retries the answer | `BeforeTool` |
 | OpenCode | Installed server | Plugin message hook | Action hints; no final nudge | None: the plugin API has no blocking step here |
-| Antigravity | Current global config | Separately saved standing rule; no hook integration here | Not installed by this adapter | None |
-| OpenClaude / Hermes | Host configuration | Separately saved standing rule | No hook integration here | None |
+| Antigravity | Current global config | `PreInvocation` hook with `install antigravity --hooks` (experimental; not run against a live app) | None | `PreToolUse`, with `--hooks` |
+| Hermes | Main home and every profile | `pre_llm_call` shell hook, once approved in Hermes | None | `pre_tool_call` shell hook |
+| OpenClaude | Host configuration | Separately saved standing rule | No hook integration here | None |
 
 In real sessions the gate has run on Claude Code and Codex since 2026-10-24; Cursor and Gemini are covered by scripted hook payloads only, and OpenCode has no gate. The gate fails open on every host: a crashed or timed-out gate hook lets the call through. It prints nothing when it allows, never an explicit allow, so it cannot skip a host's own approval prompts. Known limits: a prompt under 20 characters or one that points back at the conversation ("continue", "go ahead") is a task turn only until the session's first search, because it carries on earlier work; a read-only command (`git status`, `docker ps`, `gh pr view`) is not work, and the list of those is finite; with both the plugin and a standalone install active, two gate hooks answer one call and use both refusals at once. Codex runs a hook only after the user trusts it in `/hooks`; the gate hook learns about searches itself, so trusting the PreToolUse entry is enough.
 

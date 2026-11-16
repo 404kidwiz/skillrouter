@@ -138,10 +138,53 @@ export function gapLines(rows, min = 3) {
         for (const t of w)
             g.seen.set(t, (g.seen.get(t) ?? 0) + 1);
     }
+    // One recurring job is phrased hundreds of ways and lands in several groups, each opened by a different first
+    // phrasing. Two groups whose queries use the same words at the same rates (cosine of their word counts 0.6 or
+    // more) are the same job: the smaller is folded into the larger. Jobs that share only boilerplate ("read-only
+    // production …") stay apart, at about 0.5. Only groups that recur are compared.
+    const coreOf = (g) => [...g.seen.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 5).map(([t]) => t);
+    const alike = (a, b) => {
+        let dot = 0, na = 0, nb = 0;
+        for (const [t, n] of a.seen) {
+            na += n * n;
+            const m = b.seen.get(t);
+            if (m)
+                dot += n * m;
+        }
+        for (const n of b.seen.values())
+            nb += n * n;
+        return na && nb ? dot / Math.sqrt(na * nb) : 0;
+    };
+    const recurring = groups.filter((g) => g.n >= 2).sort((a, b) => b.n - a.n).slice(0, 300);
+    const folded = new Set();
+    for (let i = 0; i < recurring.length; i++) {
+        const a = recurring[i];
+        if (folded.has(a))
+            continue;
+        for (let j = i + 1; j < recurring.length; j++) {
+            const b = recurring[j];
+            if (folded.has(b) || a.seen.size < 3 || b.seen.size < 3 || alike(a, b) < 0.6)
+                continue;
+            a.n += b.n;
+            for (const x of b.agents)
+                a.agents.add(x);
+            for (const m of b.members)
+                if (a.members.length < 60)
+                    a.members.push(m);
+            for (const [t, n] of b.seen)
+                a.seen.set(t, (a.seen.get(t) ?? 0) + n);
+            folded.add(b);
+        }
+    }
+    if (folded.size) {
+        const kept = groups.filter((g) => !folded.has(g));
+        groups.length = 0;
+        groups.push(...kept);
+    }
     // The line shown for a group: the member that carries most of the words the group's queries have in common, the
     // shortest such one (the shortest member alone can be an outlier that merely shares the boilerplate).
     const sampleOf = (g) => {
-        const core = new Set([...g.seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([t]) => t));
+        const core = new Set(coreOf(g));
         let pick = g.members[0], score = -1;
         for (const m of g.members) {
             let n = 0;

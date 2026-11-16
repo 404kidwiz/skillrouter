@@ -2,7 +2,8 @@ import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { INDEX_FILE } from "./paths.js";
-import type { AgentId } from "./paths.js";
+import type { AgentId, HookAgent } from "./paths.js";
+import { fromHost } from "./hosts.js";
 import { getIndex, logUsage, search, type Hit } from "./search.js";
 import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
@@ -13,7 +14,10 @@ const EVENT: Partial<Record<AgentId, string>> = { gemini: "BeforeAgent" }; // cl
 const TOOL_EVENT: Partial<Record<AgentId, string>> = { gemini: "AfterTool" }; // claude/codex: PostToolUse
 
 /** The host's hook answer carrying context for the model. `tool`: after a tool call rather than on a prompt. */
-export function formatHint(agent: AgentId, text: string, tool = false): string {
+export function formatHint(agent: HookAgent, text: string, tool = false): string {
+  // Hermes appends `context` to the turn's user message; Antigravity injects a step before the model call.
+  if (agent === "hermes") return JSON.stringify(text && !tool ? { context: text } : {});
+  if (agent === "antigravity") return JSON.stringify(text && !tool ? { injectSteps: [{ ephemeralMessage: text }] } : {});
   if (agent === "cursor") return JSON.stringify(text ? { ...(tool ? {} : { continue: true }), additional_context: text } : tool ? {} : { continue: true });
   if (!text) return "";
   const hookEventName = tool ? TOOL_EVENT[agent] ?? "PostToolUse" : EVENT[agent] ?? "UserPromptSubmit";
@@ -61,8 +65,12 @@ export function minRawFor(skills: number): number {
 }
 
 /** Reads the hook JSON on stdin, prints the agent-specific hook output. Never blocks a prompt. */
-export async function hint(agent: AgentId, input: string, minRaw?: number, k = 3): Promise<string> {
+export async function hint(agent: HookAgent, rawInput: string, minRaw?: number, k = 3): Promise<string> {
   const started = performance.now();
+  let translated: string | null = rawInput;
+  try { translated = fromHost(agent, rawInput, false); } catch { /* judged as sent */ }
+  if (translated === null) return formatHint(agent, ""); // nothing to check for this event
+  const input = translated;
   const hint_id = randomUUID();
   let payload: Record<string, unknown> = {};
   let semStatus: string | undefined;
@@ -108,7 +116,8 @@ export async function hint(agent: AgentId, input: string, minRaw?: number, k = 3
   if (!hits.length) return formatHint(agent, "");
   // Named siblings count as shown, so a later trigger this turn doesn't offer them again.
   addShown(session, hits.map((h) => h.skill.id), sessionHash(turnOf(payload)), Object.fromEntries(hits.filter((h) => h.similar?.length).map((h) => [h.skill.id, h.similar!])));
-  return formatHint(agent, hintText(hits, hint_id, core, agent));
+  // Hermes and Antigravity keep their own skill folders: nothing is "preloaded" there, every suggestion is a read.
+  return formatHint(agent, hintText(hits, hint_id, agent === "hermes" || agent === "antigravity" ? new Set() : core, agent));
 }
 
 /**
@@ -153,7 +162,7 @@ export function selectHints(hits: Hit[], minRaw: number, k: number, options: { c
 }
 
 /** The hint the model reads: a required decision, each candidate's trigger, and the exact way to load it. */
-export function hintText(hits: Hit[], hint_id: string, core: Set<string>, agent: AgentId = "claude", lead?: string): string {
+export function hintText(hits: Hit[], hint_id: string, core: Set<string>, agent: HookAgent = "claude", lead?: string): string {
   const lines = hits.map((h) => {
     const id = h.skill.id;
     const how = core.has(id) // resolved core ids (coreIds): a same-named variant with other text is not preloaded
@@ -168,7 +177,7 @@ export function hintText(hits: Hit[], hint_id: string, core: Set<string>, agent:
 }
 
 /** Run work in a killable process: synchronous index work cannot defeat the deadline. */
-export function runHint(agent: AgentId, input: string, cli: string, timeout = 1500, mode?: string): Promise<string> {
+export function runHint(agent: HookAgent, input: string, cli: string, timeout = 1500, mode?: string): Promise<string> {
   const started = performance.now();
   return new Promise((resolve) => {
     const child = execFile(process.execPath, [cli, "hint-worker", agent, ...(mode ? [mode] : [])], {
@@ -189,7 +198,7 @@ export function runHint(agent: AgentId, input: string, cli: string, timeout = 15
 }
 
 /** Bound stdin too: a host that never closes its pipe must not hang prompt submission. Tool events carry tool output, so their cap is higher. */
-export function readHintInput(agent: AgentId, timeout = 1500, cap = 256 * 1024): Promise<string | null> {
+export function readHintInput(agent: HookAgent, timeout = 1500, cap = 256 * 1024): Promise<string | null> {
   return new Promise((resolve) => {
     let input = "";
     const done = (reason?: string) => {

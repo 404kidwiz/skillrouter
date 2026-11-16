@@ -10,6 +10,11 @@
   - `install hermes` also points every Hermes profile's MCP entry at the same Node and code, changing only those two lines.
   - `doctor` checks the Node and code paths in every host config and the launcher, names core entries that match no skill or several, notes hosts whose hooks are configured but silent, and reports log and backup sizes.
   - `report` counts strong, weak, empty, exploratory and failed searches and lists skill gaps: repeated searches that found nothing, and reads of names that are not in the index.
+  - Hermes gets hooks: `install hermes` writes a prompt check (`pre_llm_call`) and the search gate (`pre_tool_call`) into the main home and every profile through Hermes's own config API, next to the MCP entry. Hermes runs them once approved there; `--accept-hooks` records that approval for unattended profiles. Checked against Hermes's own hook runner (payload, matcher, allowlist and response parsing).
+  - Antigravity gets opt-in hooks: `install antigravity --hooks` writes a `PreInvocation` prompt check and a `PreToolUse` search gate into `~/.gemini/config/hooks.json`. Experimental: built to the documented contract, not run against a live app.
+  - `skillrouter backups [--older-than DAYS] [--apply]` lists the backups folder and removes old entries on request, never the newest trim's restore manifest and archives.
+  - The hook launcher's fallback Node must be version 20 or newer.
+  - Skill gaps: one recurring job phrased many ways is reported as one line.
   - The warm service stays up for 120 idle minutes (was 30) and restarts when `install` switches the code copy; the usage log rotates at 32 MB (`SKILLROUTER_LOG_MAX_MB`), keeping a few archives that reports still read.
 - GitHub documentation now separates the merged routing update's 2026-10-26 validation from the historical 245-real-prompt benchmark. The README links to the merged PR and its exact CI run, retains the prepared hero and install prompt, and clarifies host-acceptance limits; asset provenance no longer links to an unpublished local gallery.
 - Explicit search gates weak matches and labels exploratory results; `explain` reports relevance, semantic state, applicability and duplicate decisions. See the [search reference](docs/REFERENCE.md#relevance-and-explanations).

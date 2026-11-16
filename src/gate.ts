@@ -1,5 +1,6 @@
 import { logUsage } from "./search.js";
-import type { AgentId } from "./paths.js";
+import type { HookAgent } from "./paths.js";
+import { fromHost, silent } from "./hosts.js";
 import { sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, isWork, shellCommand } from "./triggers.js";
 import { skillLoadOf } from "./events.js";
@@ -25,8 +26,10 @@ export const GATE_REASON = "skillrouter: before starting this work, search the s
   "If nothing fits, say so on your `Skills:` line afterwards. This stops only the first work call of a task turn.";
 
 /** The host's own way of saying "not this call, and here is why". */
-export function formatGate(agent: AgentId, reason = GATE_REASON): string {
+export function formatGate(agent: HookAgent, reason = GATE_REASON): string {
   switch (agent) {
+    case "hermes": return JSON.stringify({ decision: "block", reason });
+    case "antigravity": return JSON.stringify({ decision: "deny", reason });
     case "gemini": return JSON.stringify({ decision: "deny", reason });
     case "cursor": return JSON.stringify({ permission: "deny", user_message: "skillrouter: searching the skill library first.", agent_message: reason });
     default: return JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } });
@@ -59,9 +62,16 @@ function lookupOf(p: any): "search" | "load" | null {
  * The hook's answer for one pre-tool event: a host-shaped denial, or "" to let the call through. Never throws.
  * `enabled` is the hook's own SKILLROUTER_GATE: the warm service runs this on behalf of many hooks and must not read its own.
  */
-export function gateEvent(agent: AgentId, input: string, enabled = gateEnabled()): string {
+export function gateEvent(agent: HookAgent, input: string, enabled = gateEnabled()): string {
+  // A host that requires an answer (Antigravity: a decision on every call) gets its "go ahead" where others get silence.
+  return gateDecision(agent, input, enabled) || silent(agent, true);
+}
+
+function gateDecision(agent: HookAgent, rawInput: string, enabled: boolean): string {
   try {
     if (!enabled) return "";
+    const input = fromHost(agent, rawInput, true);
+    if (input === null) return "";
     const p = JSON.parse(input);
     if (!p || typeof p !== "object" || p.agent_id) return ""; // a subagent works from its own brief
     const session = sessionHash(sessionOf(p));

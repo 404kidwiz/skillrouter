@@ -138,6 +138,20 @@ export function firstUse(session: string | undefined, useId: unknown): boolean {
   return true;
 }
 
+/**
+ * For a host that sends no turn id (Antigravity): the turn is identified by `key` (a hash of the user input). With
+ * `open`, a key different from the last one starts a new turn (`fresh`); without it, the turn is returned only when
+ * the key is still the current one.
+ */
+export function hostTurn(session: string | undefined, key: string, open: boolean): { turn: string; fresh: boolean } | undefined {
+  const last = rows(session, "hostturn.jsonl").pop();
+  if (last && last.key === key && typeof last.turn === "string") return { turn: last.turn, fresh: false };
+  if (!open || !session) return undefined;
+  const turn = `${key.slice(0, 16)}-${Date.now().toString(36)}`;
+  append(session, "hostturn.jsonl", { key, turn });
+  return { turn, fresh: true };
+}
+
 /** A turn's time span: from its marker to the next marker (open-ended for the current turn). */
 export function turnWindow(session: string | undefined, turn: string): { start?: number; end: number } {
   const marks = rows(session, "turns.jsonl");

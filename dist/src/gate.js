@@ -1,4 +1,5 @@
 import { logUsage } from "./search.js";
+import { fromHost, silent } from "./hosts.js";
 import { sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, isWork, shellCommand } from "./triggers.js";
 import { skillLoadOf } from "./events.js";
@@ -23,6 +24,8 @@ export const GATE_REASON = "skillrouter: before starting this work, search the s
 /** The host's own way of saying "not this call, and here is why". */
 export function formatGate(agent, reason = GATE_REASON) {
     switch (agent) {
+        case "hermes": return JSON.stringify({ decision: "block", reason });
+        case "antigravity": return JSON.stringify({ decision: "deny", reason });
         case "gemini": return JSON.stringify({ decision: "deny", reason });
         case "cursor": return JSON.stringify({ permission: "deny", user_message: "skillrouter: searching the skill library first.", agent_message: reason });
         default: return JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } });
@@ -57,8 +60,15 @@ function lookupOf(p) {
  * `enabled` is the hook's own SKILLROUTER_GATE: the warm service runs this on behalf of many hooks and must not read its own.
  */
 export function gateEvent(agent, input, enabled = gateEnabled()) {
+    // A host that requires an answer (Antigravity: a decision on every call) gets its "go ahead" where others get silence.
+    return gateDecision(agent, input, enabled) || silent(agent, true);
+}
+function gateDecision(agent, rawInput, enabled) {
     try {
         if (!enabled)
+            return "";
+        const input = fromHost(agent, rawInput, true);
+        if (input === null)
             return "";
         const p = JSON.parse(input);
         if (!p || typeof p !== "object" || p.agent_id)
