@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { AGENTS, INDEX_FILE } from "./paths.js";
+import { AGENTS, INDEX_FILE, SR_DIR } from "./paths.js";
 import { getIndex, logUsage, resetIndexCache } from "./search.js";
 import { VECTOR_FILES, embed, loadVectors, resetVectors } from "./embed.js";
 import { hint } from "./hint.js";
@@ -252,8 +252,15 @@ catch {
 const dataStamp = () => [INDEX_FILE, ...VECTOR_FILES].map(fileStamp).join("|");
 const CODE_DIR = () => process.env.SKILLROUTER_SERVICE_CODE_DIR ?? path.dirname(fileURLToPath(import.meta.url));
 function codeStamp() {
+    // The compiled files this process runs, plus where ~/.skillrouter/app/current points: after `install` switched the
+    // private copy, this process's own files are unchanged, and only the link shows that newer code is installed.
+    let current = "-";
     try {
-        return fs.readdirSync(CODE_DIR()).filter((f) => f.endsWith(".js")).map((f) => fileStamp(path.join(CODE_DIR(), f))).join("|");
+        current = fs.realpathSync(path.join(SR_DIR, "app", "current"));
+    }
+    catch { /* no private copy: a checkout or package run in place */ }
+    try {
+        return fs.readdirSync(CODE_DIR()).filter((f) => f.endsWith(".js")).map((f) => fileStamp(path.join(CODE_DIR(), f))).join("|") + "|" + current;
     }
     catch {
         return "-";

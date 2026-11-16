@@ -4,7 +4,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { HOME, antigravityConfigPaths } from "./paths.js";
-import { INSTALL_TARGETS, type InstallTarget } from "./install.js";
+import { INSTALL_TARGETS, type InstallTarget } from "./pins.js";
 
 export interface McpSpec { command: string; args: string[]; env: Record<string, string>; disabled?: boolean }
 

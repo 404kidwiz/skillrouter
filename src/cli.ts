@@ -8,7 +8,7 @@ const USAGE = `skillrouter — a big skill library without the context bloat
   skillrouter index [--root DIR]... [--embeddings]
                                           scan every skill folder into ~/.skillrouter/index.json (+ local vectors)
   skillrouter search "<task>" [-k N] [--exploratory] [--lexical]
-                                          relevant skills; exploratory includes labeled weak matches
+                                          relevant skills, or a few labeled weak ones when none is strong; exploratory lists all weak matches
   skillrouter explain "<task>" [-k N] [--lexical]
                                           ranking, relevance, applicability, duplicate and semantic decisions
   skillrouter core list|add <id>...|remove <id>...|suggest [N]|sync [agents]
@@ -92,10 +92,10 @@ async function main(argv: string[]): Promise<void> {
       {
         // Pins: what each host's config and the hook launcher actually point at.
         const { mcpSpec, hermesSpec } = await import("./live.js");
-        const { INSTALL_TARGETS, pinProblems } = await import("./install.js");
+        const { INSTALL_TARGETS, pinProblems } = await import("./pins.js");
         const { HOME, SR_DIR, BACKUP_DIR, USAGE_LOG } = await import("./paths.js");
         const fs = await import("node:fs"), path = await import("node:path");
-        const specs: { host: string; command: string; args: string[] }[] = [];
+        const specs: { host: string; command: unknown; args: unknown }[] = [];
         for (const t of INSTALL_TARGETS) { try { const sp = mcpSpec(t as any); if (sp) specs.push({ host: `${t} MCP`, command: sp.command, args: sp.args }); } catch { /* unreadable config: reported above */ } }
         try {
           for (const name of fs.readdirSync(path.join(HOME, ".hermes", "profiles"))) {
@@ -103,23 +103,28 @@ async function main(argv: string[]): Promise<void> {
           }
         } catch { /* no profiles */ }
         const problems = pinProblems(specs);
-        const codes = new Set(specs.map((x) => x.args.find((a) => /cli\.js$/.test(a))).filter(Boolean));
+        const codes = new Set(specs.map((x) => (Array.isArray(x.args) ? x.args : []).find((a) => typeof a === "string" && /cli\.js$/.test(a))).filter(Boolean));
         if (codes.size > 1) problems.push(`hosts run ${codes.size} different copies of the code (${[...codes].join(", ")}); run \`skillrouter install\` so all use one`);
-        console.log(problems.length ? "\nPins (Node and code paths the hosts are configured with):\n  " + problems.join("\n  ") : `\nPins: ${specs.length} configured Node and code paths exist and are stable.`);
+        console.log(problems.length ? "\nPins (Node and code paths the hosts are configured with):\n  " + problems.join("\n  ") : specs.length ? `\nPins: ${specs.length} configured Node and code paths exist and are stable.` : "\nPins: no host has the skillrouter MCP server configured.");
         try {
           const { readCore } = await import("./core.js");
           const { findSkill } = await import("./search.js");
-          const lost = readCore().filter((id) => { try { return findSkill(id).length === 0; } catch { return false; } });
-          if (lost.length) console.log(`Core entries that match no indexed skill (edit core.txt or reindex): ${lost.join(", ")}`);
+          const count = (id: string) => { try { return findSkill(id).length; } catch { return 1; } };
+          const core = readCore(), lost = core.filter((id) => count(id) === 0), many = core.filter((id) => count(id) > 1);
+          if (lost.length) console.log(`Core entries that match no indexed skill (a retired or misspelled name; edit core.txt or reindex): ${lost.join(", ")}`);
+          if (many.length) console.log(`Core entries that match several skills (\`core sync\` links none of them; name one id, e.g. name~2): ${many.join(", ")}`);
         } catch { /* no index */ }
         const size = (p: string): number => { try { const st = fs.lstatSync(p); if (!st.isDirectory()) return st.size; return fs.readdirSync(p).reduce((n, f) => n + size(path.join(p, f)), 0); } catch { return 0; } };
         const mb = (n: number) => `${(n / 1048576).toFixed(1)} MB`;
-        console.log(`Disk: usage log ${mb(size(USAGE_LOG))} (rotates at ${process.env.SKILLROUTER_LOG_MAX_MB ?? 32} MB); backups ${mb(size(BACKUP_DIR))} in ${BACKUP_DIR} (never deleted automatically; remove old ones by hand once you no longer need to restore)`);
+        const { usageArchives, logMaxMB } = await import("./search.js");
+        const archives = usageArchives();
+        const limit = logMaxMB() > 0 ? `rotates at ${logMaxMB()} MB` : "rotation off";
+        console.log(`Disk: usage log ${mb(size(USAGE_LOG))}${archives.length ? ` + ${archives.length} rotated (${mb(archives.reduce((n, f) => n + size(f), 0))})` : ""} (${limit}); backups ${mb(size(BACKUP_DIR))} in ${BACKUP_DIR} (never deleted automatically; remove old ones by hand once you no longer need to restore)`);
         void SR_DIR;
       }
       if (live) {
         const { liveCheck } = await import("./live.js");
-        const { INSTALL_TARGETS } = await import("./install.js");
+        const { INSTALL_TARGETS } = await import("./pins.js");
         const targets = args.filter((x) => (INSTALL_TARGETS as string[]).includes(x));
         console.log("\nLive MCP check (each configured server started and asked for its tools):");
         console.log((await liveCheck((targets.length ? targets : INSTALL_TARGETS) as any)).join("\n"));

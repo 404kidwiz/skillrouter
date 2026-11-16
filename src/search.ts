@@ -157,24 +157,42 @@ export function findSkill(nameOrId: string): SkillEntry[] {
   const n = nameOrId.trim().toLowerCase();
   const resolved = resolveSkillReference(index, nameOrId);
   if (resolved) return [resolved];
-  // A retired name (its reserved identity is no longer indexed, e.g. after a consolidation) is not handed to another
-  // skill in the index, but a read by that name must still load something: the active skills of the same bare name
-  // answer it, one directly or several as the "use one of" list. (2026-11-15: read_skill("prompt-mini") had failed
-  // 58 times in two weeks while prompt-mini~2 was the only skill of that name.)
-  if (Object.keys(index.identityAliases ?? {}).some(a => a.toLowerCase() === n)) {
-    const bare = bareSkill(n);
-    return index.skills.filter((s) => bareSkill(s.id).toLowerCase() === bare || bareSkill(s.name).toLowerCase() === bare);
-  }
+  if (Object.keys(index.identityAliases ?? {}).some(a => a.toLowerCase() === n)) return [];
   return index.skills.filter((s) => s.name.toLowerCase() === n || path.basename(s.path).toLowerCase() === n);
+}
+
+/**
+ * What read_skill loads for a name. A bare name whose reserved identity was retired (after a consolidation the skill
+ * lives on as `name~2`) finds nothing through findSkill, by design: a retired name is never handed to another skill
+ * silently. But a read by that name has to load something useful, so here, and only here, it is answered by the active
+ * skills of the same bare name, and the caller says so (`retired`). A numbered or source-qualified reference
+ * (`name~2`, `name@…`) names one particular copy and is never substituted. (2026-11-15: read_skill("prompt-mini") had
+ * failed 58 times in two weeks while prompt-mini~2 was the only skill of that name.)
+ */
+export function findSkillForRead(nameOrId: string): { matches: SkillEntry[]; retired?: string } {
+  const matches = findSkill(nameOrId);
+  const n = nameOrId.trim().toLowerCase();
+  if (matches.length || /~\d+$|@[a-f0-9]{24}$/.test(n)) return { matches };
+  const { index } = getIndex();
+  if (!Object.keys(index.identityAliases ?? {}).some((a) => a.toLowerCase() === n)) return { matches };
+  const family = index.skills.filter((s) => bareSkill(s.id) === n || bareSkill(s.name) === n);
+  return family.length ? { matches: family, retired: nameOrId.trim() } : { matches };
 }
 
 export function readSkill(skill: SkillEntry): string {
   return fs.readFileSync(path.join(skill.path, "SKILL.md"), "utf8");
 }
 
-/** Past logs set aside by rotation (usage.<time>.jsonl), oldest first; readers take them together with the live file. */
+/**
+ * Past logs set aside by rotation (usage.<time><3 random digits>.jsonl), oldest first; readers take them together with
+ * the live file. Ordered by when each was last written (a rename keeps that time), then by name: two rotations in one
+ * millisecond get names in no particular order.
+ */
 export function usageArchives(): string[] {
-  try { return fs.readdirSync(SR_DIR).filter((f) => /^usage\.\d+\.jsonl$/.test(f)).sort((x, y) => Number(x.split(".")[1]) - Number(y.split(".")[1])).map((f) => path.join(SR_DIR, f)); } catch { return []; }
+  try {
+    return fs.readdirSync(SR_DIR).filter((f) => /^usage\.\d+\.jsonl$/.test(f)).map((f) => { const file = path.join(SR_DIR, f); let t = 0; try { t = fs.statSync(file).mtimeMs; } catch { /* just removed */ } return { file, t, f }; })
+      .sort((a, b) => a.t - b.t || (a.f < b.f ? -1 : 1)).map((x) => x.file);
+  } catch { return []; }
 }
 
 /**
@@ -184,11 +202,25 @@ export function usageArchives(): string[] {
  */
 function rotateUsage(): void {
   // An empty or unreadable setting means the default, not "never" (0 turns rotation off).
+  const max = logMaxMB() * 1024 * 1024;
+  if (!(max > 0)) return;
+  const seen = fs.statSync(USAGE_LOG);
+  if (seen.size <= max) return;
+  // Another process may have rotated between the append and here: the file under this name is then a new, small
+  // one, and renaming it would spend an archive slot on a few rows. Rename only what was measured.
+  const now = fs.statSync(USAGE_LOG);
+  if (now.ino !== seen.ino || now.size < seen.size) return;
+  fs.renameSync(USAGE_LOG, path.join(SR_DIR, `usage.${Date.now()}${String(Math.floor(Math.random() * 1000)).padStart(3, "0")}.jsonl`));
+  // Keep three archives; a few more while they are small ones left by a lost race, so they never push out full ones.
+  const archives = usageArchives().map((f) => { try { return { f, size: fs.statSync(f).size }; } catch { return { f, size: 0 }; } });
+  while (archives.length > 3 && (archives.length > 8 || archives.slice(1).reduce((n, a) => n + a.size, 0) >= 3 * max)) {
+    try { fs.unlinkSync(archives.shift()!.f); } catch { /* another process took it */ }
+  }
+}
+/** The size at which usage.jsonl is rotated, in MB (SKILLROUTER_LOG_MAX_MB, default 32; 0 or less: never). */
+export function logMaxMB(): number {
   const raw = process.env.SKILLROUTER_LOG_MAX_MB;
-  const mb = raw !== undefined && raw.trim() !== "" && Number.isFinite(Number(raw)) ? Number(raw) : 32;
-  if (!(mb > 0) || fs.statSync(USAGE_LOG).size <= mb * 1024 * 1024) return;
-  fs.renameSync(USAGE_LOG, path.join(SR_DIR, `usage.${Date.now()}${String(process.pid % 1000).padStart(3, "0")}.jsonl`));
-  for (const old of usageArchives().slice(0, -3)) try { fs.unlinkSync(old); } catch { /* another process took it */ }
+  return raw !== undefined && raw.trim() !== "" && Number.isFinite(Number(raw)) ? Number(raw) : 32;
 }
 
 /** One JSON line per event. Prompt text is never logged; queries written by the model are. */

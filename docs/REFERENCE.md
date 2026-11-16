@@ -13,7 +13,7 @@ Examples run from the checkout. After optional global installation, `skillrouter
 | `node dist/src/cli.js index` | Rebuild from defaults and remembered extra roots |
 | `node dist/src/cli.js index --root "/absolute/path/to/skills"` | Include another library root; repeat the flag for several roots |
 | `node dist/src/cli.js search "postgres migration" -k 5` | Return matches that pass the relevance gate |
-| `node dist/src/cli.js search "postgres migration" --exploratory` | Include weaker candidates, labeled as exploratory |
+| `node dist/src/cli.js search "postgres migration" --exploratory` | List every weaker candidate, labeled as exploratory (without the flag, a search with no strong match returns at most three labeled weak ones) |
 | `node dist/src/cli.js explain "postgres migration" --lexical` | Explain relevance, applicability and duplicate decisions without embeddings |
 
 Indexing scans supported agent directories, the shared `~/.agents/skills`, `~/.skills`, the router library and explicit roots. It does not import a remote library. Run it after adding, moving or removing skills.
@@ -189,7 +189,8 @@ Advanced tuning:
 | `SKILLROUTER_SERVICE_IDLE_MIN` | Service idle shutdown interval; default 120 minutes |
 | `SKILLROUTER_WEAK` | `0`: search returns nothing when there is no strong match, instead of labeled weak candidates |
 | `SKILLROUTER_SNAPSHOT` | `0`: `install` from a git checkout points hosts at the checkout instead of a private copy |
-| `SKILLROUTER_LOG_MAX_MB` | Size at which `usage.jsonl` is rotated; default 32 |
+| `SKILLROUTER_LOG_MAX_MB` | Size at which `usage.jsonl` is rotated; default 32; `0` turns rotation off |
+| `SKILLROUTER_SNAPSHOT_KEEP_DAYS` | How long private code copies beyond the newest three are kept; default 14 |
 | `SKILLROUTER_MIN_RAW` | Explicit lexical floor; default otherwise scales with library size |
 | `SKILLROUTER_ENDORSE_AFTER` | Accepted turns before a host's skill passes the hint gate on a lower bar (default 3; 0 turns it off) |
 | `SKILLROUTER_SUPPRESS_AFTER` | Decline-session threshold; default 5; 0 disables suppression |
@@ -225,6 +226,9 @@ An existing vector store also causes subsequent index rebuilds to attempt refres
   core/            managed core links
   library/         trimmed skills; .conflicts/ retains variants
   usage.jsonl      events, model-written queries and attribution
+  usage.<n>.jsonl  rotated logs (a few are kept; reports read them)
+  app/             private copies of the compiled code; app/current is the one hosts run
+  bin/             the hook launcher and its Perl client
   verdicts.json    acceptance/decline history and suppression
   run/             socket/pipe state, PID, status, Windows key
   backups/         trim archives plus restore JSON and Markdown

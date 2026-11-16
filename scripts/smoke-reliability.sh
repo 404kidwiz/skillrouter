@@ -25,7 +25,7 @@ o=$(SKILLROUTER_SERVICE=0 node $CLI search "custom services and patterns" --lexi
 has "$o" "^No strong match\. Weak candidates follow" && has "$o" "; weak\)"; ok $? "no strong match -> labeled weak candidates"
 o=$(SKILLROUTER_SERVICE=0 SKILLROUTER_WEAK=0 node $CLI search "custom services and patterns" --lexical); has "$o" "^No matching skills"; ok $? "SKILLROUTER_WEAK=0 -> nothing"
 o=$(SKILLROUTER_SERVICE=0 node $CLI search "zzqx blorptang" --lexical); has "$o" "^No matching skills"; ok $? "gibberish -> nothing"
-o=$(SKILLROUTER_SERVICE=0 node $CLI explain "custom services and patterns" --lexical); has "$o" "weak tier, no strong match"; ok $? "explain names the weak tier"
+o=$(SKILLROUTER_SERVICE=0 node $CLI explain "custom services and patterns" --lexical); has "$o" "weak tier, no strong match" && has "$o" "^WEAK "; ok $? "explain names the weak tier"
 
 echo "== 3/4 install: private copy, pins, launcher"
 mkdir -p $S/.hermes/profiles/alpha
@@ -98,7 +98,8 @@ const f = sr + '/index.json'; const ix = JSON.parse(fs.readFileSync(f, 'utf8'));
 const s = ix.skills.find(x => x.name === 'redis-patterns'); s.id = 'redis-patterns~2'; s.aliases = [];
 ix.identityAliases = { ...(ix.identityAliases ?? {}), 'redis-patterns': 'redis-patterns@retired000000000000000000' };
 fs.writeFileSync(f, JSON.stringify(ix)); await new Promise(r => setTimeout(r, 50));
-out.retired = /^--- redis-patterns~2 /.test(await t('read_skill', { id: 'redis-patterns' }));   // also proves the running server reloads the index
+const retired = await t('read_skill', { id: 'redis-patterns' });
+out.retired = /^--- redis-patterns~2 /.test(retired) && /the name 'redis-patterns' was retired/.test(retired);   // also proves the running server reloads the index
 out.unknown = /not found/.test(await t('read_skill', { id: 'no-such-skill' }));
 await c.close();
 const rows = fs.readFileSync(sr + '/usage.jsonl', 'utf8').trim().split('\n').map(JSON.parse);

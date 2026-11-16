@@ -72,26 +72,50 @@ export function readLog(days) {
  * about two thirds of a sample of empty searches, and nothing surfaced it.)
  */
 export function gapLines(rows, min = 3) {
-    const words = (q) => new Set(q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2));
+    // Words that say nothing about the task; without this list "the" or "for" alone tie unrelated queries together.
+    const STOP = new Set("the and for with from into that this those these your our are was were has have had not but can use using via per its".split(" "));
+    const words = (q) => new Set(q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w)));
     const groups = [];
+    const byWord = new Map(); // word -> groups whose first query has it, so a query meets only groups it can share words with
+    const MAX_GROUPS = 3000; // a log of nothing but distinct queries: stop opening groups, keep counting into the ones there
     for (const r of rows) {
         const q = r.query;
-        if (r.tool !== "search_skills" || typeof q !== "string" || (r.hits?.length ?? 0) > 0 || r.exploratory)
+        if (r.tool !== "search_skills" || typeof q !== "string" || (r.hits?.length ?? 0) > 0 || r.exploratory || r.reason)
             continue;
         const w = words(q);
         if (!w.size)
             continue;
-        const g = groups.find((x) => { let both = 0; for (const t of w)
-            if (x.words.has(t))
-                both++; const small = Math.min(w.size, x.words.size); return both / small >= 0.5 && both >= Math.min(3, small); });
-        if (g) {
+        const shared = new Map();
+        for (const t of w)
+            for (const g of byWord.get(t) ?? [])
+                shared.set(g, (shared.get(g) ?? 0) + 1);
+        // Same group: most words of the shorter query are shared, and at least two of them (a one-word query joins only its twin).
+        let best = -1, bestShared = 0;
+        for (const [g, both] of shared) {
+            const small = Math.min(w.size, groups[g].words.size), large = Math.max(w.size, groups[g].words.size);
+            const same = both / small >= 0.5 && (both >= Math.min(3, small)) && (both >= 2 || large === 1);
+            if (same && both > bestShared) {
+                best = g;
+                bestShared = both;
+            }
+        }
+        if (best >= 0) {
+            const g = groups[best];
             g.n++;
             g.agents.add(agentOf(r));
-            if (q.length < g.sample.length)
+            if (w.size >= 2 && q.length < g.sample.length)
                 g.sample = q;
         }
-        else
+        else if (groups.length < MAX_GROUPS) {
             groups.push({ words: w, n: 1, agents: new Set([agentOf(r)]), sample: q });
+            for (const t of w) {
+                const list = byWord.get(t);
+                if (list)
+                    list.push(groups.length - 1);
+                else
+                    byWord.set(t, [groups.length - 1]);
+            }
+        }
     }
     const out = [];
     const repeated = groups.filter((g) => g.n >= min).sort((a, b) => b.n - a.n).slice(0, 10);
@@ -170,9 +194,16 @@ export function report(days = 7, rows = readLog(days)) {
         out.push(`Turn endings after hints: ${by("decided")} decided (loaded or wrote \`Skills:\`), ${by("nudged")} nudged, ${by("trivial")} too small to ask, ${by("no_hints")} without hints.`);
     }
     out.push(...funnelLines(gateFunnel(organic, agentOf, Date.now() - days * 86400e3), days));
-    const empty = searches.filter((r) => !(r.hits?.length)).length, weak = searches.filter((r) => r.weak === true).length;
-    if (searches.length)
-        out.push("", `Searches: ${searches.length}; ${searches.length - empty - weak} with a strong match, ${weak} with weak candidates only, ${empty} with nothing (${Math.round((100 * empty) / searches.length)}%).`);
+    {
+        // Exploratory searches return weak candidates by request, and a failed search (no index) found nothing for another reason: both are counted apart.
+        const flag = (r, k) => r[k];
+        const failed = searches.filter((r) => !!r.reason), exploratory = searches.filter((r) => !r.reason && flag(r, "exploratory") === true);
+        const plain = searches.filter((r) => !r.reason && flag(r, "exploratory") !== true);
+        const empty = plain.filter((r) => !(r.hits?.length)).length, weak = plain.filter((r) => flag(r, "weak") === true && r.hits?.length).length;
+        if (plain.length)
+            out.push("", `Searches: ${plain.length}; ${plain.length - empty - weak} with a strong match, ${weak} with weak candidates only, ${empty} with nothing (${Math.round((100 * empty) / plain.length)}%)` +
+                `${exploratory.length ? `; plus ${exploratory.length} exploratory` : ""}${failed.length ? `; ${failed.length} failed (index unavailable)` : ""}.`);
+    }
     out.push(...gapLines(organic));
     out.push(...verdictLines(rows.filter((r) => r.tool === "verdict")));
     out.push("", "A load is not proof a skill was applied. Native loads (Claude's Skill tool, Gemini's activate_skill, OpenCode's skill tool, SKILL.md reads) " +

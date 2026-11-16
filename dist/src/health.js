@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { HOME, AGENTS, antigravityConfigPaths } from "./paths.js";
 import { loadIndex } from "./index.js";
-import { isRouterHook } from "./install.js";
+import { isRouterHook } from "./pins.js";
 import { readLog } from "./report.js";
 import { hermesSpec } from "./live.js";
 import { loadVectors, vectorsExist } from "./embed.js";
