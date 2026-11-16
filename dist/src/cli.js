@@ -298,6 +298,11 @@ async function main(argv) {
             const app = snapshotApp();
             setInstallCli(app.cli);
             console.log(app.note);
+            {
+                const fs = await import("node:fs"), path = await import("node:path");
+                if (path.isAbsolute(NODE) && !fs.existsSync(NODE))
+                    console.log(`Warning: ${NODE} does not exist${process.env.SKILLROUTER_NODE ? " (from SKILLROUTER_NODE)" : ""}; hooks will fall back to another Node, MCP servers will not start. Fix the path and install again.`);
+            }
             if (volatileNode(NODE))
                 console.log(`Warning: no stable Node found; pinned ${NODE}, which sits in a versioned or managed folder. Set SKILLROUTER_NODE=/path/to/node and install again.`);
             const targets = args.filter((x) => INSTALL_TARGETS.includes(x));

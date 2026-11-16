@@ -244,6 +244,10 @@ test("the Hermes profile rewrite touches only the skillrouter entry's own comman
   for (const t of [`mcp_servers:\n  wrapper:\n    skillrouter:\n      command: /old/node\n      args:\n        - /old/dist/src/cli.js\n        - mcp\n`,
     `other:\n${entry()}mcp_servers:\n  x:\n    command: y\n`, `mcp_servers: {}\n`, `model: y\n`]) assert.deepEqual(patch(t), { text: t, state: "absent" });
   for (const t of [`mcp_servers:\n  skillrouter:\n    command: /x/node\n    args: [/x/cli.js, mcp]\n`, `mcp_servers:\n  skillrouter:\n    command: /x/node\n`, `mcp_servers:\n  skillrouter:\n`]) assert.deepEqual(patch(t), { text: t, state: "unrecognized" });
+  // A value continued on the next line is left alone: rewriting its first line would leave broken YAML.
+  for (const t of [`mcp_servers:\n  skillrouter:\n    command: >-\n      /old/node\n    args:\n      - /old/dist/src/cli.js\n      - mcp\n`,
+    `mcp_servers:\n  skillrouter:\n    command: /old/very/long\n      /path/node\n    args:\n      - /old/dist/src/cli.js\n      - mcp\n`,
+    `mcp_servers:\n  skillrouter:\n    command: /old/node\n    args:\n      - /old/long\n        /dist/src/cli.js\n      - mcp\n`]) assert.deepEqual(patch(t), { text: t, state: "unrecognized" });
   // Already current: nothing to write.
   assert.equal(patch(`mcp_servers:\n${want()}`).state, "current");
   // A large profile without the entry (the case that hung the first version of this code), and one with it last.
@@ -295,7 +299,11 @@ test("the report groups repeated empty searches and unknown skill names as gaps"
   const many = Array.from({ length: 20000 }, (_v, i) => s(`alpha${i} beta${i % 977} gamma${i % 31} delta`));
   const t0 = performance.now();
   gapLines(many);
-  assert.ok(performance.now() - t0 < 5000, `took ${Math.round(performance.now() - t0)} ms`);
+  // A generous bound: test files run in parallel on small CI machines. The quadratic version took 29 s alone.
+  assert.ok(performance.now() - t0 < 15000, `took ${Math.round(performance.now() - t0)} ms`);
+  // Past the cap on open groups, a query that keeps recurring is still found.
+  const late = Array.from({ length: 3200 }, (_v, i) => s(`unique${i}a unique${i}b unique${i}c`)).concat([1, 2, 3, 4].map(() => s("late recurring empty query")));
+  assert.match(gapLines(late).join("\n"), /4 {2}codex: late recurring empty query/);
 });
 
 test("the report's search line separates strong, weak, empty, exploratory and failed searches", () => {
@@ -314,7 +322,8 @@ test("the usage log rotates past its size limit, keeps a bounded number of archi
   const onDisk = [...archives, path.join(process.env.SKILLROUTER_HOME!, "usage.jsonl")].flatMap((f) => { try { return fs.readFileSync(f, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } }).filter((r: any) => r.client === "rotation-test").map((r: any) => r.n);
   const read = readLog(1).filter((r: any) => r.client === "rotation-test").map((r: any) => r.n);
   assert.deepEqual(read, onDisk);
-  assert.deepEqual(read, [...read].sort((a: number, b: number) => a - b));
+  assert.deepEqual(read, [...read].sort((a: number, b: number) => a - b), "archive order comes from their names, not from file times");
+  assert.ok(archives.every((f: string) => /usage\.\d+\.\d+\.\d+\.jsonl$/.test(f)));
   assert.equal(new Set(read).size, read.length);
   assert.equal(read.at(-1), 39, "the newest row is always there");
   // Rotation off (0), and an empty or unreadable setting meaning the default: nothing rotates at this size.

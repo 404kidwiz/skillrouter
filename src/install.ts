@@ -33,11 +33,12 @@ export function resolveNode(): string {
     } catch { return false; }
   };
   const name = process.platform === "win32" ? "node.exe" : "node";
-  const onPath = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, name));
+  const onPath = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map((dir) => path.resolve(dir, name)); // a relative PATH entry must not become a relative pin
   for (const cand of [...new Set([...onPath, ...(process.platform === "win32" ? [] : NODE_FALLBACKS)])]) if (usable(cand)) return cand;
-  // Nothing stable: at least avoid a managed tree, as before.
+  // Nothing stable: at least avoid a managed tree, as before, with a Node that is new enough.
   if (!managed(process.execPath)) return process.execPath;
-  for (const cand of onPath) { try { if (fs.statSync(cand).isFile() && !managed(cand)) return cand; } catch { /* not here */ } }
+  const recent = (cand: string) => { try { return Number(execFileSync(cand, ["-v"], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"], ...NO_WINDOW }).trim().replace(/^v/, "").split(".")[0]) >= 20; } catch { return false; } };
+  for (const cand of onPath) { try { if (fs.statSync(cand).isFile() && !managed(cand) && recent(cand)) return cand; } catch { /* not here */ } }
   return process.execPath;
 }
 
@@ -451,12 +452,17 @@ export function hermesProfilePatch(text: string, node: string, cli: string): { t
   const commands = body.filter((x) => indent(x.l) === key && /^[ \t]*command:[ \t]*\S/.test(x.l));
   const argsAt = body.findIndex((x) => indent(x.l) === key && /^[ \t]*args:[ \t]*(?:#.*)?\r?$/.test(x.l));
   if (commands.length !== 1 || argsAt < 0) return { text, state: "unrecognized" };
+  // A value that continues on the next line (a block scalar `>-`, or a long plain value the writer wrapped): rewriting
+  // its first line would leave the rest behind as broken YAML.
+  const continued = (i: number) => { for (let n = i + 1; n < stop; n++) { if (blank(lines[n])) continue; return indent(lines[n]) > indent(lines[i]); } return false; };
+  if (continued(commands[0].i) || /^[ \t]*command:[ \t]*[>|]/.test(lines[commands[0].i])) return { text, state: "unrecognized" };
   // The items of args: the lines after it up to the next key at the block's own indent (items may sit at that indent too).
   const items: { l: string; i: number }[] = [];
   for (const x of body.slice(argsAt + 1)) { if (/^[ \t]*-[ \t]/.test(x.l) && indent(x.l) >= key) items.push(x); else break; }
   const value = (l: string) => l.replace(/^[ \t]*-[ \t]+/, "").replace(/\r$/, "").replace(/[ \t]+#.*$/, "").trim().replace(/^(["'])(.*)\1$/, "$2");
   const clis = items.filter((x) => /(?:^|[\\/])dist[\\/]src[\\/]cli\.js$/.test(value(x.l)) || /(?:^|[\\/])cli\.js$/.test(value(x.l)));
   if (clis.length !== 1 || value(items[items.length - 1]?.l ?? "") !== "mcp") return { text, state: "unrecognized" };
+  if (continued(clis[0].i) || /^[ \t]*-[ \t]+[>|]/.test(lines[clis[0].i])) return { text, state: "unrecognized" };
   const before = [lines[commands[0].i], lines[clis[0].i]];
   // A line's own ending (\r of a CRLF file) is set aside and put back: `.` does not match it.
   const set = (i: number, pattern: RegExp, v: string) => { const cr = lines[i].endsWith("\r") ? "\r" : ""; lines[i] = lines[i].slice(0, lines[i].length - cr.length).replace(pattern, (_m, lead) => `${lead}${JSON.stringify(v)}`) + cr; };

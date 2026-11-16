@@ -3,12 +3,17 @@
 # Everything runs in a scratch home and from a scratch copy of this checkout: your real home, configs and this
 # checkout are not touched. Usage: npm run build && bash scripts/smoke-reliability.sh
 SRC=$(cd "$(dirname "$0")/.." && pwd)
-S=$(mktemp -d); S=$(cd "$S" && pwd -P)
-trap 'rm -rf "$S"' EXIT
+# Under /tmp whatever TMPDIR says: the paths below are used unquoted and must not contain spaces.
+S=$(mktemp -d /tmp/skillrouter-smoke.XXXXXX) || exit 1; S=$(cd "$S" && pwd -P)
+case "$S" in *" "*) echo "temp dir has a space: $S"; exit 1;; esac
+A=$S/.skillrouter/app/current/dist/src/cli.js
+# On any exit, also an interrupted one: stop the service this script started, then remove everything it made.
+trap '[ -f "$A" ] && HOME="$S" SKILLROUTER_HOME="$S/.skillrouter" node "$A" service stop >/dev/null 2>&1; rm -rf "$S"' EXIT
+trap 'exit 130' INT TERM
 REPO=$S/checkout; mkdir -p $REPO/.git
 cp -R "$SRC/dist" "$SRC/eval" "$SRC/package.json" $REPO/ && ln -s "$SRC/node_modules" $REPO/node_modules
 CLI=$REPO/dist/src/cli.js
-export HOME=$S USERPROFILE=$S SKILLROUTER_HOME=$S/.skillrouter
+export HOME=$S USERPROFILE=$S SKILLROUTER_HOME=$S/.skillrouter SKILLROUTER_SERVICE_IDLE_MIN=1
 unset SKILLROUTER_NODE SKILLROUTER_WEAK SKILLROUTER_SNAPSHOT SKILLROUTER_GATE SKILLROUTER_LOG_MAX_MB
 pass=0; fail=0
 ok(){ if [ "$1" = 0 ]; then pass=$((pass+1)); echo "PASS  $2"; else fail=$((fail+1)); echo "FAIL  $2"; fi; }

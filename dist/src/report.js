@@ -77,7 +77,15 @@ export function gapLines(rows, min = 3) {
     const words = (q) => new Set(q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w)));
     const groups = [];
     const byWord = new Map(); // word -> groups whose first query has it, so a query meets only groups it can share words with
-    const MAX_GROUPS = 3000; // a log of nothing but distinct queries: stop opening groups, keep counting into the ones there
+    const MAX_GROUPS = 3000; // a log of nothing but distinct queries: groups seen once make way for new ones
+    const COMMON = 200; // a word in this many groups says little about which group a query belongs to, and walking them all is the slow part
+    const reindex = () => { byWord.clear(); groups.forEach((g, i) => { for (const t of g.words) {
+        const list = byWord.get(t);
+        if (list)
+            list.push(i);
+        else
+            byWord.set(t, [i]);
+    } }); };
     for (const r of rows) {
         const q = r.query;
         if (r.tool !== "search_skills" || typeof q !== "string" || (r.hits?.length ?? 0) > 0 || r.exploratory || r.reason)
@@ -86,9 +94,12 @@ export function gapLines(rows, min = 3) {
         if (!w.size)
             continue;
         const shared = new Map();
-        for (const t of w)
-            for (const g of byWord.get(t) ?? [])
-                shared.set(g, (shared.get(g) ?? 0) + 1);
+        for (const t of w) {
+            const list = byWord.get(t);
+            if (list && (list.length <= COMMON || w.size === 1))
+                for (const g of list)
+                    shared.set(g, (shared.get(g) ?? 0) + 1);
+        }
         // Same group: most words of the shorter query are shared, and at least two of them (a one-word query joins only its twin).
         let best = -1, bestShared = 0;
         for (const [g, both] of shared) {
@@ -106,7 +117,13 @@ export function gapLines(rows, min = 3) {
             if (w.size >= 2 && q.length < g.sample.length)
                 g.sample = q;
         }
-        else if (groups.length < MAX_GROUPS) {
+        else {
+            if (groups.length >= MAX_GROUPS) {
+                const kept = groups.filter((g) => g.n > 1);
+                groups.length = 0;
+                groups.push(...kept);
+                reindex();
+            }
             groups.push({ words: w, n: 1, agents: new Set([agentOf(r)]), sample: q });
             for (const t of w) {
                 const list = byWord.get(t);
