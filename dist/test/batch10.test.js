@@ -225,13 +225,23 @@ test("one session's repeated declines count once", () => {
 });
 test("verdicts.json: concurrent writers lose nothing; bad files are set aside; bad entries are skipped", () => {
     resetVerdicts();
+    // A writer that cannot get the lock in half a second drops its count on purpose (a hook must not stall), and says so.
+    // The writers here try again, so the totals test the lock (no recorded count is ever lost) and not the machine: on a Mac
+    // at load average 70, 3 of 240 writers gave up and the old exact total failed.
+    const lock = path.join(process.env.SKILLROUTER_HOME, "verdicts.json.lock");
+    fs.mkdirSync(process.env.SKILLROUTER_HOME, { recursive: true });
+    fs.writeFileSync(lock, "");
+    assert.equal(addVerdict("claude", [], ["held-out"]), false, "the lock is held: the count is dropped and the caller is told");
+    fs.rmSync(lock);
+    assert.equal(addVerdict("claude", [], ["held-out"]), true);
+    assert.equal(readVerdicts().agents.claude["held-out"].declined, 1, "only the recorded one counted");
     const lib = pathToFileURL(fileURLToPath(new URL("../src/verdicts.js", import.meta.url))).href;
     const procs = Array.from({ length: 8 }, () => spawnSync(process.execPath, ["--input-type=module", "-e",
-        `const m = await import(${JSON.stringify(lib)}); for (let i = 0; i < 15; i++) m.addVerdict("claude", [], ["race-skill"]);`], { env: process.env }));
+        `const m = await import(${JSON.stringify(lib)}); for (let i = 0; i < 15; i++) while (!m.addVerdict("claude", [], ["race-skill"]));`], { env: process.env }));
     assert.ok(procs.every((p) => p.status === 0));
     // spawnSync runs them one after another; run them truly in parallel too:
     return Promise.all(Array.from({ length: 8 }, () => new Promise((r) => spawn(process.execPath, ["--input-type=module", "-e",
-        `const m = await import(${JSON.stringify(lib)}); for (let i = 0; i < 15; i++) m.addVerdict("claude", ["race-skill"], []);`], { env: process.env }).on("exit", r)))).then(() => {
+        `const m = await import(${JSON.stringify(lib)}); for (let i = 0; i < 15; i++) while (!m.addVerdict("claude", ["race-skill"], []));`], { env: process.env }).on("exit", r)))).then(() => {
         const e = readVerdicts().agents.claude["race-skill"];
         assert.deepEqual([e.declined, e.accepted], [120, 120]);
         const file = path.join(process.env.SKILLROUTER_HOME, "verdicts.json");

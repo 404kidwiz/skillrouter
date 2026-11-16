@@ -93,7 +93,9 @@ const held = (e, after) => e.declined >= after && e.accepted * 10 < e.shown;
  */
 export function addVerdict(agent, accepted, declined) {
     try {
-        update((v) => {
+        // True when the count was written. False when the lock could not be had in time and the count was dropped (see update):
+        // hooks ignore it; a caller that must not lose a count can try again.
+        return update((v) => {
             const now = new Date().toISOString();
             const t = (v.agents[agent] ??= table());
             const after = suppressAfter();
@@ -109,9 +111,12 @@ export function addVerdict(agent, accepted, declined) {
                 bump(id, "accepted");
             for (const id of new Set(declined.map(bareSkill)))
                 bump(id, "declined");
-        });
+            return true;
+        }) === true;
     }
-    catch { /* stats never block a hook */ }
+    catch {
+        return false; /* stats never block a hook */
+    }
 }
 /** Declines before a skill is held back (env SKILLROUTER_SUPPRESS_AFTER; 0 turns suppression off, empty means default). */
 export function suppressAfter() {
