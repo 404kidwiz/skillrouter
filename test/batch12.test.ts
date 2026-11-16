@@ -738,11 +738,23 @@ svc("a cold burst of hooks starts one service, and tool calls are counted once",
   assert.equal(await ping(socketPath(), 200), "dead");
   fs.rmSync(path.join(runDir(), "svc.starting"), { recursive: true, force: true });
   const startedBefore = usageRows((r) => r.tool === "service" && r.reason === "started").length;
+  // How long this machine takes to start Node at all, right now: the yardstick for the answers below.
+  const bare = Math.min(...Array.from({ length: 3 }, () => { const t = performance.now(); spawnSync(process.execPath, ["-e", "0"]); return performance.now() - t; }));
+  const timeoutsBefore = usageRows((r) => r.tool === "hint" && r.reason === "timeout").length;
   const outs = await Promise.all(Array.from({ length: 10 }, (_, i) => new Promise<string>((resolve) => {
     const c = spawn("sh", [launcherPath, "claude"], { stdio: ["pipe", "pipe", "ignore"], env: process.env }); let out = "";
     c.stdout!.on("data", (d) => (out += d)); c.on("close", () => resolve(out)); c.stdin!.end(promptBody("cb-" + i));
   })));
-  assert.ok(outs.every((o) => /python-testing/.test(o)), "every hook still answered");
+  // A cold hook gives its worker 1.5 s and then answers with nothing, so a prompt is never held up. Ten at once fit in that
+  // easily on a machine that starts Node in its usual 30 to 60 ms, and every one must answer. Where starting Node alone takes
+  // five times that (a Mac at load average 66 failed this), a hook may run out of time: it must then have given up the
+  // designed way, with an empty answer and a "timeout" row, never with a crash or half an answer.
+  const unanswered = outs.filter((o) => !/python-testing/.test(o));
+  if (bare < 250) assert.equal(unanswered.length, 0, `every hook still answered (Node starts in ${Math.round(bare)} ms)`);
+  else {
+    assert.ok(unanswered.every((o) => o.trim() === ""), "a hook that ran out of time answers with nothing");
+    assert.ok(usageRows((r) => r.tool === "hint" && r.reason === "timeout").length - timeoutsBefore >= unanswered.length, "and says so in the log");
+  }
   assert.ok(await waitFor(aliveNow, 10000), "and a service came up");
   await sleep(500);
   assert.equal(usageRows((r) => r.tool === "service" && r.reason === "started").length - startedBefore, 1, "exactly one service was started by the burst");
