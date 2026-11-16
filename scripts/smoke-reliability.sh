@@ -1,0 +1,129 @@
+#!/bin/bash
+# End-to-end smoke of the reliability work, through the real CLI, hook launcher, warm service and MCP server.
+# Everything runs in a scratch home and from a scratch copy of this checkout: your real home, configs and this
+# checkout are not touched. Usage: npm run build && bash scripts/smoke-reliability.sh
+SRC=$(cd "$(dirname "$0")/.." && pwd)
+S=$(mktemp -d); S=$(cd "$S" && pwd -P)
+trap 'rm -rf "$S"' EXIT
+REPO=$S/checkout; mkdir -p $REPO/.git
+cp -R "$SRC/dist" "$SRC/eval" "$SRC/package.json" $REPO/ && ln -s "$SRC/node_modules" $REPO/node_modules
+CLI=$REPO/dist/src/cli.js
+export HOME=$S USERPROFILE=$S SKILLROUTER_HOME=$S/.skillrouter
+unset SKILLROUTER_NODE SKILLROUTER_WEAK SKILLROUTER_SNAPSHOT SKILLROUTER_GATE SKILLROUTER_LOG_MAX_MB
+pass=0; fail=0
+ok(){ if [ "$1" = 0 ]; then pass=$((pass+1)); echo "PASS  $2"; else fail=$((fail+1)); echo "FAIL  $2"; fi; }
+has(){ echo "$1" | grep -qE "$2"; }
+# library: bundled fixture + two skills that make a weak-only query
+mkdir -p $S/lib/vercel-deployment $S/lib/redis-patterns
+printf -- '---\nname: vercel-deployment\ndescription: Deploy Next.js applications to Vercel with environment configuration and custom domains.\n---\nbody\n' > $S/lib/vercel-deployment/SKILL.md
+printf -- '---\nname: redis-patterns\ndescription: Redis caching patterns, distributed locks and rate limiting for backend services.\n---\nbody\n' > $S/lib/redis-patterns/SKILL.md
+SKILLROUTER_SERVICE=0 node $CLI index --root $REPO/eval/skills --root $S/lib >/dev/null 2>&1; ok $? "index builds (fixture + 2 skills)"
+
+echo "== 1 search tiers (CLI)"
+o=$(SKILLROUTER_SERVICE=0 node $CLI search "write python pytest regression tests" --lexical); has "$o" "relevant\)"; ok $? "strong match is labeled relevant"
+o=$(SKILLROUTER_SERVICE=0 node $CLI search "custom services and patterns" --lexical); echo "$o" | head -3 | cut -c1-150
+has "$o" "^No strong match\. Weak candidates follow" && has "$o" "; weak\)"; ok $? "no strong match -> labeled weak candidates"
+o=$(SKILLROUTER_SERVICE=0 SKILLROUTER_WEAK=0 node $CLI search "custom services and patterns" --lexical); has "$o" "^No matching skills"; ok $? "SKILLROUTER_WEAK=0 -> nothing"
+o=$(SKILLROUTER_SERVICE=0 node $CLI search "zzqx blorptang" --lexical); has "$o" "^No matching skills"; ok $? "gibberish -> nothing"
+o=$(SKILLROUTER_SERVICE=0 node $CLI explain "custom services and patterns" --lexical); has "$o" "weak tier, no strong match"; ok $? "explain names the weak tier"
+
+echo "== 3/4 install: private copy, pins, launcher"
+mkdir -p $S/.hermes/profiles/alpha
+printf 'model: x\nmcp_servers:\n  skillrouter:\n    command: /gone/node/26.13.1/bin/node\n    args:\n      - /gone/dist/src/cli.js\n      - mcp\n    env:\n      SKILLROUTER_AGENT: hermes\n' > $S/.hermes/profiles/alpha/config.yaml
+printf 'model: x\n' > $S/.hermes/config.yaml
+o=$(node $CLI install 2>&1); echo "$o" | head -2 | cut -c1-200
+has "$o" "^Code: $S/.skillrouter/app/current/dist/src/cli.js -> "; ok $? "install makes a private copy and points at app/current"
+A=$S/.skillrouter/app/current/dist/src/cli.js
+[ -f "$A" ] && [ -L $S/.skillrouter/app/current ]; ok $? "app/current is a link to a complete copy"
+grep -q "$A" $S/.codex/config.toml && grep -q "$A" $S/.cursor/mcp.json && grep -q "$A" $S/.gemini/settings.json && grep -q "$A" $S/.config/opencode/opencode.json && grep -q "$A" $S/.claude.json && grep -q "$A" $S/.openclaude.json && grep -q "$A" $S/.gemini/config/mcp_config.json; ok $? "all 7 JSON/TOML host configs point at the copy"
+grep -q "$A" $S/.hermes/profiles/alpha/config.yaml && ! grep -q "/gone/" $S/.hermes/profiles/alpha/config.yaml; ok $? "Hermes profile repointed"
+L=$S/.skillrouter/bin/skillrouter-hint
+grep -q "^NODE='" $L && grep -q "$A" $L; ok $? "launcher pins a Node and runs the copy"
+# rebuild isolation: change the checkout's compiled file, the copy must not change
+echo "// rebuilt" >> $REPO/dist/src/routing.js
+! grep -q "// rebuilt" $S/.skillrouter/app/current/dist/src/routing.js; ok $? "a rebuild in the checkout does not reach the installed copy"
+
+o=$(SKILLROUTER_SERVICE=0 node $A doctor 2>&1); [ "$(echo "$o" | grep -c "hooks are configured but none ran")" = 5 ]; ok $? "doctor: notes all 5 hook hosts as configured but silent before any hook runs"
+echo "== hooks through the launcher (each agent, each mode), service off"
+for a in claude codex cursor gemini opencode; do
+  for m in "" gate tool stop; do
+    p='{"session_id":"s1","prompt_id":"p1","prompt":"write python pytest regression tests for the parser module","tool_name":"Bash","tool_input":{"command":"npm test"}}'
+    echo "$p" | SKILLROUTER_SERVICE=0 $L $a $m >$S/h.out 2>$S/h.err; rc=$?
+    [ $rc = 0 ] || { echo "   $a '$m' rc=$rc $(head -c 200 $S/h.err)"; }
+    ok $rc "hook $a ${m:-prompt} exits 0"
+  done
+done
+o=$(echo '{"session_id":"s2","prompt_id":"p2","prompt":"write python pytest regression tests for the parser module"}' | SKILLROUTER_SERVICE=0 $L codex); has "$o" "Skill check \(skillrouter\)"; ok $? "prompt hook shows a skill check"
+o=$(echo '{"session_id":"s2","turn_id":"p2","tool_name":"Bash","tool_input":{"command":"npm install left-pad"}}' | SKILLROUTER_SERVICE=0 $L codex gate); has "$o" "permissionDecision\":\"deny"; ok $? "search gate refuses the first work call"
+echo "== 3 launcher fallback when the pinned Node is gone"
+sed "s#^NODE='[^']*'#NODE='/gone/node/26.13.1/bin/node'#" $L > $S/launcher-broken && chmod +x $S/launcher-broken
+o=$(echo '{"session_id":"s3","prompt_id":"p3","prompt":"write python pytest regression tests for the parser module"}' | SKILLROUTER_SERVICE=0 $S/launcher-broken codex); rc=$?; [ $rc = 0 ] && has "$o" "Skill check"; ok $? "broken pin: hook still answers via fallback Node"
+
+echo "== warm service through the launcher"
+if command -v perl >/dev/null; then
+  o=$(echo '{"session_id":"s4","prompt_id":"p4","prompt":"write python pytest regression tests for the parser module"}' | $L codex); sleep 3
+  o=$(echo '{"session_id":"s4","prompt_id":"p5","prompt":"write python pytest regression tests for the parser module again"}' | $L codex); has "$o" "Skill check"; ok $? "hook answers with the service enabled"
+  o=$(node $A service status 2>&1); echo "   $o" | head -2 | cut -c1-160; has "$o" "running"; ok $? "service is running from the copy"
+  node $A service stop >/dev/null 2>&1; o=$(node $A service status 2>&1); has "$o" "not running"; ok $? "service stops"
+else echo "SKIP  no perl"; fi
+
+echo "== doctor"
+o=$(SKILLROUTER_SERVICE=0 node $A doctor --live 2>&1)
+has "$o" "^Pins: [0-9]+ configured Node and code paths exist and are stable"; ok $? "doctor: pins clean after install"
+n=$(echo "$o" | grep -c "connected in"); [ "$n" = 7 ]; ok $? "doctor --live: 7 hosts connect from the copy (got $n; hermes main config has no entry here)"
+has "$o" "^Disk: usage log"; ok $? "doctor: disk line"
+! has "$o" "hooks are configured but none ran"; ok $? "doctor: no silent-host note once every host's hook has run"
+printf 'model: x\nmcp_servers:\n  skillrouter:\n    command: /gone/node/26.13.1/bin/node\n    args:\n      - /gone/dist/src/cli.js\n      - mcp\n' > $S/.hermes/config.yaml
+o=$(SKILLROUTER_SERVICE=0 node $A doctor 2>&1); has "$o" "hermes MCP: Node /gone/node/26.13.1/bin/node is missing" && has "$o" "different copies of the code"; ok $? "doctor: flags a stale pin and mixed code copies"
+
+echo "== 1/2 MCP server over stdio (from the copy)"
+cat > $S/mcp.mjs <<'J'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import fs from 'node:fs';
+const [cli, sr] = process.argv.slice(2);
+const env = { ...process.env, SKILLROUTER_AGENT: 'codex', SKILLROUTER_SERVICE: '0' };
+const c = new Client({ name: 'smoke', version: '1' });
+await c.connect(new StdioClientTransport({ command: process.execPath, args: [cli, 'mcp'], env }));
+const t = async (name, args) => (await c.callTool({ name, arguments: args })).content.map(x => x.text).join('\n');
+const out = {};
+out.strong = /relevant\)/.test(await t('search_skills', { query: 'write python pytest regression tests' }));
+const weak = await t('search_skills', { query: 'custom services and patterns' });
+out.weak = /^No strong match\. Weak candidates follow/.test(weak) && /; weak\)/.test(weak);
+const id = weak.match(/^- (\S+)/m)?.[1];
+out.readWeak = !!id && /^--- /.test(await t('read_skill', { id }));
+out.none = /^No matching skills/.test(await t('search_skills', { query: 'zzqx blorptang' }));
+// retire the bare name of a skill: reserve it for an identity that is gone, keep the skill as ~2
+const f = sr + '/index.json'; const ix = JSON.parse(fs.readFileSync(f, 'utf8'));
+const s = ix.skills.find(x => x.name === 'redis-patterns'); s.id = 'redis-patterns~2'; s.aliases = [];
+ix.identityAliases = { ...(ix.identityAliases ?? {}), 'redis-patterns': 'redis-patterns@retired000000000000000000' };
+fs.writeFileSync(f, JSON.stringify(ix)); await new Promise(r => setTimeout(r, 50));
+out.retired = /^--- redis-patterns~2 /.test(await t('read_skill', { id: 'redis-patterns' }));   // also proves the running server reloads the index
+out.unknown = /not found/.test(await t('read_skill', { id: 'no-such-skill' }));
+await c.close();
+const rows = fs.readFileSync(sr + '/usage.jsonl', 'utf8').trim().split('\n').map(JSON.parse);
+out.logWeak = rows.some(r => r.tool === 'search_skills' && r.weak === true && r.agent === 'codex');
+console.log(JSON.stringify(out));
+J
+cp $S/mcp.mjs $REPO/.smoke-mcp.mjs; o=$(node $REPO/.smoke-mcp.mjs $A $S/.skillrouter 2>&1); echo "   $o" | cut -c1-300
+for k in strong weak readWeak none retired unknown logWeak; do has "$o" "\"$k\":true"; ok $? "MCP: $k"; done
+
+echo "== 5/6 report gaps and log rotation"
+for i in 1 2 3 4; do echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"client\":\"codex-mcp-client/1\",\"agent\":\"codex\",\"tool\":\"search_skills\",\"query\":\"read-only production website integrity verification TLS run $i\",\"hits\":[]}" >> $S/.skillrouter/usage.jsonl; done
+for i in 1 2 3; do echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"client\":\"codex-mcp-client/1\",\"agent\":\"codex\",\"tool\":\"read_skill\",\"skill\":\"prompt-mini\",\"found\":false}" >> $S/.skillrouter/usage.jsonl; done
+o=$(SKILLROUTER_SERVICE=0 node $A report 7 2>&1)
+has "$o" "^Searches: [0-9]+; [0-9]+ with a strong match, [0-9]+ with weak candidates only, [0-9]+ with nothing"; ok $? "report: search outcome line"
+has "$o" "Skill gaps" && has "$o" " 4  codex: read-only production website integrity"; ok $? "report: repeated empty search listed as a gap"
+has "$o" " 3  prompt-mini"; ok $? "report: unknown skill name listed"
+before=$(SKILLROUTER_SERVICE=0 node $A report 7 2>&1 | grep -c .)
+o=$(echo '{"session_id":"s9","prompt_id":"p9","prompt":"write python pytest regression tests for the parser module"}' | SKILLROUTER_SERVICE=0 SKILLROUTER_LOG_MAX_MB=0.001 $L codex)
+ls $S/.skillrouter/usage.*.jsonl >/dev/null 2>&1; ok $? "usage log rotates past the limit"
+o=$(SKILLROUTER_SERVICE=0 node $A report 7 2>&1); has "$o" " 4  codex: read-only production website integrity"; ok $? "report still reads rows from the rotated log"
+
+echo "== upgrade: second install switches the copy, configs keep one path"
+first=$(readlink $S/.skillrouter/app/current); echo "// v2" >> $REPO/dist/src/routing.js
+node $CLI install >/dev/null 2>&1; second=$(readlink $S/.skillrouter/app/current)
+[ "$first" != "$second" ] && grep -q "// v2" $S/.skillrouter/app/current/dist/src/routing.js && grep -q "$A" $S/.codex/config.toml && [ -d $S/.skillrouter/app/$first ]; ok $? "reinstall switches copies; previous copy kept; config path unchanged"
+[ "$(grep -c skillrouter-hint $S/.codex/hooks.json)" = 4 ]; ok $? "reinstall leaves exactly 4 Codex hooks"
+node $A service stop >/dev/null 2>&1
+echo; echo "RESULT pass=$pass fail=$fail"; [ $fail = 0 ]

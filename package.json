@@ -30,7 +30,8 @@
     "prepublishOnly": "npm run check:release && npm run build",
     "prepare": "tsc -p tsconfig.json",
     "check:release": "node scripts/check-release.mjs",
-    "smoke:release": "npm run build && node scripts/check-release.mjs && node scripts/smoke-release.mjs"
+    "smoke:release": "npm run build && node scripts/check-release.mjs && node scripts/smoke-release.mjs",
+    "smoke:reliability": "npm run build && bash scripts/smoke-reliability.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
