@@ -131,9 +131,11 @@ test("doctor --live starts a configured server and lists its tools, and reports 
   install("cursor", home);
   fs.writeFileSync(path.join(home, ".gemini", "settings.json"), JSON.stringify({ mcpServers: { skillrouter: { command: "/nonexistent/node", args: ["mcp"] } } }));
   const started = Date.now();
-  const lines = await liveCheck(["cursor", "gemini", "claude"], home, 10000);
+  // The timeout is far above a cold start so the last assertion can tell "returned when the servers answered" from "waited
+  // it out". With 10 s and an 8 s bound, a slow Windows runner whose server took over 8 s to start failed it (CI, 2026-11-16).
+  const lines = await liveCheck(["cursor", "gemini", "claude"], home, 60000);
   assert.match(lines[0], /cursor: connected in \d+ ms; tools search_skills, read_skill/);
   assert.match(lines[1], /gemini: FAILED/);
   assert.match(lines[2], /claude: not configured/);
-  assert.ok(Date.now() - started < 8000, "the check returns as soon as the servers answer, not at the timeout");
+  assert.ok(Date.now() - started < 30000, "the check returns as soon as the servers answer, not at the timeout");
 });
