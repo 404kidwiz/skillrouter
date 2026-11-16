@@ -225,6 +225,13 @@ test("without Hermes installed, or without its Python, install hermes says what 
     assert.equal(fs.readFileSync(path.join(h, ".hermes", "config.yaml"), "utf8"), "model: x\n");
     assert.equal(hostHooks("hermes", h), "not installed (run `skillrouter install hermes`)");
     assert.equal(hostHooks("hermes", none), "missing");
+    // The hook command as each OS writes it, in either quoting a YAML or JSON writer may choose.
+    for (const line of [`- command: "'/Users/x/.skillrouter/bin/skillrouter-hint' hermes"`, `- command: 'node "C:/Users/x/.skillrouter/bin/skillrouter-hint.mjs" hermes gate'`, `"command": "node \\"C:/Users/x/.skillrouter/bin/skillrouter-hint.mjs\\" hermes"`]) {
+        fs.writeFileSync(path.join(h, ".hermes", "config.yaml"), `hooks:\n  pre_llm_call:\n    ${line}\n`);
+        assert.match(hostHooks("hermes", h), /^configured: .*NOT yet approved/, line);
+    }
+    fs.writeFileSync(path.join(h, ".hermes", "config.yaml"), "hooks:\n  pre_llm_call:\n    - command: /mine/skillrouter-hint-wrapper.sh hermesx\n");
+    assert.match(hostHooks("hermes", h), /^not installed/);
 });
 test("Antigravity hooks are installed only when asked for, beside the user's own hook groups", () => {
     const h = path.join(home, "ag-install"), file = path.join(h, ".gemini", "config", "hooks.json");

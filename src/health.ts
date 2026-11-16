@@ -63,7 +63,8 @@ export function hostHooks(target: "hermes" | "antigravity", home = HOME): string
   }
   let text: string;
   try { text = fs.readFileSync(file(".hermes", "config.yaml"), "utf8"); } catch { return "missing"; }
-  const ours = /skillrouter-hint(?:\.mjs)?['"]?\s+hermes\b/;
+  // As written in the file: a quote after the launcher path may be escaped (a double-quoted YAML or JSON string on Windows).
+  const ours = /skillrouter-hint(?:\.mjs)?\\?['"]?\s+hermes\b/;
   if (!ours.test(text)) return "not installed (run `skillrouter install hermes`)";
   let approved = false;
   try { const a = JSON.parse(fs.readFileSync(file(".hermes", "shell-hooks-allowlist.json"), "utf8"))?.approvals; approved = Array.isArray(a) && a.some((e) => typeof e?.command === "string" && ours.test(e.command)); } catch { /* no allowlist yet */ }
