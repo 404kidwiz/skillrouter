@@ -316,9 +316,12 @@ test("second QA pass: namespaced ids, early lines, lapsed holds, per-host holds,
     assert.equal(readVerdicts().agents.gemini["gemini-noise"].accepted, 1);
     assert.deepEqual([...suppressed("gemini")], []);
     // Parsing stays linear.
-    const t0 = Date.now();
+    // Measured in CPU time, not on the clock: this takes about 10 ms, and on a Mac at load average 116 the process was simply
+    // not scheduled for half a second (`took 517 ms`). A parser gone quadratic costs seconds of CPU either way.
+    const c0 = process.cpuUsage();
     decisionOf([("Skills: none (x)\n").repeat(20000)]);
-    assert.ok(Date.now() - t0 < 500, `took ${Date.now() - t0} ms`);
+    const cpu = process.cpuUsage(c0);
+    assert.ok((cpu.user + cpu.system) / 1000 < 500, `took ${Math.round((cpu.user + cpu.system) / 1000)} ms of CPU`);
     // Odd skill names are plain keys.
     addVerdict("claude", [], ["constructor", "__proto__"]);
     assert.equal({}.shown, undefined);
