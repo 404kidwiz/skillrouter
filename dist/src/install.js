@@ -89,7 +89,8 @@ if [ ! -x "$NODE" ]; then
     if [ -n "$c" ] && [ -x "$c" ] && "$c" -e 'process.exit(+process.versions.node.split(".")[0] >= 20 ? 0 : 1)' </dev/null 2>/dev/null; then NODE="$c"; break; fi
   done
 fi
-if [ "\${SKILLROUTER_SERVICE:-1}" != 0 ] && [ -f ${quote(perlClient)} ] && command -v perl >/dev/null 2>&1; then
+# (SKILLROUTER_RECURRING=0 is this hook's own setting, which the service, with its own environment, would not see.)
+if [ "\${SKILLROUTER_SERVICE:-1}" != 0 ] && [ "\${SKILLROUTER_RECURRING:-1}" != 0 ] && [ -f ${quote(perlClient)} ] && command -v perl >/dev/null 2>&1; then
   perl ${quote(perlClient)} ${quote(dir)} ${quote(sock)} "$NODE" ${quote(cli)} "$@"
   rc=$?
   if [ $rc -ne 2 ] && [ $rc -ne 255 ]; then exit $rc; fi
@@ -275,9 +276,6 @@ export function install(agent, home = HOME, platform = process.platform, opts = 
 /** Hermes tools the search gate looks at: work calls, skill loads, and the router's own two tools (to see a search). */
 export const HERMES_GATE_MATCHER = "^(?:terminal|write_file|patch|execute_code|skill_view|mcp_skillrouter_(?:read_skill|search_skills))$";
 /** A hook entry of ours in a Hermes config: the launcher followed by `hermes`. */
-// Only a command that starts with the launcher (optionally through node, as on Windows) is ours: a user's own
-// script that wraps or merely mentions it is theirs and stays.
-const HERMES_HOOK = /^\s*(?:\S*node(?:\.exe)?['"]?\s+)?['"]?[^'"\s]*skillrouter-hint(?:\.mjs)?['"]?\s+hermes(?:\s+(?:gate|decision))?\s*$/;
 /**
  * What Hermes's own Python does to one HERMES_HOME (the main one or a profile): set the MCP entry, replace our hook
  * entries under `hooks:` (other hooks stay), and, when asked, record Hermes's consent for exactly those hooks in
@@ -306,7 +304,20 @@ env = dict(prev.get("env")) if isinstance(prev.get("env"), dict) else {}
 env.update(spec["mcp"]["env"])
 prev.update({"command": spec["mcp"]["command"], "args": spec["mcp"]["args"], "env": env})
 servers["skillrouter"] = prev
-ours = re.compile(spec["marker"])
+import shlex
+def ours(command):
+    # Ours: the launcher, optionally run through node (Windows), then "hermes" and at most a mode. Read as the shell
+    # words Hermes itself splits the command into, so a path with spaces or quotes is still one word; a user's own
+    # script that wraps or merely mentions the launcher is theirs.
+    try:
+        words = shlex.split(str(command))
+    except ValueError:
+        return False
+    if len(words) >= 2 and re.search(r"(^|[\\\\/])node(\\.exe)?$", words[0], re.I):
+        words = words[1:]
+    if len(words) not in (2, 3) or words[1] != "hermes" or (len(words) == 3 and words[2] not in ("gate", "decision")):
+        return False
+    return re.search(r"(^|[\\\\/])skillrouter-hint(\\.mjs)?$", words[0]) is not None
 hooks = c.get("hooks")
 if hooks is None:
     hooks = {}
@@ -319,7 +330,7 @@ for event, entry in spec["hooks"].items():
         current = []
     if not isinstance(current, list):
         refuse("hooks." + event + " is not a list")
-    kept = [e for e in current if not (isinstance(e, dict) and ours.search(str(e.get("command", ""))))]
+    kept = [e for e in current if not (isinstance(e, dict) and ours(e.get("command", "")))]
     kept.append(entry)
     hooks[event] = kept
 approvals = None
@@ -372,7 +383,7 @@ function installHermes(home, bin, opts) {
         // The turn's final reply, for what was decided about the skill check (accept rates, held-back skills); nothing is answered.
         post_llm_call: { command: `${bin} hermes decision`, timeout: 5 },
     };
-    const spec = JSON.stringify({ mcp: { command: NODE, args: [target.cli, "mcp"], env: { SKILLROUTER_AGENT: "hermes" } }, hooks, marker: HERMES_HOOK.source, accept: !!opts.acceptHooks });
+    const spec = JSON.stringify({ mcp: { command: NODE, args: [target.cli, "mcp"], env: { SKILLROUTER_AGENT: "hermes" } }, hooks, accept: !!opts.acceptHooks });
     const homes = [root];
     try {
         for (const name of fs.readdirSync(path.join(root, "profiles")).sort()) {

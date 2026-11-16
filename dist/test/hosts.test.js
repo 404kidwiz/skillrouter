@@ -248,6 +248,28 @@ test("install hermes writes the MCP entry and both hooks into the main home and 
         delete process.env.SKILLROUTER_HERMES_PYTHON;
     }
 });
+test("reinstalling Hermes hooks never duplicates them, also from a home whose path has a space or an apostrophe", { skip: !python }, () => {
+    process.env.SKILLROUTER_HERMES_PYTHON = python;
+    try {
+        for (const name of ["John Smith", "o'brien", "plain"]) {
+            const h = path.join(home, "homes", name);
+            fakeHermes(h, []);
+            for (const platform of [process.platform, "win32"]) {
+                for (let i = 0; i < 3; i++)
+                    assert.doesNotMatch(install("hermes", h, platform, { acceptHooks: true }).join("\n"), /FAILED/, `${name} ${platform}`);
+            }
+            const c = read(h, "config.yaml");
+            // One of each for the last platform installed; the other platform's three entries were recognized and replaced.
+            assert.equal(c.hooks.pre_llm_call.length, 1, name);
+            assert.equal(c.hooks.post_llm_call.length, 1, name);
+            assert.equal(c.hooks.pre_tool_call.length, 2, name); // the user's own guard, and ours
+            assert.equal(read(h, "shell-hooks-allowlist.json").approvals.length, 6, name); // three per command form (POSIX and Windows); approvals of replaced forms are harmless
+        }
+    }
+    finally {
+        delete process.env.SKILLROUTER_HERMES_PYTHON;
+    }
+});
 test("without Hermes installed, or without its Python, install hermes says what it did not do", () => {
     const none = path.join(home, "no-hermes");
     assert.match(install("hermes", none).join("\n"), /missing \(Hermes not installed\); skipped/);
@@ -355,25 +377,27 @@ test("backups: old entries are offered for removal, the newest trim's manifest a
     assert.ok(backupPlan(0, dir, now).every((i) => i.keep));
     assert.deepEqual(backupPlan(30, path.join(home, "no-such-dir")), []);
 });
-test("skill gaps: a recurring job phrased many ways is one line, and jobs that share only boilerplate stay apart", () => {
+test("skill gaps: jobs that share only boilerplate are never counted together, whatever the order of the log", () => {
     const now = new Date().toISOString();
     const s = (query, agent = "codex") => ({ ts: now, client: "x", agent, tool: "search_skills", query, hits: [] });
-    const integrity = ["read-only production website integrity verification TLS DNS smoke", "production website integrity guard verify GitHub variable TLS", "read-only production site integrity QA verification",
-        "run read-only production integrity checks website TLS certificate", "read-only production integrity validation", "production integrity verification of deployment freeze GitHub variable domain TLS",
-        "read-only production website integrity monitoring HTTP TLS GitHub variable", "verify production website integrity read-only smoke TLS", "integrity guard production read-only website verification GitHub"];
-    const database = ["read-only production database backup restore verification", "verify production database backup and restore read-only", "production database backup verification restore drill read-only", "read-only production postgres database backup restore check"];
-    const cluster = ["read-only production kubernetes cluster health verification", "verify production kubernetes cluster node health read-only", "production kubernetes cluster health check pods read-only"];
-    const rows = [...Array(5).fill(integrity).flat().slice(0, 40), ...Array(8).fill(database).flat().slice(0, 30), ...Array(4).fill(cluster).flat()].map((q) => s(q));
-    const lines = gapLines(rows).filter((l) => /^\s+\d+\s/.test(l));
-    assert.equal(lines.length, 3, lines.join("\n"));
-    const count = (l) => Number(l.trim().split(/\s+/)[0]);
-    assert.match(lines[0], /integrity/);
-    assert.ok(count(lines[0]) >= 38 && count(lines[0]) <= 44, lines[0]);
-    assert.match(lines[1], /database backup/);
-    assert.equal(count(lines[1]), 30);
-    assert.match(lines[2], /kubernetes cluster/);
-    assert.ok(count(lines[2]) >= 10 && count(lines[2]) <= 12, lines[2]);
-    assert.ok(rows.some((r) => lines[0].endsWith(r.query.slice(0, 110))), "the label is one of the queries");
+    // Three scheduled jobs, each phrased many ways, all wrapped in the same "read-only production … verification".
+    const phrase = (topics) => topics.flatMap((x) => [`read-only production ${x} verification`, `verify production ${x} read-only`, `production ${x} verify read-only checks`, `read-only production ${x} verification run`, `run read-only production ${x} verification`]);
+    const web = phrase(["website TLS integrity", "website integrity TLS certificate", "site TLS integrity smoke", "website integrity DNS TLS"]);
+    const db = phrase(["database backup restore", "database backup and restore drill", "postgres database backup restore"]);
+    const k8 = phrase(["kubernetes cluster health", "kubernetes cluster node health"]);
+    const rows = [...web, ...web].slice(0, 40).concat([...db, ...db].slice(0, 30), [...k8, ...k8].slice(0, 12)).map((q) => s(q));
+    const parse = (lines) => lines.filter((l) => /^\s+\d+\s/.test(l)).map((l) => ({ n: Number(l.trim().split(/\s+/)[0]), label: l.replace(/^\s+\d+\s+\S+: /, "") }));
+    const sum = (lines, re) => lines.filter((l) => re.test(l.label)).reduce((n, l) => n + l.n, 0);
+    for (const input of [rows, [...rows].reverse()]) {
+        const lines = parse(gapLines(input));
+        assert.ok(lines.length >= 3 && lines.length <= 5, JSON.stringify(lines));
+        // Each job's searches are all there and on lines of their own: no line's count spans two jobs.
+        assert.equal(sum(lines, /integrity/), 40, JSON.stringify(lines));
+        assert.equal(sum(lines, /database/), 30, JSON.stringify(lines));
+        assert.equal(sum(lines, /kubernetes/), 12, JSON.stringify(lines));
+        assert.ok(lines.every((l) => [/integrity/, /database/, /kubernetes/].filter((re) => re.test(l.label)).length === 1));
+        assert.ok(lines.every((l) => input.some((r) => r.query.slice(0, 110) === l.label)), "each label is one of the queries");
+    }
     assert.deepEqual(gapLines(rows), gapLines(rows), "the same rows give the same lines");
 });
 test("Hermes's end of turn records what was decided about the skill check", async () => {
@@ -417,7 +441,7 @@ test("a recurring request is told at once which skills it used before, and loadi
     const third = await run(3, false);
     const text = JSON.parse(third.out).hookSpecificOutput.additionalContext;
     assert.match(text, /- canary-watch — not preloaded: read_skill\("canary-watch"/);
-    assert.match(text, /This same request was answered before with: canary-watch\. Load it unless the task has changed; no new search is needed/);
+    assert.match(text, /A request worded like this one was answered before with: canary-watch\. If this is the same task, use it and skip the search; if the task differs, search as usual\./);
     // Without loading, the gate still holds the first work call; after the load it does not, with no search made.
     assert.match(third.work(), /permissionDecision":"deny/);
     const fourth = await run(4, true);
@@ -432,15 +456,52 @@ test("a recurring request is told at once which skills it used before, and loadi
     assert.equal(entry.n, 4);
     assert.equal(entry.skills["canary-watch"], 3);
     assert.match(formatRecurring(), /4 runs .*canary-watch x3/);
+    // Twelve hooks at once: every count lands (a short lock; a hook that cannot get it gives its claim back).
+    const burst = "A request that many scheduled sessions send at the very same moment every night.";
+    await Promise.all(Array.from({ length: 12 }, (_v, i) => hint("codex", JSON.stringify({ session_id: `burst-${i}`, turn_id: "t", prompt: burst }))));
+    assert.equal(readRecurring().prompts[promptKey(burst)].n, 12);
     // One session counts once, however often its hook runs or the skill is loaded; a skill loaded in one session only is not suggested.
     recallRequest("s-once", "t", "some other recurring request with enough words");
     recallRequest("s-once", "t", "some other recurring request with enough words");
     creditRequest("s-once", "python-testing");
-    creditRequest("s-once", "python-testing~2");
+    creditRequest("s-once", "python-testing");
     const once = readRecurring().prompts[promptKey("some other recurring request with enough words")];
     assert.equal(once.n, 1);
     assert.equal(once.skills["python-testing"], 1);
     assert.deepEqual(recallRequest("s-twice", "t", "some other recurring request with enough words").skills, []);
+    // A later turn of the session is another matter: what it loads is not credited to the request before it.
+    for (const sess of ["mix-1", "mix-2"]) {
+        await hint("codex", JSON.stringify({ session_id: sess, turn_id: "a", prompt: "Prepare the monthly ledger export for the accounting team and attach the summary." }));
+        await hint("codex", JSON.stringify({ session_id: sess, turn_id: "b", prompt: "fix the css bug" }));
+        gateEvent("codex", JSON.stringify({ session_id: sess, turn_id: "b", tool_use_id: "x", tool_name: "mcp__skillrouter__read_skill", tool_input: { id: "python-testing" } }));
+        await hint("codex", JSON.stringify({ session_id: sess, turn_id: "c", prompt: "/compact" }));
+        gateEvent("codex", JSON.stringify({ session_id: sess, turn_id: "c", tool_use_id: "y", tool_name: "mcp__skillrouter__read_skill", tool_input: { id: "canary-watch" } }));
+    }
+    assert.deepEqual(readRecurring().prompts[promptKey("Prepare the monthly ledger export for the accounting team and attach the summary.")].skills, {});
+    // A load of a name that is no skill (a failed read, a SKILL.md somewhere else) is not remembered.
+    for (const sess of ["bad-1", "bad-2"]) {
+        await hint("codex", JSON.stringify({ session_id: sess, turn_id: "a", prompt: "Rotate the staging credentials and confirm every service picked them up." }));
+        gateEvent("codex", JSON.stringify({ session_id: sess, turn_id: "a", tool_use_id: "x", tool_name: "mcp__skillrouter__read_skill", tool_input: { id: "no-such-skill" } }));
+        gateEvent("codex", JSON.stringify({ session_id: sess, turn_id: "a", tool_use_id: "y", tool_name: "Bash", tool_input: { command: "cat /anywhere/else/not-indexed/SKILL.md" } }));
+    }
+    assert.deepEqual(readRecurring().prompts[promptKey("Rotate the staging credentials and confirm every service picked them up.")].skills, {});
+    // Named three runs in a row without being used, a skill is no longer named; using it again brings it back.
+    const j = promptKey(job(1));
+    for (const n of [5, 6, 7])
+        assert.match((await run(n, false)).out, /canary-watch/); // (run 4 used it, which started the count again)
+    assert.equal((await run(8, false)).out, "", "named in runs 5, 6 and 7 and never used: the eighth says nothing");
+    assert.match(formatRecurring(), /canary-watch x3 \(no longer suggested/);
+    await run(9, true);
+    assert.match((await run(12, false)).out, /canary-watch/);
+    // One request can be forgotten by the hash the listing shows.
+    const { forgetRequest } = await import("../src/recurring.js");
+    assert.equal(forgetRequest("zz"), 0);
+    assert.equal(forgetRequest(j.slice(0, 12)), 1);
+    assert.equal(readRecurring().prompts[j], undefined);
+    await run(10, true);
+    await run(11, true); // remembered again for the checks below
+    if (process.platform !== "win32")
+        assert.equal(fs.statSync(path.join(process.env.SKILLROUTER_HOME, "recurring.json")).mode & 0o077, 0, "only the user can read it");
     // Odd skill names, sessions that asked nothing, a damaged file and the off switch are all harmless.
     creditRequest("s-once", "../../etc/passwd");
     creditRequest("never-prompted", "python-testing");

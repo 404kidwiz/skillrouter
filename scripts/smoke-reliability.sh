@@ -169,7 +169,7 @@ RL(){ printf '{"session_id":"rj%s","turn_id":"t%s","tool_use_id":"r","tool_name"
 mkdir -p $S/lib/smoke-load; printf -- '---\nname: smoke-load\ndescription: Kiln glaze schedule for stoneware pottery firing and cooling curves.\n---\nbody\n' > $S/lib/smoke-load/SKILL.md
 SKILLROUTER_SERVICE=0 node $A index >/dev/null 2>&1
 for n in 1 2; do RJ $n | SKILLROUTER_SERVICE=0 $L codex >/dev/null; RL $n | SKILLROUTER_SERVICE=0 $L codex gate >/dev/null; done
-o=$(RJ 3 | SKILLROUTER_SERVICE=0 $L codex); has "$o" "This same request was answered before with: smoke-load"; ok $? "third run of the same request is told the skill at once"
+o=$(RJ 3 | SKILLROUTER_SERVICE=0 $L codex); has "$o" "A request worded like this one was answered before with: smoke-load"; ok $? "third run of the same request is told the skill at once"
 o=$(SKILLROUTER_SERVICE=0 node $A recurring 2>&1); has "$o" "3 runs .*smoke-load x2" && ! has "$o" "storefront"; ok $? "recurring lists runs and skills, not the request's words"
 HD='{"hook_event_name":"post_llm_call","session_id":"hs1","extra":{"turn_id":"t1","assistant_response":"Done. Skills: none (nothing fit)"}}'
 o=$(echo "$HD" | SKILLROUTER_SERVICE=0 $L hermes decision); [ "$o" = "{}" ]; ok $? "hermes post_llm_call is answered with an empty object"

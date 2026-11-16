@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentId, HookAgent } from "./paths.js";
-import { creditRequest } from "./recurring.js";
+import { creditRequest, knownSkill } from "./recurring.js";
 import { fromHost } from "./hosts.js";
 import { INDEX_FILE } from "./paths.js";
 import { getIndex, logUsage, search, type Hit } from "./search.js";
@@ -112,7 +112,7 @@ export async function toolEvent(agent: AgentId, input: string, inWorker: boolean
   const once = inWorker || firstUse(session, p?.tool_use_id);
   if (load && !inWorker && once) {
     addLoaded(session, load.skill, sub);
-    if (!sub) creditRequest(session, load.skill); // what this request used, for its next run (recurring.ts)
+    if (!sub) { const known = knownSkill(load.skill); if (known) creditRequest(session, known); } // what this request used, for its next run (recurring.ts)
     // A held-back skill the agent went and loaded anyway was wanted: count it as accepted (once per session).
     if (suppressed(agent).has(bareSkill(load.skill)) && claim(session, `rescued-${bareSkill(load.skill)}`)) addVerdict(agent, [load.skill], []);
     logUsage({ client: `hook/${agent}`, agent, tool: "skill_load", via: load.via,

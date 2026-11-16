@@ -3,8 +3,8 @@ import { fromHost, silent } from "./hosts.js";
 import { sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, isWork, shellCommand } from "./triggers.js";
 import { skillLoadOf } from "./events.js";
-import { addLoaded, addSearched, claimDenial, gateProgress, gatedTurn, loadedSkills } from "./state.js";
-import { creditRequest } from "./recurring.js";
+import { addLoaded, addSearched, claim, claimDenial, gateProgress, gatedTurn, loadedSkills } from "./state.js";
+import { creditRequest, knownSkill } from "./recurring.js";
 /**
  * The search gate: the rule "search the skill library before you start work" as something the agent cannot skip.
  *
@@ -84,12 +84,14 @@ function gateDecision(agent, rawInput, enabled) {
             addSearched(session, turn, undefined, lookup);
             if (lookup === "load") {
                 const load = skillLoadOf(typeof p.tool_name === "string" ? p.tool_name : "", p.tool_input);
-                if (load) {
-                    creditRequest(session, load.skill); // what this request used, for its next run (recurring.ts)
-                    // Hermes and Antigravity have no after-tool hook: the gate is where their skill loads are seen and logged.
-                    if (agent === "hermes" || agent === "antigravity") {
-                        addLoaded(session, load.skill);
-                        logUsage({ client: `hook/${agent}`, agent, tool: "skill_load", via: load.via, skill: load.skill, session, prompt: turn });
+                // This is seen before the call runs, so it may yet fail: only a name that is exactly one indexed skill counts.
+                const known = load ? knownSkill(load.skill) : undefined;
+                if (load && known) {
+                    creditRequest(session, known); // what this request used, for its next run (recurring.ts)
+                    // Hermes and Antigravity have no after-tool hook: the gate is where their skill loads are seen and logged (once per call).
+                    if ((agent === "hermes" || agent === "antigravity") && claim(session, `gate-load-${String(p.tool_use_id ?? known).slice(0, 80)}`)) {
+                        addLoaded(session, known);
+                        logUsage({ client: `hook/${agent}`, agent, tool: "skill_load", via: load.via, skill: known, session, prompt: turn });
                     }
                 }
             }

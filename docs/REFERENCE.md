@@ -226,7 +226,7 @@ An existing vector store also causes subsequent index rebuilds to attempt refres
 | `node dist/src/cli.js install hermes` | MCP entry, prompt-check hook and search-gate hook in Hermes's main home and every profile; hooks run once approved in Hermes |
 | `node dist/src/cli.js install hermes --accept-hooks` | The same, and records Hermes's approval for those two hooks in each home (needed for gateway and cron profiles, which never ask) |
 | `node dist/src/cli.js install antigravity --hooks` | Also writes the experimental `skillrouter` hook group into `~/.gemini/config/hooks.json` |
-| `node dist/src/cli.js recurring` | Requests seen more than once (by hash) and the skills they used; `recurring reset` forgets them |
+| `node dist/src/cli.js recurring` | Requests seen more than once (by hash) and the skills they used; `recurring forget <hash>` forgets one, `recurring reset` all. A skill named three runs in a row without being used is no longer named |
 | `node dist/src/cli.js backups` | Lists `~/.skillrouter/backups` with sizes and ages, and what `--apply` would remove |
 | `node dist/src/cli.js backups --older-than 60 --apply` | Removes entries older than 60 days (default 30); never the newest trim's restore manifest, its notes or its archives |
 

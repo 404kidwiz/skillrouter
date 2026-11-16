@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { SR_DIR } from "./paths.js";
-import { bareSkill, claim, promptKeyOf, setPromptKey } from "./state.js";
+import { bareSkill, claim, promptKeyOf, release, setPromptKey } from "./state.js";
+import { findSkill } from "./search.js";
 import { renameSyncRetry } from "./platform.js";
 
 /**
@@ -13,13 +14,16 @@ import { renameSyncRetry } from "./platform.js";
  *
  * A request is identified by a hash of its text with case, spacing and numbers flattened (dates and counters change
  * between runs); the text itself is never stored. Skills are remembered once they were loaded in two different
- * sessions for that request. SKILLROUTER_RECURRING=0 turns it off; `skillrouter recurring` lists what is remembered.
+ * sessions for that request, and dropped again once named three runs in a row without being used. Because numbers
+ * are flattened, "fix issue 12" and "fix issue 97" are one request: the note says so and leaves the judgment to the
+ * agent. SKILLROUTER_RECURRING=0 turns it off; `skillrouter recurring` lists what is remembered.
  */
 const FILE = () => path.join(SR_DIR, "recurring.json");
 const MAX_PROMPTS = 2000;
 export const recurringEnabled = () => process.env.SKILLROUTER_RECURRING !== "0";
 
-interface Entry { n: number; last: string; skills: Record<string, number> }
+/** `offered`: how many runs in a row a skill was named without being loaded; three, and it is no longer named. */
+interface Entry { n: number; last: string; skills: Record<string, number>; offered: Record<string, number> }
 interface Store { v: 1; prompts: Record<string, Entry> }
 
 export function promptKey(prompt: string): string {
@@ -35,17 +39,30 @@ export function readRecurring(): Store {
   return { v: 1, prompts: {} };
 }
 
-function update(fn: (s: Store) => void): void {
+/** Read, change and write back under a short lock, so hooks running at once do not overwrite each other's change. */
+function update(fn: (s: Store) => void): boolean {
+  const lock = `${FILE()}.lock`;
+  let held = false;
   try {
+    fs.mkdirSync(SR_DIR, { recursive: true });
+    for (let i = 0; i < 40 && !held; i++) {
+      try { fs.mkdirSync(lock); held = true; }
+      catch {
+        try { if (Date.now() - fs.statSync(lock).mtimeMs > 2000) fs.rmdirSync(lock); } catch { /* gone meanwhile */ } // a holder that died
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
+    }
+    if (!held) return false; // busy for 200 ms: the caller gives its claim back, so a later hook makes the change
     const store = readRecurring();
     fn(store);
     const keys = Object.keys(store.prompts);
     if (keys.length > MAX_PROMPTS) for (const k of keys.sort((a, b) => String(store.prompts[a].last).localeCompare(String(store.prompts[b].last))).slice(0, keys.length - MAX_PROMPTS)) delete store.prompts[k];
-    fs.mkdirSync(SR_DIR, { recursive: true });
     const tmp = `${FILE()}.tmp-${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify(store));
+    fs.writeFileSync(tmp, JSON.stringify(store), { mode: 0o600 }); // hashes of the user's requests: theirs alone to read
     renameSyncRetry(tmp, FILE());
-  } catch { /* memory is a convenience: never fail a hook over it */ }
+    return true;
+  } catch { return false; } // memory is a convenience: never fail a hook over it
+  finally { if (held) try { fs.rmdirSync(lock); } catch { /* already gone */ } }
 }
 
 /**
@@ -56,27 +73,46 @@ export function recallRequest(session: string | undefined, turn: string | undefi
   const key = promptKey(prompt);
   if (!recurringEnabled()) return { key, skills: [], runs: 0 };
   const entry = entryOf(readRecurring().prompts[key]);
-  const skills = Object.entries(entry.skills).filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 2).map(([id]) => id);
+  const skills = Object.entries(entry.skills).filter(([id, n]) => n >= 2 && (entry.offered[id] ?? 0) < 3).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 2).map(([id]) => id);
   setPromptKey(session, turn, key);
   // One count per session: a hook run twice for one prompt, or the same prompt repeated in a conversation, is one run.
-  if (session && claim(session, `recur-run-${key}`)) update((s) => { const e = entryOf(s.prompts[key]); e.n++; e.last = new Date().toISOString(); s.prompts[key] = e; });
+  const run = `recur-run-${key}`;
+  if (session && claim(session, run)) {
+    const done = update((s) => { const e = entryOf(s.prompts[key]); e.n++; e.last = new Date().toISOString(); for (const id of skills) e.offered[id] = (e.offered[id] ?? 0) + 1; s.prompts[key] = e; });
+    if (!done) release(session, run);
+  }
   return { key, skills, runs: entry.n };
 }
 
-/** A skill was loaded in this session: credit it to the request the session is answering (once per session and skill). */
+/** The indexed skill a load names, as the bare name remembered for a request; nothing for a name that is not exactly one skill. */
+export function knownSkill(name: string): string | undefined {
+  try { const found = findSkill(name); return found.length === 1 ? bareSkill(found[0].id) : undefined; } catch { return undefined; }
+}
+
+/** A skill was loaded in this session: credit it to the request the session's current turn is answering (once per session and skill). */
 export function creditRequest(session: string | undefined, skill: string): void {
   if (!recurringEnabled() || !session) return;
   const key = promptKeyOf(session);
   const id = bareSkill(skill);
-  if (!key || !id || !/^[\w.-]{1,120}$/.test(id) || !claim(session, `recur-${key}-${id}`)) return;
-  update((s) => { const e = entryOf(s.prompts[key]); e.skills[id] = (e.skills[id] ?? 0) + 1; e.last = new Date().toISOString(); s.prompts[key] = e; });
+  const mark = `recur-${key}-${id}`;
+  if (!key || !id || !/^[\w.-]{1,120}$/.test(id) || !claim(session, mark)) return;
+  const done = update((s) => { const e = entryOf(s.prompts[key]); e.skills[id] = (e.skills[id] ?? 0) + 1; e.offered[id] = 0; e.last = new Date().toISOString(); s.prompts[key] = e; });
+  if (!done) release(session, mark);
 }
 
 function entryOf(e: unknown): Entry {
   const x = e && typeof e === "object" ? (e as Partial<Entry>) : {};
-  const skills: Record<string, number> = {};
-  if (x.skills && typeof x.skills === "object") for (const [k, v] of Object.entries(x.skills)) if (typeof v === "number" && Number.isFinite(v)) skills[k] = v;
-  return { n: typeof x.n === "number" && Number.isFinite(x.n) ? x.n : 0, last: typeof x.last === "string" ? x.last : "", skills };
+  const counts = (v: unknown) => { const out: Record<string, number> = {}; if (v && typeof v === "object") for (const [k, n] of Object.entries(v)) if (typeof n === "number" && Number.isFinite(n)) out[k] = n; return out; };
+  return { n: typeof x.n === "number" && Number.isFinite(x.n) ? x.n : 0, last: typeof x.last === "string" ? x.last : "", skills: counts(x.skills), offered: counts(x.offered) };
+}
+
+/** Forget the requests whose hash starts with `prefix` (as `skillrouter recurring` prints them). */
+export function forgetRequest(prefix: string): number {
+  const p = prefix.trim().toLowerCase();
+  if (!/^[a-f0-9]{4,32}$/.test(p)) return 0;
+  let n = 0;
+  update((s) => { for (const k of Object.keys(s.prompts)) if (k.startsWith(p)) { delete s.prompts[k]; n++; } });
+  return n;
 }
 
 export function forgetRecurring(): void { try { fs.rmSync(FILE(), { force: true }); } catch { /* nothing to forget */ } }
@@ -85,6 +121,6 @@ export function formatRecurring(store = readRecurring()): string {
   const rows = Object.entries(store.prompts).map(([key, e]) => ({ key, ...entryOf(e) })).filter((e) => e.n >= 2).sort((a, b) => b.n - a.n).slice(0, 30);
   if (!rows.length) return "No request has been seen twice yet. (Requests are identified by a hash of their text; the text is not stored.)";
   return ["Requests seen more than once (hash of the text; the text is not stored), runs, and the skills loaded while answering them:",
-    ...rows.map((e) => `  ${e.key.slice(0, 12)}  ${String(e.n).padStart(4)} runs  last ${e.last.slice(0, 10)}  ${Object.entries(e.skills).sort((a, b) => b[1] - a[1]).map(([id, n]) => `${id} x${n}${n >= 2 ? "" : " (not yet suggested)"}`).join(", ") || "no skill loaded"}`),
-    "A skill loaded in two sessions for the same request is named at once the next time. `skillrouter recurring reset` forgets everything."].join("\n");
+    ...rows.map((e) => `  ${e.key.slice(0, 12)}  ${String(e.n).padStart(4)} runs  last ${e.last.slice(0, 10)}  ${Object.entries(e.skills).sort((a, b) => b[1] - a[1]).map(([id, n]) => `${id} x${n}${n < 2 ? " (not yet suggested)" : (e.offered[id] ?? 0) >= 3 ? " (no longer suggested: named 3 runs in a row without being used)" : ""}`).join(", ") || "no skill loaded"}`),
+    "A skill loaded in two sessions for the same request is named at once the next time. `skillrouter recurring forget <hash>` forgets one request, `recurring reset` all of them."].join("\n");
 }

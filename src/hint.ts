@@ -8,7 +8,7 @@ import { findSkill, getIndex, logUsage, search, type Hit } from "./search.js";
 import { recallRequest } from "./recurring.js";
 import { coreIds } from "./core.js";
 import { semanticScores } from "./embed.js";
-import { addGateTask, addShown, bareSkill, loadedSkills, markTurn, sessionSearched } from "./state.js";
+import { addGateTask, addShown, bareSkill, loadedSkills, markTurn, sessionSearched, setPromptKey } from "./state.js";
 import { endorsed, suppressed } from "./verdicts.js";
 
 const EVENT: Partial<Record<AgentId, string>> = { gemini: "BeforeAgent" }; // claude/codex: UserPromptSubmit
@@ -89,6 +89,8 @@ export async function hint(agent: HookAgent, rawInput: string, minRaw?: number, 
   // Every prompt starts a turn, checked or not: the end-of-turn nudge counts work from here. The nudge itself
   // coming back as a prompt (Cursor's follow-up, Gemini's retry, Codex's continuation) belongs to the nudged turn.
   if (!/^skillrouter: this turn did real work/.test(prompt)) markTurn(session, sessionHash(turnOf(payload)));
+  // Whatever this turn is, it is no longer the request of the turn before: skill loads from here on are not that request's.
+  setPromptKey(session, sessionHash(turnOf(payload)), "");
   if (isSlashCommand(prompt)) { record("skipped_command"); return formatHint(agent, ""); }
   if (isSystemText(prompt)) { record("skipped_system"); return formatHint(agent, ""); }
   // A prompt that describes work is a task turn: the search gate (gate.ts) holds its first work call until the agent has searched.
@@ -136,7 +138,8 @@ export async function hint(agent: HookAgent, rawInput: string, minRaw?: number, 
   addShown(session, hits.map((h) => h.skill.id), sessionHash(turnOf(payload)), Object.fromEntries(hits.filter((h) => h.similar?.length).map((h) => [h.skill.id, h.similar!])));
   // Hermes and Antigravity keep their own skill folders: nothing is "preloaded" there, every suggestion is a read.
   const text = hintText(hits, hint_id, agent === "hermes" || agent === "antigravity" ? new Set() : core, agent);
-  const note = remembered.length ? `\nThis same request was answered before with: ${remembered.join(", ")}. Load ${remembered.length > 1 ? "them" : "it"} unless the task has changed; no new search is needed for that.` : "";
+  // (Requests are matched with their numbers flattened, so "issue 12" and "issue 97" look alike: the agent is told to judge.)
+  const note = remembered.length ? `\nA request worded like this one was answered before with: ${remembered.join(", ")}. If this is the same task, use ${remembered.length > 1 ? "them" : "it"} and skip the search; if the task differs, search as usual.` : "";
   return formatHint(agent, text + note);
 }
 

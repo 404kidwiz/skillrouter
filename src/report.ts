@@ -59,7 +59,8 @@ export function readLog(days: number): Row[] {
 }
 
 /**
- * Skill gaps: searches that came back with nothing, grouped when they share most of their words, and reads of names
+ * Skill gaps: searches that came back with nothing, grouped when they share most of their telling words (a job
+ * phrased very differently between runs can show as two or three lines; two different jobs are not put on one), and reads of names
  * that do not exist. A group that keeps recurring is either a skill worth writing (or adding to the library) or a
  * recurring job whose wording never matches the skill it should use. (2026-11-15: one scheduled Codex check made up
  * about two thirds of a sample of empty searches, and nothing surfaced it.)
@@ -74,11 +75,26 @@ export function gapLines(rows: Row[], min = 3): string[] {
   const MAX_GROUPS = 3000; // a log of nothing but distinct queries: groups seen once make way for new ones
   const COMMON = 1500; // a word in this many groups says nothing about which one a query belongs to, and walking them all is the slow part
   const reindex = () => { byWord.clear(); groups.forEach((g, i) => { for (const t of g.words) { const list = byWord.get(t); if (list) list.push(i); else byWord.set(t, [i]); } }); };
+  // Boilerplate: words that more than 40% of the distinct empty queries carry ("read-only production …" in every job
+  // of a log). Two queries are not the same job for sharing those; they count only when little else is left.
+  const distinct = new Set<string>();
+  const inQueries = new Map<string, number>();
   for (const r of rows) {
     const q = (r as { query?: unknown }).query;
     if (r.tool !== "search_skills" || typeof q !== "string" || (r.hits?.length ?? 0) > 0 || (r as { exploratory?: unknown }).exploratory || r.reason) continue;
-    const w = words(q);
-    if (!w.size) continue;
+    const flat = [...words(q)].sort().join(" ");
+    if (!flat || distinct.has(flat)) continue;
+    distinct.add(flat);
+    for (const t of flat.split(" ")) inQueries.set(t, (inQueries.get(t) ?? 0) + 1);
+  }
+  const boiler = (t: string) => distinct.size >= 10 && (inQueries.get(t) ?? 0) > 0.4 * distinct.size;
+  const telling = (set: Set<string>) => { const out = new Set([...set].filter((t) => !boiler(t))); return out.size >= 2 ? out : set; };
+  for (const r of rows) {
+    const q = (r as { query?: unknown }).query;
+    if (r.tool !== "search_skills" || typeof q !== "string" || (r.hits?.length ?? 0) > 0 || (r as { exploratory?: unknown }).exploratory || r.reason) continue;
+    const all = words(q);
+    if (!all.size) continue;
+    const w = telling(all);
     const shared = new Map<number, number>();
     for (const t of w) { const list = byWord.get(t); if (list && (list.length <= COMMON || w.size === 1)) for (const g of list) shared.set(g, (shared.get(g) ?? 0) + 1); }
     // Same group: most words of the shorter query are shared, and at least two of them (a one-word query joins only its twin).
@@ -96,7 +112,7 @@ export function gapLines(rows: Row[], min = 3): string[] {
       groups.push(g);
       for (const t of w) { const list = byWord.get(t); if (list) list.push(groups.length - 1); else byWord.set(t, [groups.length - 1]); }
     }
-    for (const t of w) g.seen.set(t, (g.seen.get(t) ?? 0) + 1);
+    for (const t of all) g.seen.set(t, (g.seen.get(t) ?? 0) + 1);
   }
   // One recurring job is phrased hundreds of ways and lands in several groups, each opened by a different first
   // phrasing. Two groups whose queries use the same telling words at the same rates (weighted cosine 0.5 or more)
@@ -125,6 +141,16 @@ export function gapLines(rows: Row[], min = 3): string[] {
       for (const [t, n] of b.seen) a.seen.set(t, (a.seen.get(t) ?? 0) + n);
       folded.add(b);
     }
+  }
+  // A phrasing seen once joins the recurring group it most resembles, if any.
+  const live = recurring.filter((g) => !folded.has(g));
+  for (const g of groups) {
+    if (g.n !== 1 || g.seen.size < 3) continue;
+    let best: Group | undefined, score = 0.5;
+    for (const r of live) { const a = alike(r, g); if (a >= score) { best = r; score = a; } }
+    if (!best) continue;
+    best.n += 1; for (const x of g.agents) best.agents.add(x); if (best.members.length < 60) best.members.push(...g.members);
+    folded.add(g);
   }
   if (folded.size) { const kept = groups.filter((g) => !folded.has(g)); groups.length = 0; groups.push(...kept); }
   // The line shown for a group: the member that carries most of the words the group's queries have in common, the

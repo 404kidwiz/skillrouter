@@ -22,7 +22,8 @@ const USAGE = `skillrouter — a big skill library without the context bloat
                                           wire MCP + hooks: claude codex cursor gemini opencode hermes; MCP only: openclaude antigravity
                                           --accept-hooks: approve the router's hooks in Hermes (needed for gateway/cron profiles)
                                           --hooks: also install Antigravity's hooks (experimental)
-  skillrouter recurring [reset]          requests seen more than once and the skills they used (named at once next time); reset forgets
+  skillrouter recurring [reset | forget <hash>]
+                                          requests seen more than once and the skills they used (named at once next time)
   skillrouter backups [--older-than DAYS] [--apply]
                                           list ~/.skillrouter/backups; --apply removes entries older than DAYS (default 30),
                                           never the newest trim's restore manifest and archives (dry run by default)
@@ -83,7 +84,8 @@ async function main(argv) {
             // Hermes and Antigravity have the prompt check and the gate, Hermes also the end-of-turn record; any other mode there has nothing to do.
             if ((agent === "hermes" || agent === "antigravity") && mode && mode !== "gate" && !(agent === "hermes" && mode === "decision"))
                 return finish(silent(agent, false), worker);
-            const input = await readHintInput(agent, 1500, mode ? 8 * 1024 * 1024 : 256 * 1024);
+            // Hermes's end-of-turn payload carries the whole conversation: only its last reply is read, but all of it has to be taken in.
+            const input = await readHintInput(agent, 1500, agent === "hermes" && mode === "decision" ? 64 * 1024 * 1024 : mode ? 8 * 1024 * 1024 : 256 * 1024);
             if (input === null)
                 return finish(mode ? silent(agent, mode === "gate") : formatHint(agent, ""), worker);
             // SKILLROUTER_GATE=0 is the hook's own environment: the warm service has its own and must not be asked.
@@ -95,7 +97,8 @@ async function main(argv) {
             // The warm service answers in milliseconds when it is running; any failure falls through to doing the work here.
             if (!worker) {
                 const { serviceEnabled, ask, startServiceSoon } = await import("./service-client.js");
-                if (serviceEnabled() && process.env.SKILLROUTER_SERVICE_TRIED !== "1") {
+                // (SKILLROUTER_RECURRING=0 is this hook's own setting: the service has its own environment and would not see it.)
+                if (serviceEnabled() && process.env.SKILLROUTER_SERVICE_TRIED !== "1" && process.env.SKILLROUTER_RECURRING !== "0") {
                     const answer = await ask(agent, mode ?? "-", input);
                     if (answer.kind === "ok")
                         return finish(answer.out, false);
@@ -319,6 +322,12 @@ async function main(argv) {
             if (args[0] === "reset") {
                 forgetRecurring();
                 console.log("Forgot every remembered request.");
+                break;
+            }
+            if (args[0] === "forget" && args[1]) {
+                const { forgetRequest } = await import("./recurring.js");
+                const n = forgetRequest(args[1]);
+                console.log(n ? `Forgot ${n} request${n === 1 ? "" : "s"}.` : `No remembered request starts with ${args[1]}.`);
                 break;
             }
             console.log(formatRecurring());
