@@ -197,13 +197,18 @@ svc("hostile or broken clients can't hurt it: garbage, oversize, stalls, floods"
   const during = await Promise.all(Array.from({ length: 10 }, () => raw("SR1 claude - 5000\nshort", 1500)));
   assert.ok(during.every((r) => r === "" || r === "FALLBACK\n"), "past the connection cap the extras are told to fall back, never left hanging");
   await sleep(600); // the stalled ones time out (400 ms here) and free their slots
-  assert.match((await query("claude", "-", promptBody("ho-1")))!, /python-testing/, "still answering after all of it");
-  assert.equal(await query("claude", "tool", JSON.stringify({ session_id: "ho-2", tool_name: "Bash", tool_input: { command: "ls" }, tool_response: "x".repeat(900_000) })), "", "a 900 KB tool payload is fine");
+  // From here on the test is about answers, not speed. On a Mac at load average 200 the stalled connections were dropped late
+  // and eight 900 KB requests took over 3 s, so the default client timeouts failed a service that was answering correctly.
+  const PATIENT = 30_000;
+  let still: string | null = null; // until the slots are free the service says FALLBACK, which query() returns as null
+  for (let i = 0; i < 50 && !(still = await query("claude", "-", promptBody(`ho-1-${i}`), PATIENT)); i++) await sleep(200);
+  assert.match(still!, /python-testing/, "still answering after all of it");
+  assert.equal(await query("claude", "tool", JSON.stringify({ session_id: "ho-2", tool_name: "Bash", tool_input: { command: "ls" }, tool_response: "x".repeat(900_000) }), PATIENT), "", "a 900 KB tool payload is fine");
   assert.equal(await query("claude", "tool", JSON.stringify({ session_id: "ho-2b", tool_name: "Bash", tool_input: { command: "ls" }, tool_response: "x".repeat(1_500_000) })), null, "beyond 1 MB clients keep the work (the hook is faster than shipping it)");
-  assert.equal(await raw(`SR1 claude tool ${Buffer.byteLength(JSON.stringify({ session_id: "ho-2c", tool_name: "Bash", tool_input: { command: "ls" }, pad: "x".repeat(1_500_000) }))}\n${JSON.stringify({ session_id: "ho-2c", tool_name: "Bash", tool_input: { command: "ls" }, pad: "x".repeat(1_500_000) })}`, 1500), "OK 0\n", "the service itself still accepts such a payload, up to its own 8 MB limit");
-  const big = await Promise.all(Array.from({ length: 8 }, (_, i) => query("claude", "tool", JSON.stringify({ session_id: `ho-big${i}`, tool_name: "Bash", tool_input: { command: "ls" }, tool_response: "y".repeat(900_000) }), 3000)));
+  assert.equal(await raw(`SR1 claude tool ${Buffer.byteLength(JSON.stringify({ session_id: "ho-2c", tool_name: "Bash", tool_input: { command: "ls" }, pad: "x".repeat(1_500_000) }))}\n${JSON.stringify({ session_id: "ho-2c", tool_name: "Bash", tool_input: { command: "ls" }, pad: "x".repeat(1_500_000) })}`, PATIENT), "OK 0\n", "the service itself still accepts such a payload, up to its own 8 MB limit");
+  const big = await Promise.all(Array.from({ length: 8 }, (_, i) => query("claude", "tool", JSON.stringify({ session_id: `ho-big${i}`, tool_name: "Bash", tool_input: { command: "ls" }, tool_response: "y".repeat(900_000) }), PATIENT)));
   assert.ok(big.every((r) => r === ""), "8 concurrent 900 KB payloads");
-  const parallel = await Promise.all(Array.from({ length: 40 }, (_, i) => query("claude", "-", promptBody(`ho-p${i}`), 5000))); // correctness, not latency: a loaded CI runner needs more than the default 700 ms for 40 at once
+  const parallel = await Promise.all(Array.from({ length: 40 }, (_, i) => query("claude", "-", promptBody(`ho-p${i}`), PATIENT))); // correctness, not latency: a loaded CI runner needs more than the default 700 ms for 40 at once
   assert.ok(parallel.every((r) => r !== null && r.includes("python-testing")), "40 at once");
   await down();
 });
