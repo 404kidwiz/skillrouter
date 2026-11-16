@@ -264,7 +264,8 @@ test("reinstalling Hermes hooks never duplicates them, also from a home whose pa
       assert.equal(c.hooks.pre_llm_call.length, 1, name);
       assert.equal(c.hooks.post_llm_call.length, 1, name);
       assert.equal(c.hooks.pre_tool_call.length, 2, name); // the user's own guard, and ours
-      assert.equal(read(h, "shell-hooks-allowlist.json").approvals.length, 6, name); // three per command form (POSIX and Windows); approvals of replaced forms are harmless
+      // Three per command form installed: both forms where this OS is not Windows (approvals of a replaced form are harmless), one on Windows.
+      assert.equal(read(h, "shell-hooks-allowlist.json").approvals.length, process.platform === "win32" ? 3 : 6, name);
     }
   } finally { delete process.env.SKILLROUTER_HERMES_PYTHON; }
 });
