@@ -34,6 +34,22 @@ export function selectWeak(hits: Hit[], minRaw: number, k = 3): Hit[] {
   const top = passing[0]?.score ?? 0;
   return passing.filter((h) => h.score >= 0.75 * top).slice(0, Math.max(1, Math.min(3, k)));
 }
+/**
+ * The one skill a query names. The whole query as an id or name, as before; or else a hyphenated name inside a longer
+ * query ("skill-library-ops upstream provenance comparison" asks for skill-library-ops). Only hyphenated names count
+ * there: a plain word that happens to be a skill's name ("invoice", "github") is a topic, not a request for that skill.
+ * Labeled on 240 real searches, 2026-11-17: a query naming a skill this way got three other skills back.
+ */
+export function namedSkill(query: string): ReturnType<typeof findSkill> {
+  const whole = findSkill(query);
+  if (whole.length === 1) return whole;
+  const named = new Map<string, ReturnType<typeof findSkill>[number]>();
+  for (const token of query.toLowerCase().match(/[a-z0-9]+(?:[-_][a-z0-9]+)+(?:~\d+)?/g) ?? []) {
+    const found = findSkill(token);
+    if (found.length === 1) named.set(found[0].id, found[0]);
+  }
+  return named.size === 1 ? [...named.values()] : whole;
+}
 /** Explicit search uses the same evidence floor as hints, without forcing users to accept weak candidates. */
 export async function routeSearch(query: string, options: RouteOptions = {}): Promise<RouteResult> {
   const k = Math.max(1, Math.min(20, options.k ?? 5));
@@ -42,7 +58,7 @@ export async function routeSearch(query: string, options: RouteOptions = {}): Pr
   const trace: SearchTrace[] = [];
   const candidates = await search(query, Math.max(12, k * 3), { semantic: sem.scores, prefer: coreIds(), trace });
   const minRaw = minRawFor(index.skills.length);
-  const requested = findSkill(query);
+  const requested = namedSkill(query);
   // Resolve explicit source-qualified IDs before duplicate collapse can hide that source.
   const exact: Hit[] = requested.length === 1 && !applicabilityReason(requested[0], query)
     ? [candidates.find(h => h.skill.id === requested[0].id) ?? { skill: requested[0], score: 0, raw: 0, matched: 0 }]

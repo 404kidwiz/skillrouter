@@ -9,6 +9,7 @@ process.env.HOME = home;
 process.env.USERPROFILE = home;
 process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 process.env.SKILLROUTER_SERVICE = "0";
+process.env.SKILLROUTER_GATE_STALL_RUNS = "0"; // these tests refuse one task text in many sessions on purpose; batch19 tests the stall cap
 delete process.env.SKILLROUTER_GATE;
 process.on("exit", () => fs.rmSync(home, { recursive: true, force: true }));
 const { buildIndexFrom, saveIndex } = await import("../src/index.js");

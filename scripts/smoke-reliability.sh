@@ -14,6 +14,9 @@ REPO=$S/checkout; mkdir -p $REPO/.git
 cp -R "$SRC/dist" "$SRC/eval" "$SRC/package.json" $REPO/ && ln -s "$SRC/node_modules" $REPO/node_modules
 CLI=$REPO/dist/src/cli.js
 export HOME=$S USERPROFILE=$S SKILLROUTER_HOME=$S/.skillrouter SKILLROUTER_SERVICE_IDLE_MIN=1
+# Each host's gate is checked with the same task text and no search, which the stall cap (recurring.ts) would let
+# through after two runs; the cap has its own tests (test/batch19).
+export SKILLROUTER_GATE_STALL_RUNS=0
 unset SKILLROUTER_NODE SKILLROUTER_WEAK SKILLROUTER_SNAPSHOT SKILLROUTER_GATE SKILLROUTER_LOG_MAX_MB
 pass=0; fail=0
 ok(){ if [ "$1" = 0 ]; then pass=$((pass+1)); echo "PASS  $2"; else fail=$((fail+1)); echo "FAIL  $2"; fi; }

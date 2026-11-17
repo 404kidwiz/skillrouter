@@ -23,7 +23,8 @@ const MAX_PROMPTS = 2000;
 export const recurringEnabled = () => process.env.SKILLROUTER_RECURRING !== "0";
 
 /** `offered`: how many runs in a row a skill was named without being loaded; three, and it is no longer named. */
-interface Entry { n: number; last: string; skills: Record<string, number>; offered: Record<string, number> }
+/** `refused` / `lookedUp`: runs in which the search gate refused this request, and runs in which a search or load was seen. */
+interface Entry { n: number; last: string; skills: Record<string, number>; offered: Record<string, number>; refused: number; lookedUp: number }
 interface Store { v: 1; prompts: Record<string, Entry> }
 
 export function promptKey(prompt: string): string {
@@ -103,7 +104,39 @@ export function creditRequest(session: string | undefined, skill: string): void 
 function entryOf(e: unknown): Entry {
   const x = e && typeof e === "object" ? (e as Partial<Entry>) : {};
   const counts = (v: unknown) => { const out: Record<string, number> = {}; if (v && typeof v === "object") for (const [k, n] of Object.entries(v)) if (typeof n === "number" && Number.isFinite(n)) out[k] = n; return out; };
-  return { n: typeof x.n === "number" && Number.isFinite(x.n) ? x.n : 0, last: typeof x.last === "string" ? x.last : "", skills: counts(x.skills), offered: counts(x.offered) };
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
+  return { n: num(x.n), last: typeof x.last === "string" ? x.last : "", skills: counts(x.skills), offered: counts(x.offered), refused: num(x.refused), lookedUp: num(x.lookedUp) };
+}
+
+/**
+ * A request the search gate keeps stopping. Seen on a Mac, 2026-11-11 to 15: an hourly automation ran in a thread
+ * without the router's tools, was refused once per run, ended each run there, and skipped its work 88 times; nothing
+ * surfaced it for four days. Two runs of the same request refused without any search or load seen in either one, and
+ * the gate stops refusing that request (logged as `stepped_aside_recurring`) until a run does search or load again.
+ * So a scheduled job loses two runs at most, whatever the agent makes of the refusal.
+ */
+export const stallRuns = () => { const n = Number(process.env.SKILLROUTER_GATE_STALL_RUNS ?? 2); return Number.isInteger(n) && n >= 0 ? n : 2; }; // 0: never
+export function stalledRequest(session: string | undefined): boolean {
+  if (!recurringEnabled() || !stallRuns()) return false;
+  const key = promptKeyOf(session);
+  if (!key) return false;
+  const e = entryOf(readRecurring().prompts[key]);
+  return e.refused - e.lookedUp >= stallRuns();
+}
+
+/** The gate refused this session's current request (counted once per session). */
+export function noteRefusal(session: string | undefined): void { countRun(session, "refused"); }
+/** A search or load was seen for this session's current request (once per session): it can be refused again. */
+export function noteLookup(session: string | undefined): void { countRun(session, "lookedUp"); }
+
+function countRun(session: string | undefined, field: "refused" | "lookedUp"): void {
+  if (!recurringEnabled() || !session) return;
+  const key = promptKeyOf(session);
+  const mark = `recur-${field}-${key}`;
+  if (!key || !claim(session, mark)) return;
+  // A lookup clears the request's record of stalls, so one later refusal does not step aside at once.
+  const done = update((s) => { const e = entryOf(s.prompts[key]); if (field === "lookedUp") { e.lookedUp = e.refused = 0; } else e.refused++; s.prompts[key] = e; });
+  if (!done) release(session, mark);
 }
 
 /** Forget the requests whose hash starts with `prefix` (as `skillrouter recurring` prints them). */
