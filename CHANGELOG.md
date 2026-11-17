@@ -2,6 +2,7 @@
 
 ## 0.2.0-beta.1 — unreleased
 
+- `doctor`'s note for a silent Gemini CLI now names a cause no prompt fixes: Google answers a personal Google sign-in with `UNSUPPORTED_CLIENT`, so the CLI stops before any hook runs and silence there is expected. It runs only with an API key, Vertex AI or a Workspace account.
 - `doctor` no longer says a host's hooks are "not firing" when its tool hooks run but its prompt hook never does (Cursor's CLI sends no `beforeSubmitPrompt`). The gate logs one `no_prompt_event` row per such session, and doctor reports that tool hooks ran while the prompt check and search gate did nothing there.
 - In a Cursor session whose prompt was never seen (Cursor's CLI, `cursor-agent`), the search gate now asks once: the first work call is refused until the session has searched or loaded a skill, at most twice per session. Before, the gate never acted there. Other hosts are unchanged.
 - The search gate's refusal now says how an agent that cannot search gets through: repeat the same call, which is refused twice at most. The second refusal says it is the last. Before, an agent without the router's tools could read the first refusal as a hard stop and skip its work (an hourly Codex automation did, 88 runs in a row).

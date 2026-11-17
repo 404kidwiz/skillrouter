@@ -117,6 +117,11 @@ function serviceLine(): string {
   return `running (pid ${s.pid}${up}${s.requests !== undefined ? `, ${s.requests} requests` : ""}${s.rssMB ? `, ${s.rssMB} MB` : ""})`;
 }
 
+// Gemini CLI can be silent for a reason no prompt will fix. Seen on two Macs, 2026-11-16: Google answers a personal
+// Google sign-in with UNSUPPORTED_CLIENT ("no longer supported for Gemini Code Assist for individuals"), so the CLI stops
+// before any hook runs. Doctor cannot see the account from here, so it names the case instead of only saying "send one prompt".
+const GEMINI_CLI_SIGN_IN = " If Gemini CLI itself stops with UNSUPPORTED_CLIENT, Google no longer accepts its personal-account sign-in: it runs only with an API key, Vertex AI or a Workspace account, and silence here is then expected.";
+
 export function health(home = HOME): string[] {
   const loaded = loadIndex();
   const index = loaded && Array.isArray(loaded.skills) ? loaded : null;
@@ -149,7 +154,7 @@ export function health(home = HOME): string[] {
     const quiet = !/^(configured|plugin present)/.test(config.hook) || hooks.length ? ""
       : toolOnly.length
         ? `\n    NOTE: tool hooks ran (last ${toolOnly[0].ts}, ${toolOnly.length} session${toolOnly.length === 1 ? "" : "s"}) but no prompt event arrived in 7 days, so ${agent === "cursor" ? "the prompt check did nothing there and the search gate asked once per session instead of once per task. Cursor's CLI (cursor-agent) does not send beforeSubmitPrompt; its editor does." : "the prompt check and search gate did nothing there. Check that the host trusts the prompt hook."}`
-        : `\n    NOTE: hooks are configured but none ran in 7 days. If you used ${agent} this week its hooks are not firing: send one prompt there, then rerun doctor.`;
+        : `\n    NOTE: hooks are configured but none ran in 7 days. If you used ${agent} this week its hooks are not firing: send one prompt there, then rerun doctor.${agent === "gemini" ? GEMINI_CLI_SIGN_IN : ""}`;
     out.push(`  ${agent}: hook ${config.hook}; MCP ${config.mcp}${extra}${quiet}`,
       `    last hook: ${hooks[0]?.ts ?? "not observed"}; last MCP activity: ${mcp[0]?.ts ?? "not observed"}; failures: ${failures}`,
       `    hook outcomes: ${[...reasons].map(([reason, n]) => `${reason}=${n}`).join(", ") || "none observed"}`,
