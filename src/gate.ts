@@ -5,7 +5,7 @@ import { sessionHash, sessionOf, turnOf } from "./hint.js";
 import { actionOf, isWork, shellCommand } from "./triggers.js";
 import { skillLoadOf } from "./events.js";
 import { addLoaded, addSearched, claim, claimDenial, claimed, gateProgress, gatedTurn, loadedSkills, sessionSearched, turnSeen } from "./state.js";
-import { creditRequest, knownSkill } from "./recurring.js";
+import { creditRequest, knownSkill, noteLookup, noteRefusal, stalledRequest } from "./recurring.js";
 
 /**
  * The search gate: the rule "search the skill library before you start work" as something the agent cannot skip.
@@ -101,6 +101,7 @@ function gateDecision(agent: HookAgent, rawInput: string, enabled: boolean): str
     const lookup = lookupOf(p);
     if (lookup) {
       addSearched(session, turn, undefined, lookup);
+      noteLookup(session, String(turn ?? ""));
       if (lookup === "load") {
         const load = skillLoadOf(typeof p.tool_name === "string" ? p.tool_name : "", p.tool_input);
         // This is seen before the call runs, so it may yet fail: only a name that is exactly one indexed skill counts.
@@ -118,7 +119,12 @@ function gateDecision(agent: HookAgent, rawInput: string, enabled: boolean): str
     if (!isWork(actionFor(p))) return "";
     const log = (reason: string) => logUsage({ client: `hook/${agent}`, agent, tool: "gate", reason, session, prompt: turn });
     const refuse = (key: string, reason?: string) => {
+      // A request that stopped at the gate in earlier runs without a search is let through (recurring.ts). Decided once,
+      // at the turn's first refusal and before this run is counted, so the arming run still gets both of its refusals.
+      if (!claimed(session, `stall-eval-${key}`) && claim(session, `stall-eval-${key}`) && stalledRequest(session) && claim(session, `stall-aside-${key}`)) log("stepped_aside_recurring");
+      if (claimed(session, `stall-aside-${key}`)) return "";
       const slot = claimDenial(session, key, GATE_MAX_DENIALS);
+      if (slot === "denied") noteRefusal(session, key);
       // The last slot being taken means no further refusal follows (two calls at once may both say so; each is then let through).
       if (slot === "denied") { log("denied"); return formatGate(agent, claimed(session, `deny-${key}-${GATE_MAX_DENIALS}`) ? GATE_REASON_LAST : reason); }
       if (slot === "stepped_aside") log("stepped_aside");

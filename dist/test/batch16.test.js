@@ -9,6 +9,7 @@ process.env.HOME = home;
 process.env.USERPROFILE = home;
 process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 process.env.SKILLROUTER_SERVICE = "0";
+process.env.SKILLROUTER_GATE_STALL_RUNS = "0"; // these tests refuse one task text in many sessions on purpose; batch19 tests the stall cap
 fs.mkdirSync(process.env.SKILLROUTER_HOME, { recursive: true });
 delete process.env.SKILLROUTER_GATE;
 const { gateEvent, formatGate, GATE_MAX_DENIALS, GATE_REASON, GATE_REASON_NO_PROMPT, GATE_REASON_LAST } = await import("../src/gate.js");

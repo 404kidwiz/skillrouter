@@ -190,7 +190,7 @@ export function agentOf(r: Row): string {
   return known.find(([re]) => re.test(c))?.[1] ?? (String(r.client ?? "").split("/")[0] || "unknown"); // one row per client, not per version
 }
 
-export function report(days = 7, rows = readLog(days)): string {
+export function report(days = 7, rows = readLog(days), label = `Last ${days} days`): string {
   const synthetic = rows.filter(isSynthetic);
   const organic = rows.filter((r) => !isSynthetic(r));
   const searches = organic.filter((r) => r.tool === "search_skills");
@@ -199,7 +199,7 @@ export function report(days = 7, rows = readLog(days)): string {
   const loads = organic.filter((r) => r.tool === "skill_load");
   const decisions = rows.filter((r) => r.tool === "decision");
   const native = loads.filter((r) => r.via !== "read_skill"); // read_skill loads are already counted from the MCP server
-  const out = [`Last ${days} days: ${searches.length} searches, ${reads.length} successful MCP skill loads, ${native.length} native skill loads (Skill tool, activate_skill, SKILL.md reads), ${hints.length} hook invocations`];
+  const out = [`${label}: ${searches.length} searches, ${reads.length} successful MCP skill loads, ${native.length} native skill loads (Skill tool, activate_skill, SKILL.md reads), ${hints.length} hook invocations`];
   if (synthetic.length) out.push(`Excluded as synthetic (probe/self-test clients): ${synthetic.filter((r) => r.tool === "search_skills").length} searches, ${synthetic.filter((r) => r.tool === "read_skill" && r.found).length} loads from ${[...new Set(synthetic.map((r) => r.client))].join(", ")}`);
   out.push("", "By agent (searches / MCP reads / native loads):");
   for (const a of [...new Set([...searches, ...reads, ...native].map(agentOf))].sort())

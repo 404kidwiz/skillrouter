@@ -33,7 +33,8 @@ const USAGE = `skillrouter — a big skill library without the context bloat
                                           the same on the real index and ~/.skillrouter/eval.jsonl
   skillrouter eval add "<prompt>" <id,id|none>
                                           label a prompt for the live eval
-  skillrouter report [days]              who searched, what got loaded, did checks help, per-skill accept rates
+  skillrouter report [days] | --since <date>
+                                          who searched, what got loaded, did checks help, per-skill accept rates
   skillrouter suppress [keep|unkeep|reset] [id]...
                                           skills held back after repeated declines; keep exempts one, reset forgets counts
   skillrouter mcp                        stdio MCP server (search_skills, read_skill)
@@ -365,7 +366,15 @@ async function main(argv: string[]): Promise<void> {
       }
       break;
     }
-    case "report": { const { report } = await import("./report.js"); console.log(report(Number(args[0] ?? 7))); break; }
+    case "report": {
+      const { report, readLog } = await import("./report.js");
+      // --since DATE measures from a change onward (a fix, an install), so older rows do not blur what it did.
+      const at = args.indexOf("--since"), since = at >= 0 ? Date.parse(args[at + 1] ?? "") : NaN;
+      if (at >= 0 && !(since < Date.now())) { console.log("usage: skillrouter report [days] | report --since <date, e.g. 2026-11-16 or 2026-11-16T20:00>"); process.exitCode = 1; break; }
+      if (at >= 0) { const days = (Date.now() - since) / 86400e3; console.log(report(days, readLog(days), `Since ${new Date(since).toISOString().slice(0, 16).replace("T", " ")} UTC`)); }
+      else console.log(report(Number(args[0] ?? 7)));
+      break;
+    }
     case "mcp": { const { serveMcp } = await import("./mcp.js"); await serveMcp(); break; }
     default: console.log(USAGE); if (cmd && cmd !== "--help" && cmd !== "-h") process.exitCode = 1;
   }

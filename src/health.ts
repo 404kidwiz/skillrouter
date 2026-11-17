@@ -3,7 +3,8 @@ import path from "node:path";
 import { HOME, AGENTS, antigravityConfigPaths, type AgentId } from "./paths.js";
 import { loadIndex } from "./index.js";
 import { isRouterHook } from "./pins.js";
-import { readLog } from "./report.js";
+import { readLog, agentOf, isSynthetic } from "./report.js";
+import { gateFunnel } from "./funnel.js";
 import { hermesSpec } from "./live.js";
 import { loadVectors, vectorsExist } from "./embed.js";
 import { serviceEnabled, serviceSnapshot, stateDirPrivate } from "./service-client.js";
@@ -169,6 +170,13 @@ export function health(home = HOME): string[] {
     out.push(`  ${target}: hooks ${hostHooks(target, home)}; MCP ${mcpOnlyConfiguration(target, home)}`,
       `    last hook: ${hooks[0]?.ts ?? "not observed"}; last MCP activity: ${last ?? "not observed"}; gate refusals: ${denied}`);
   }
+  // A turn that stopped at the gate is lost work the user never sees (2026-11-11: an hourly job did, 88 times in 4 days).
+  try {
+    const day = Date.now() - 86400e3;
+    const stalled = gateFunnel(rows.filter((r) => Date.parse(r.ts) >= day && !isSynthetic(r)), agentOf, day).filter((l) => l.stalled);
+    if (stalled.length) out.push(`WARNING: in the last 24 hours ${stalled.map((l) => `${l.agent} ${l.stalled}`).join(", ")} task turn(s) stopped after a search-gate refusal, with no search and no further work. ` +
+      "A recurring request that does this twice is let through from then on; `skillrouter report 1` shows the gate per agent.");
+  } catch { /* session state unreadable: the rest of doctor still reports */ }
   out.push("Configuration presence does not prove hook trust/activation or MCP connectivity (run `doctor --live` to start each server). Plugin/project configs and legacy MCP clients without agent identity may be unobserved.");
   return out;
 }

@@ -56,7 +56,7 @@ export function gateFunnel(rows, agentOf, since, now = Date.now()) {
         const g = gateBySession.get(r.session) ?? { denied: [], aside: [] };
         if (r.reason === "denied")
             g.denied.push(t);
-        else if (r.reason === "stepped_aside")
+        else if (r.reason === "stepped_aside" || r.reason === "stepped_aside_recurring")
             g.aside.push(t);
         gateBySession.set(r.session, g);
     }
@@ -68,7 +68,7 @@ export function gateFunnel(rows, agentOf, since, now = Date.now()) {
     const line = (agent) => {
         let l = by.get(agent);
         if (!l)
-            by.set(agent, l = { agent, taskTurns: 0, worked: 0, workedNoSearch: 0, refusals: 0, refusedTurns: 0, searchedAfter: 0, searched: 0, loadedAfter: 0, steppedAside: 0, borrowed: 0 });
+            by.set(agent, l = { agent, taskTurns: 0, worked: 0, workedNoSearch: 0, refusals: 0, refusedTurns: 0, searchedAfter: 0, searched: 0, loadedAfter: 0, steppedAside: 0, stalled: 0, borrowed: 0 });
         return l;
     };
     const turns = [];
@@ -126,8 +126,12 @@ export function gateFunnel(rows, agentOf, since, now = Date.now()) {
         if (refusals.length) {
             l.refusedTurns++;
             l.refusals += refusals.length;
-            if (lookups.some((x) => x > refusals[0]))
+            // The same millisecond counts as after: the refusal and the search that answers it can share a timestamp.
+            if (lookups.some((x) => x >= refusals[0]))
                 l.searchedAfter++;
+            // Work handed to subagents (not gated, recorded with `sub`) or a skill loaded there is the turn carrying on.
+            else if (![...s.tools, ...s.loaded].some((r) => inside(r.ts) && r.ts >= refusals[0]) && !between(g?.aside ?? [], start, end).length)
+                l.stalled++;
         }
         if (searches.length) {
             l.searched++;
@@ -148,6 +152,7 @@ export function funnelLines(funnel, days) {
         out.push(`  ${l.agent}: ${plural(l.taskTurns, "task turn")}; ${l.worked} did work, ${l.workedNoSearch} of those with no search or load; ` +
             `${plural(l.refusals, "refusal")} in ${plural(l.refusedTurns, "turn")}, a search or load followed in ${l.searchedAfter}; ` +
             `${l.loadedAfter} of ${plural(l.searched, "turn")} with a search then loaded a skill; stepped aside in ${l.steppedAside}` +
+            (l.stalled ? `; STOPPED after a refusal in ${l.stalled} (no search, no load, no further work)` : "") +
             (l.borrowed ? `; ${l.borrowed === 1 ? "1 turn's search comes" : `${l.borrowed} turns' searches come`} from the MCP log, not the session's own record` : ""));
     }
     out.push("  Where a session has no records of its own, the router's MCP log for that agent in the same span stands in; each of its rows is credited to one turn at most." + (days > 7 ? " Sessions older than 7 days have been cleaned up." : ""));

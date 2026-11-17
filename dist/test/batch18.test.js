@@ -9,6 +9,7 @@ process.env.HOME = home;
 process.env.USERPROFILE = home;
 process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 process.env.SKILLROUTER_SERVICE = "0";
+process.env.SKILLROUTER_GATE_STALL_RUNS = "0"; // refuses one task text in many sessions on purpose; batch19 tests the stall cap
 fs.mkdirSync(process.env.SKILLROUTER_HOME, { recursive: true });
 process.on("exit", () => fs.rmSync(home, { recursive: true, force: true }));
 const { markTurn, addGateTask, addTool, addSearched, addLoaded } = await import("../src/state.js");
@@ -92,9 +93,9 @@ await tick();
 const funnel = () => Object.fromEntries(gateFunnel(readLog(1).filter((r) => !/probe/.test(r.client)), agentOf, Date.now() - 86400e3).map((l) => [l.agent, l]));
 test("per agent: task turns, work, work with no search, refusals, searches after them, loads after a search, stepped aside", () => {
     const f = funnel();
-    assert.deepEqual(f.claude, { agent: "claude", taskTurns: 2, worked: 2, workedNoSearch: 0, refusals: 1, refusedTurns: 1, searchedAfter: 1, searched: 1, loadedAfter: 1, steppedAside: 0, borrowed: 0 }, "a load alone satisfies the gate but is not a search; the conversational turn is not a task turn");
-    assert.deepEqual(f.codex, { agent: "codex", taskTurns: 3, worked: 2, workedNoSearch: 2, refusals: 2, refusedTurns: 1, searchedAfter: 0, searched: 0, loadedAfter: 0, steppedAside: 1, borrowed: 0 }, "refusals count as work; the last turn of a session cannot borrow another session's search");
-    assert.deepEqual(f.gemini, { agent: "gemini", taskTurns: 1, worked: 1, workedNoSearch: 0, refusals: 0, refusedTurns: 0, searchedAfter: 0, searched: 1, loadedAfter: 1, steppedAside: 0, borrowed: 1 }, "with no record of its own, the router's MCP log supplies the search and the load, and says so");
+    assert.deepEqual(f.claude, { agent: "claude", taskTurns: 2, worked: 2, workedNoSearch: 0, refusals: 1, refusedTurns: 1, searchedAfter: 1, searched: 1, loadedAfter: 1, steppedAside: 0, stalled: 0, borrowed: 0 }, "a load alone satisfies the gate but is not a search; the conversational turn is not a task turn");
+    assert.deepEqual(f.codex, { agent: "codex", taskTurns: 3, worked: 2, workedNoSearch: 2, refusals: 2, refusedTurns: 1, searchedAfter: 0, searched: 0, loadedAfter: 0, steppedAside: 1, stalled: 0, borrowed: 0 }, "refusals count as work; the last turn of a session cannot borrow another session's search");
+    assert.deepEqual(f.gemini, { agent: "gemini", taskTurns: 1, worked: 1, workedNoSearch: 0, refusals: 0, refusedTurns: 0, searchedAfter: 0, searched: 1, loadedAfter: 1, steppedAside: 0, stalled: 0, borrowed: 1 }, "with no record of its own, the router's MCP log supplies the search and the load, and says so");
 });
 test("sessions older than the window are left out, and a quiet log prints no section", () => {
     assert.deepEqual(gateFunnel(readLog(1), agentOf, Date.now() + 60_000), []);

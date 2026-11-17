@@ -127,7 +127,48 @@ function entryOf(e) {
         for (const [k, n] of Object.entries(v))
             if (typeof n === "number" && Number.isFinite(n))
                 out[k] = n; return out; };
-    return { n: typeof x.n === "number" && Number.isFinite(x.n) ? x.n : 0, last: typeof x.last === "string" ? x.last : "", skills: counts(x.skills), offered: counts(x.offered) };
+    const num = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
+    return { n: num(x.n), last: typeof x.last === "string" ? x.last : "", skills: counts(x.skills), offered: counts(x.offered), refused: num(x.refused) };
+}
+/**
+ * A request the search gate keeps stopping. Seen on a Mac, 2026-11-11 to 15: an hourly automation ran in a thread
+ * without the router's tools, was refused once per run, ended each run there, and skipped its work 88 times; nothing
+ * surfaced it for four days. Two runs of the same request refused without any search or load seen in either one, and
+ * the gate stops refusing that request (logged as `stepped_aside_recurring`) until a run does search or load again.
+ * So a scheduled job loses two runs at most, whatever the agent makes of the refusal.
+ */
+// Read by the process that answers the hook (the warm service reads its own environment when it starts), like the
+// other tunables. Unset or empty: 2.
+export const stallRuns = () => { const v = (process.env.SKILLROUTER_GATE_STALL_RUNS ?? "").trim(); const n = v === "" ? 2 : Number(v); return Number.isInteger(n) && n >= 0 ? n : 2; };
+/** Before this turn's first refusal: has this request already been refused in enough earlier runs without a search? */
+export function stalledRequest(session) {
+    if (!recurringEnabled() || !stallRuns())
+        return false;
+    const key = promptKeyOf(session);
+    return !!key && entryOf(readRecurring().prompts[key]).refused >= stallRuns();
+}
+/**
+ * Per turn, not per session: a session can carry the same request in two turns, and each is a run. A refusal adds a
+ * run; a search or load in any run clears the count, so only refusals in a row with no lookup since add up.
+ */
+export function noteRefusal(session, turn) { countRun(session, turn, "refused"); }
+export function noteLookup(session, turn) { countRun(session, turn, "lookup"); }
+function countRun(session, turn, kind) {
+    if (!recurringEnabled() || !session)
+        return;
+    const key = promptKeyOf(session);
+    const mark = `recur-${kind}-${key}-${turn}`.slice(0, 160);
+    if (!key || !claim(session, mark))
+        return;
+    const done = update((s) => { const e = entryOf(s.prompts[key]); if (kind === "lookup") {
+        if (!e.refused)
+            return;
+        e.refused = 0;
+    }
+    else
+        e.refused++; s.prompts[key] = e; });
+    if (!done)
+        release(session, mark);
 }
 /** Forget the requests whose hash starts with `prefix` (as `skillrouter recurring` prints them). */
 export function forgetRequest(prefix) {
