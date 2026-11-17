@@ -149,7 +149,8 @@ test("SKILLROUTER_GATE_STALL_RUNS: empty means the default, a bad value too; rep
   }
   delete process.env.SKILLROUTER_GATE_STALL_RUNS;
   const { spawnSync } = await import("node:child_process");
-  const cli = new URL("../src/cli.js", import.meta.url).pathname;
+  const { fileURLToPath } = await import("node:url");
+  const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url)); // .pathname is "/D:/..." on Windows
   for (const bad of [["--since"], ["--since", "not-a-date"], ["--since", "2999-01-01"]]) {
     const r = spawnSync(process.execPath, [cli, "report", ...bad], { encoding: "utf8", env: process.env });
     assert.equal(r.status, 1, bad.join(" ")); assert.match(r.stdout, /usage: skillrouter report/);
