@@ -323,6 +323,8 @@ test("tool hooks with no prompt event are recorded once per session, and doctor 
   const text = health(h).join("\n");
   assert.match(text, /cursor: [^\n]*\n    NOTE: tool hooks ran \(last [^,]+, 2 sessions\) but no prompt event arrived in 7 days[^\n]*search gate asked once per session[^\n]*cursor-agent\) does not send beforeSubmitPrompt/);
   assert.match(text, /gemini: [^\n]*\n    NOTE: hooks are configured but none ran in 7 days/, "a host with no rows at all keeps the old note");
+  assert.match(text, /gemini: [^\n]*\n    NOTE: hooks are configured but none ran in 7 days[^\n]*UNSUPPORTED_CLIENT[^\n]*silence here is then expected/, "Gemini CLI's quiet note names the sign-in Google no longer accepts");
+  assert.equal((text.match(/UNSUPPORTED_CLIENT/g) ?? []).length, 1, "only Gemini CLI's note carries it");
 });
 
 test("a Cursor session whose prompt was never seen is asked to search once, before its first work call", async () => {
