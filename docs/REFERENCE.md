@@ -217,7 +217,7 @@ These examples affect the terminal process environment, not necessarily an alrea
 
 Lexical routing is the default. Semantic routing requires the optional `@huggingface/transformers` dependency and a local model download, plus `index --embeddings`. Follow your dependency-management workflow and expect extra disk/memory use; do not silently add it during ordinary setup.
 
-An existing vector store also causes subsequent index rebuilds to attempt refreshing embeddings. Stale or unavailable vectors fall back to lexical matching. Use `doctor` to inspect vector state and [architecture](ARCHITECTURE.md) for scoring details.
+The model is EmbeddingGemma-300m (4-bit ONNX, ~200 MB on disk, ~800 MB resident in the warm service with a 4,500-skill index (~250 MB with MiniLM), which embeds queries for MCP servers and hooks too; without the service, semantic scoring falls back to lexical). After upgrading from a version that used MiniLM, run `index --embeddings` once: until then search is lexical and `doctor` says the vectors were built with another model. An existing vector store also causes subsequent index rebuilds to attempt refreshing embeddings. Stale or unavailable vectors fall back to lexical matching. Use `doctor` to inspect vector state and [architecture](ARCHITECTURE.md) for scoring details.
 
 ### Host hooks and backups
 
