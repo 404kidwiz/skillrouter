@@ -102,7 +102,7 @@ function gateDecision(agent, rawInput, enabled) {
         const lookup = lookupOf(p);
         if (lookup) {
             addSearched(session, turn, undefined, lookup);
-            noteLookup(session);
+            noteLookup(session, String(turn ?? ""));
             if (lookup === "load") {
                 const load = skillLoadOf(typeof p.tool_name === "string" ? p.tool_name : "", p.tool_input);
                 // This is seen before the call runs, so it may yet fail: only a name that is exactly one indexed skill counts.
@@ -122,15 +122,15 @@ function gateDecision(agent, rawInput, enabled) {
             return "";
         const log = (reason) => logUsage({ client: `hook/${agent}`, agent, tool: "gate", reason, session, prompt: turn });
         const refuse = (key, reason) => {
-            // A request that stopped at the gate in two runs without a search is let through (recurring.ts, stalledRequest).
-            if (stalledRequest(session)) {
-                if (claim(session, `stall-aside-${key}`))
-                    log("stepped_aside_recurring");
+            // A request that stopped at the gate in earlier runs without a search is let through (recurring.ts). Decided once,
+            // at the turn's first refusal and before this run is counted, so the arming run still gets both of its refusals.
+            if (!claimed(session, `stall-eval-${key}`) && claim(session, `stall-eval-${key}`) && stalledRequest(session) && claim(session, `stall-aside-${key}`))
+                log("stepped_aside_recurring");
+            if (claimed(session, `stall-aside-${key}`))
                 return "";
-            }
             const slot = claimDenial(session, key, GATE_MAX_DENIALS);
             if (slot === "denied")
-                noteRefusal(session);
+                noteRefusal(session, key);
             // The last slot being taken means no further refusal follows (two calls at once may both say so; each is then let through).
             if (slot === "denied") {
                 log("denied");

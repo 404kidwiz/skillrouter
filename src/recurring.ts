@@ -23,8 +23,8 @@ const MAX_PROMPTS = 2000;
 export const recurringEnabled = () => process.env.SKILLROUTER_RECURRING !== "0";
 
 /** `offered`: how many runs in a row a skill was named without being loaded; three, and it is no longer named. */
-/** `refused` / `lookedUp`: runs in which the search gate refused this request, and runs in which a search or load was seen. */
-interface Entry { n: number; last: string; skills: Record<string, number>; offered: Record<string, number>; refused: number; lookedUp: number }
+/** `refused`: runs in a row in which the search gate refused this request and no search or load was seen since. */
+interface Entry { n: number; last: string; skills: Record<string, number>; offered: Record<string, number>; refused: number }
 interface Store { v: 1; prompts: Record<string, Entry> }
 
 export function promptKey(prompt: string): string {
@@ -105,7 +105,7 @@ function entryOf(e: unknown): Entry {
   const x = e && typeof e === "object" ? (e as Partial<Entry>) : {};
   const counts = (v: unknown) => { const out: Record<string, number> = {}; if (v && typeof v === "object") for (const [k, n] of Object.entries(v)) if (typeof n === "number" && Number.isFinite(n)) out[k] = n; return out; };
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
-  return { n: num(x.n), last: typeof x.last === "string" ? x.last : "", skills: counts(x.skills), offered: counts(x.offered), refused: num(x.refused), lookedUp: num(x.lookedUp) };
+  return { n: num(x.n), last: typeof x.last === "string" ? x.last : "", skills: counts(x.skills), offered: counts(x.offered), refused: num(x.refused) };
 }
 
 /**
@@ -115,27 +115,30 @@ function entryOf(e: unknown): Entry {
  * the gate stops refusing that request (logged as `stepped_aside_recurring`) until a run does search or load again.
  * So a scheduled job loses two runs at most, whatever the agent makes of the refusal.
  */
-export const stallRuns = () => { const n = Number(process.env.SKILLROUTER_GATE_STALL_RUNS ?? 2); return Number.isInteger(n) && n >= 0 ? n : 2; }; // 0: never
+// Read by the process that answers the hook (the warm service reads its own environment when it starts), like the
+// other tunables. Unset or empty: 2.
+export const stallRuns = () => { const v = (process.env.SKILLROUTER_GATE_STALL_RUNS ?? "").trim(); const n = v === "" ? 2 : Number(v); return Number.isInteger(n) && n >= 0 ? n : 2; };
+
+/** Before this turn's first refusal: has this request already been refused in enough earlier runs without a search? */
 export function stalledRequest(session: string | undefined): boolean {
   if (!recurringEnabled() || !stallRuns()) return false;
   const key = promptKeyOf(session);
-  if (!key) return false;
-  const e = entryOf(readRecurring().prompts[key]);
-  return e.refused - e.lookedUp >= stallRuns();
+  return !!key && entryOf(readRecurring().prompts[key]).refused >= stallRuns();
 }
 
-/** The gate refused this session's current request (counted once per session). */
-export function noteRefusal(session: string | undefined): void { countRun(session, "refused"); }
-/** A search or load was seen for this session's current request (once per session): it can be refused again. */
-export function noteLookup(session: string | undefined): void { countRun(session, "lookedUp"); }
+/**
+ * Per turn, not per session: a session can carry the same request in two turns, and each is a run. A refusal adds a
+ * run; a search or load in any run clears the count, so only refusals in a row with no lookup since add up.
+ */
+export function noteRefusal(session: string | undefined, turn: string): void { countRun(session, turn, "refused"); }
+export function noteLookup(session: string | undefined, turn: string): void { countRun(session, turn, "lookup"); }
 
-function countRun(session: string | undefined, field: "refused" | "lookedUp"): void {
+function countRun(session: string | undefined, turn: string, kind: "refused" | "lookup"): void {
   if (!recurringEnabled() || !session) return;
   const key = promptKeyOf(session);
-  const mark = `recur-${field}-${key}`;
+  const mark = `recur-${kind}-${key}-${turn}`.slice(0, 160);
   if (!key || !claim(session, mark)) return;
-  // A lookup clears the request's record of stalls, so one later refusal does not step aside at once.
-  const done = update((s) => { const e = entryOf(s.prompts[key]); if (field === "lookedUp") { e.lookedUp = e.refused = 0; } else e.refused++; s.prompts[key] = e; });
+  const done = update((s) => { const e = entryOf(s.prompts[key]); if (kind === "lookup") { if (!e.refused) return; e.refused = 0; } else e.refused++; s.prompts[key] = e; });
   if (!done) release(session, mark);
 }
 

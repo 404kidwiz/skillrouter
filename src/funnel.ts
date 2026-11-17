@@ -62,7 +62,7 @@ export function gateFunnel(rows: FunnelUsageRow[], agentOf: (r: FunnelUsageRow) 
     if (r.tool !== "gate" || !r.session) continue;
     const t = Date.parse(r.ts); if (!finite(t)) continue;
     const g = gateBySession.get(r.session) ?? { denied: [], aside: [] };
-    if (r.reason === "denied") g.denied.push(t); else if (r.reason === "stepped_aside") g.aside.push(t);
+    if (r.reason === "denied") g.denied.push(t); else if (r.reason === "stepped_aside" || r.reason === "stepped_aside_recurring") g.aside.push(t);
     gateBySession.set(r.session, g);
   }
   for (const g of gateBySession.values()) { g.denied.sort((x, y) => x - y); g.aside.sort((x, y) => x - y); }
@@ -120,7 +120,8 @@ export function gateFunnel(rows: FunnelUsageRow[], agentOf: (r: FunnelUsageRow) 
       l.refusedTurns++; l.refusals += refusals.length;
       // The same millisecond counts as after: the refusal and the search that answers it can share a timestamp.
       if (lookups.some((x) => x >= refusals[0])) l.searchedAfter++;
-      else if (!s.tools.some((r) => !r.sub && inside(r.ts) && r.ts >= refusals[0]) && !between(g?.aside ?? [], start, end).length) l.stalled++;
+      // Work handed to subagents (not gated, recorded with `sub`) or a skill loaded there is the turn carrying on.
+      else if (![...s.tools, ...s.loaded].some((r) => inside(r.ts) && r.ts >= refusals[0]) && !between(g?.aside ?? [], start, end).length) l.stalled++;
     }
     if (searches.length) { l.searched++; if (loads.some((x) => x >= searches[0])) l.loadedAfter++; }
     if (between(g?.aside ?? [], start, end).length) l.steppedAside++;

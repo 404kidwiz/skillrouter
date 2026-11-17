@@ -2,10 +2,10 @@
 
 ## 0.2.0-beta.1 — unreleased
 
-- The search gate steps aside for a recurring request it stopped in two runs with no search or load seen (logged `stepped_aside_recurring`), until a run searches again. A scheduled job can lose two runs at most, however its agent reads the refusal. `SKILLROUTER_GATE_STALL_RUNS` sets the count (0: off).
+- The search gate steps aside for a recurring request it stopped in two runs with no search or load seen (logged `stepped_aside_recurring`), until a run searches again. Runs are counted per turn; the decision is made at the turn's first refusal, so the run that arms the cap still gets both refusals. A scheduled job can lose two runs at most, however its agent reads the refusal. `SKILLROUTER_GATE_STALL_RUNS` sets the count (0: off).
 - `report` counts turns that STOPPED after a refusal (no search, no load, no further work), and `doctor` warns when any did in the last 24 hours. Before, an hourly job stopped 88 times in four days and nothing said so.
 - `report --since <date>` measures from a change onward instead of a whole window.
-- A hyphenated skill name inside a longer query ("skill-library-ops upstream provenance") returns that skill first. A plain word that is also a skill's name ("invoice") is still treated as a topic.
+- A hyphenated skill name inside a longer query ("skill-library-ops upstream provenance") puts that skill first; the ranked results stay after it. A plain word that is also a skill's name ("invoice") is still treated as a topic.
 - `doctor`'s note for a silent Gemini CLI now names a cause no prompt fixes: Google answers a personal Google sign-in with `UNSUPPORTED_CLIENT`, so the CLI stops before any hook runs and silence there is expected. It runs only with an API key, Vertex AI or a Workspace account.
 - `doctor` no longer says a host's hooks are "not firing" when its tool hooks run but its prompt hook never does (Cursor's CLI sends no `beforeSubmitPrompt`). The gate logs one `no_prompt_event` row per such session, and doctor reports that tool hooks ran while the prompt check and search gate did nothing there.
 - In a Cursor session whose prompt was never seen (Cursor's CLI, `cursor-agent`), the search gate now asks once: the first work call is refused until the session has searched or loaded a skill, at most twice per session. Before, the gate never acted there. Other hosts are unchanged.

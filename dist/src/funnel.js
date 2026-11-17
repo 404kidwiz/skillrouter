@@ -56,7 +56,7 @@ export function gateFunnel(rows, agentOf, since, now = Date.now()) {
         const g = gateBySession.get(r.session) ?? { denied: [], aside: [] };
         if (r.reason === "denied")
             g.denied.push(t);
-        else if (r.reason === "stepped_aside")
+        else if (r.reason === "stepped_aside" || r.reason === "stepped_aside_recurring")
             g.aside.push(t);
         gateBySession.set(r.session, g);
     }
@@ -129,7 +129,8 @@ export function gateFunnel(rows, agentOf, since, now = Date.now()) {
             // The same millisecond counts as after: the refusal and the search that answers it can share a timestamp.
             if (lookups.some((x) => x >= refusals[0]))
                 l.searchedAfter++;
-            else if (!s.tools.some((r) => !r.sub && inside(r.ts) && r.ts >= refusals[0]) && !between(g?.aside ?? [], start, end).length)
+            // Work handed to subagents (not gated, recorded with `sub`) or a skill loaded there is the turn carrying on.
+            else if (![...s.tools, ...s.loaded].some((r) => inside(r.ts) && r.ts >= refusals[0]) && !between(g?.aside ?? [], start, end).length)
                 l.stalled++;
         }
         if (searches.length) {
