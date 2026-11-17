@@ -6,7 +6,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { HOOK_AGENTS, INDEX_FILE, SR_DIR, type AgentId, type HookAgent } from "./paths.js";
 import { getIndex, logUsage, resetIndexCache } from "./search.js";
-import { VECTOR_FILES, embed, loadVectors, resetVectors } from "./embed.js";
+import { VECTOR_FILES, embed, embedLocally, loadVectors, resetVectors } from "./embed.js";
 import { hint } from "./hint.js";
 import { decisionEvent, releaseTriggerClaims, stopEvent, toolEvent } from "./events.js";
 import { gateEvent } from "./gate.js";
@@ -189,9 +189,10 @@ function codeStamp(): string {
  */
 export const DEFAULT_IDLE_MIN = 120;
 
-const HEADER = new RegExp(`^${PROTOCOL} (${HOOK_AGENTS.join("|")}|-) (-|tool|stop|decision|gate|status|shutdown|hang) (\\d{1,8})$`);
+const HEADER = new RegExp(`^${PROTOCOL} (${HOOK_AGENTS.join("|")}|-) (-|tool|stop|decision|gate|embed|status|shutdown|hang) (\\d{1,8})$`);
 
 export async function serve(): Promise<void> {
+  embedLocally(); // this process holds the model: it never asks a service (itself) for a query's vector
   if (!stateDirPrivate()) { logUsage({ client: "skillrouter-service", tool: "service", reason: "state_dir_not_private" }); return; } // (Windows) see service-client.ts
   if (!takeLock()) return; // another process is already starting one
   let key: string | null = null; // (Windows) proves to clients that this is the service, and names the pipe
@@ -252,12 +253,18 @@ export async function serve(): Promise<void> {
   const refresh = (): boolean => {
     const now = Date.now();
     const data = dataStamp();
-    if (data !== dataSeen) { dataSeen = data; resetIndexCache(); resetVectors(); load(); logUsage({ client: "skillrouter-service", tool: "service", reason: "reloaded" }); }
+    if (data !== dataSeen) {
+      dataSeen = data; resetIndexCache(); resetVectors(); load(); logUsage({ client: "skillrouter-service", tool: "service", reason: "reloaded" });
+      // New vectors (first build, or a rebuild after a model change): load the model now, not on the next prompt.
+      if (loadVectors()) embed(["warm up"]).catch(() => { /* lexical only */ });
+    }
     if (now - codeCheckedAt > 2000) { codeCheckedAt = now; if (codeStamp() !== codeSeen) return true; }
     return false;
   };
 
   const run = async (host: HookAgent, mode: string, body: string, pending: { spawn?: string; cancelled?: boolean }): Promise<string | null> => {
+    // A query's vector for a process without the model (an MCP server's search_skills): only while vectors exist.
+    if (mode === "embed") return loadVectors() ? JSON.stringify((await embed([body.slice(0, 4000)]))[0]) : null;
     if (mode === "-") return body.length > MAX_PROMPT_BYTES ? null : hint(host, body);
     if (mode === "gate") return gateEvent(host, body, true); // the hook checked its own SKILLROUTER_GATE before asking
     if (mode === "decision" && host === "hermes") { decisionEvent(host, body); return "{}"; } // Hermes's post_llm_call: the verdict is recorded, nothing is answered

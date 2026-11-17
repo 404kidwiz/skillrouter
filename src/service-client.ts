@@ -146,7 +146,7 @@ export const MAX_SERVICE_BYTES = 1_000_000;
 export function ask(agent: string, mode: string, body: string, timeoutMs = 700, sock = socketPath()): Promise<Answer> {
   const bytes = Buffer.byteLength(body);
   const m = mode || "-";
-  if (!/^(?:-|tool|stop|decision|gate)$/.test(m) || bytes > MAX_SERVICE_BYTES || (m === "-" && bytes > MAX_PROMPT_BYTES)) return Promise.resolve({ kind: "declined" });
+  if (!/^(?:-|tool|stop|decision|gate|embed)$/.test(m) || bytes > MAX_SERVICE_BYTES || (m === "-" && bytes > MAX_PROMPT_BYTES)) return Promise.resolve({ kind: "declined" });
   return exchange(`${PROTOCOL} ${agent} ${m} ${bytes}\n`, body, timeoutMs, sock);
 }
 

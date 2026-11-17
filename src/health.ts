@@ -6,7 +6,7 @@ import { isRouterHook } from "./pins.js";
 import { readLog, agentOf, isSynthetic } from "./report.js";
 import { gateFunnel } from "./funnel.js";
 import { hermesSpec } from "./live.js";
-import { loadVectors, vectorsExist } from "./embed.js";
+import { loadVectors, vectorsBuiltWith, vectorsExist } from "./embed.js";
 import { serviceEnabled, serviceSnapshot, stateDirPrivate } from "./service-client.js";
 import { parseJson } from "./platform.js";
 
@@ -128,7 +128,9 @@ export function health(home = HOME): string[] {
   const index = loaded && Array.isArray(loaded.skills) ? loaded : null;
   const age = index ? (Date.now() - Date.parse(index.builtAt)) / 3600000 : NaN;
   const vec = loadVectors();
-  const vectors = !vec ? (vectorsExist() ? "unreadable (run: skillrouter index --embeddings)" : "off (BM25 only; see README to enable)")
+  const oldModel = vec ? undefined : vectorsBuiltWith();
+  const vectors = !vec ? (oldModel ? `built with another model (${oldModel}); hints use BM25 until rebuilt (run: skillrouter index --embeddings)`
+      : vectorsExist() ? "unreadable (run: skillrouter index --embeddings)" : "off (BM25 only; see README to enable)")
     : index && vec.indexBuiltAt !== index.builtAt ? "STALE: built for another index, hints use BM25 (run: skillrouter index --embeddings)"
     : `${vec.ids.length} skills`;
   const out = ["", `Index: ${!index ? "missing or invalid" : !Number.isFinite(age) ? "invalid timestamp" : `${index.skills.length} skills; ${Math.max(0, age).toFixed(1)} hours old${age > 168 ? " (stale: over 7 days)" : ""}`}`,
