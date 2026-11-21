@@ -245,8 +245,8 @@ export function install(agent: InstallTarget, home = HOME, platform: Platform = 
   return out;
 }
 
-/** Hermes tools the search gate looks at: work calls, skill loads, and the router's own two tools (to see a search). */
-export const HERMES_GATE_MATCHER = "^(?:terminal|write_file|patch|execute_code|skill_view|mcp_skillrouter_(?:read_skill|search_skills))$";
+/** Hermes tools the search gate looks at: work calls, skill loads, and the router's own two tools (single- or double-underscore MCP naming). */
+export const HERMES_GATE_MATCHER = "^(?:terminal|write_file|patch|execute_code|skill_view|mcp_{1,2}skillrouter_{1,2}(?:read_skill|search_skills))$";
 /** A hook entry of ours in a Hermes config: the launcher followed by `hermes`. */
 
 /**

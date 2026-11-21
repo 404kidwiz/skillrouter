@@ -18,7 +18,8 @@ import { hostTurn } from "./state.js";
  *   stdin  { conversationId, workspacePaths, lastUserInput, … } plus toolCall{ name, args } on PreToolUse
  *   events PreInvocation (before every model call, so several per user turn; answer { injectSteps }) and
  *          PreToolUse (answer { decision: "allow" | "deny", reason }; a decision is required)
- *   tools  run_command{CommandLine} write_to_file{TargetFile} replace_file_content{TargetFile} view_file{AbsolutePath}
+ *   tools  run_command{CommandLine} write_file|write_to_file{Path|TargetFile} edit_file|replace_file_content{Path|TargetFile}
+ *          read_file|view_file{Path|AbsolutePath} call_mcp_tool{ServerName,ToolName,Arguments}
  *   There is no turn id: a turn is a change of lastUserInput within the conversation (hostTurn keeps the last one).
  *
  * Returns the rewritten JSON, the input itself when it is not in the host's shape (already generic: tests, probes),
@@ -100,11 +101,19 @@ function antigravityTool(name: string, raw: unknown): { tool_name: string; tool_
   const a = obj(raw);
   const router = routerTool(name, a);
   if (router) return router;
+  if (name === "call_mcp_tool") {
+    const server = str(a.ServerName) ?? str(a.serverName) ?? str(a.server) ?? "";
+    const toolName = str(a.ToolName) ?? str(a.toolName) ?? str(a.tool) ?? "";
+    if (/^skill_?router$/i.test(server) && toolName) {
+      const wrapped = routerTool(`skillrouter_${toolName}`, a.Arguments ?? a.arguments);
+      if (wrapped) return wrapped;
+    }
+  }
   switch (name) {
     case "run_command": return { tool_name: "Bash", tool_input: { command: a.CommandLine } };
-    case "write_to_file": return { tool_name: "Write", tool_input: { file_path: a.TargetFile } };
-    case "replace_file_content": case "multi_replace_file_content": return { tool_name: "Edit", tool_input: { file_path: a.TargetFile } };
-    case "view_file": return { tool_name: "Read", tool_input: { file_path: a.AbsolutePath } };
+    case "write_to_file": case "write_file": return { tool_name: "Write", tool_input: { file_path: a.Path ?? a.TargetFile } };
+    case "replace_file_content": case "multi_replace_file_content": case "edit_file": return { tool_name: "Edit", tool_input: { file_path: a.Path ?? a.TargetFile } };
+    case "view_file": case "read_file": return { tool_name: "Read", tool_input: { file_path: a.Path ?? a.AbsolutePath } };
     default: return { tool_name: name, tool_input: a };
   }
 }

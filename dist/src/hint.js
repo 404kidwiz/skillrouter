@@ -17,7 +17,7 @@ export function formatHint(agent, text, tool = false) {
     if (agent === "hermes")
         return JSON.stringify(text && !tool ? { context: text } : {});
     if (agent === "antigravity")
-        return JSON.stringify(text && !tool ? { injectSteps: [{ ephemeralMessage: text }] } : {});
+        return JSON.stringify(text && !tool ? { injectSteps: [{ systemMessage: { systemMessage: text } }] } : {});
     if (agent === "cursor")
         return JSON.stringify(text ? { ...(tool ? {} : { continue: true }), additional_context: text } : tool ? {} : { continue: true });
     if (!text)
