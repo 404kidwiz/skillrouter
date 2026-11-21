@@ -274,7 +274,7 @@ export function readCounts(days) {
  */
 export function agentOf(r) {
     if (r.agent)
-        return r.agent;
+        return /^antigravity[-_]/i.test(r.agent) ? "antigravity" : r.agent;
     const c = String(r.client ?? "").toLowerCase();
     const known = [[/^claude-code|^hook\/claude/, "claude"], [/codex/, "codex"], [/cursor/, "cursor"], [/gemini/, "gemini"], [/opencode/, "opencode"], [/openclaude/, "openclaude"], [/antigravity/, "antigravity"], [/hermes/, "hermes"]];
     return known.find(([re]) => re.test(c))?.[1] ?? (String(r.client ?? "").split("/")[0] || "unknown"); // one row per client, not per version

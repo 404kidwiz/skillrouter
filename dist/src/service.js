@@ -401,12 +401,12 @@ export async function serve() {
             return body.length > (host === "hermes" ? MAX_EVENT_BYTES : MAX_PROMPT_BYTES) ? null : hint(host, body);
         if (mode === "gate")
             return gateEvent(host, body, true); // the hook checked its own SKILLROUTER_GATE before asking
-        if (mode === "decision" && host === "hermes") {
+        if (mode === "decision" && (host === "hermes" || host === "antigravity")) {
             decisionEvent(host, body);
             return "{}";
-        } // Hermes's post_llm_call: the verdict is recorded, nothing is answered
+        } // end-of-turn verdict record: nothing is blocked
         if (host === "hermes" || host === "antigravity")
-            return null; // otherwise these hosts have the prompt check and the gate only
+            return null; // otherwise these hosts have the prompt check, gate and decision only
         const agent = host;
         if (mode === "tool") {
             const first = await toolEvent(agent, body, false);

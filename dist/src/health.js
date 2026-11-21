@@ -68,7 +68,8 @@ export function hostHooks(target, home = HOME) {
         const group = json(file(".gemini", "config", "hooks.json")).data?.skillrouter;
         if (!group || typeof group !== "object")
             return "not installed (experimental: `skillrouter install antigravity --hooks`)";
-        return group.enabled === false ? "installed but switched off (\"enabled\": false)" : "configured: prompt check + search gate (experimental; activation unverified)";
+        const hasStop = Array.isArray(group.Stop) && group.Stop.some((h) => typeof h?.command === "string" && /antigravity\s+decision\b/.test(h.command));
+        return group.enabled === false ? "installed but switched off (\"enabled\": false)" : `configured: prompt check + search gate${hasStop ? " + verdict record" : ""} (experimental; activation unverified)`;
     }
     let text;
     try {
@@ -185,7 +186,7 @@ export function health(home = HOME) {
         out.push(`  ${agent}: hook ${config.hook}; MCP ${config.mcp}${extra}${quiet}`, `    last hook: ${hooks[0]?.ts ?? "not observed"}; last MCP activity: ${mcp[0]?.ts ?? "not observed"}; failures: ${failures}`, `    hook outcomes: ${[...reasons].map(([reason, n]) => `${reason}=${n}`).join(", ") || "none observed"}`, `    triggers shown: ${count("trigger", "shown")}; turns decided: ${count("decision", "decided")}; nudged: ${count("decision", "nudged")}`);
     }
     for (const target of ["openclaude", "antigravity", "hermes"]) {
-        const own = rows.filter((r) => r.agent === target);
+        const own = rows.filter((r) => r.agent === target || (target === "antigravity" && /^antigravity[-_]/i.test(r.agent ?? "")));
         const last = own.filter((r) => r.tool === "search_skills" || r.tool === "read_skill").sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))[0]?.ts;
         if (target === "openclaude") {
             out.push(`  ${target}: no hooks on this host; MCP ${mcpOnlyConfiguration(target, home)}`, `    last MCP activity: ${last ?? "not observed"}`);
