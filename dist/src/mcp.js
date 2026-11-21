@@ -5,6 +5,12 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { logUsage, readSkill, findSkillForRead } from "./search.js";
 import { routeSearch, formatSearch } from "./routing.js";
+const READ_ONLY_ANNOTATIONS = {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+};
 /** Two tools, ~500 tokens of schema: the whole library behind one door. */
 export async function serveMcp() {
     const server = new McpServer({ name: "skillrouter", version: JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version });
@@ -17,6 +23,7 @@ export async function serveMcp() {
     server.registerTool("search_skills", {
         description: "Find skills for a task. Call this before non-trivial work when no preloaded skill clearly fits. Query = the task intent as one short phrase.",
         inputSchema: { query: z.string(), top_k: z.number().int().min(1).max(20).default(5), exploratory: z.boolean().default(false).describe("Include every weaker candidate, labeled; by default strong matches are returned, or a few labeled weak ones when there is no strong match") },
+        annotations: READ_ONLY_ANNOTATIONS,
     }, async ({ query, top_k, exploratory }) => {
         let result;
         try {
@@ -30,7 +37,11 @@ export async function serveMcp() {
         const text = formatSearch(result);
         return { content: [{ type: "text", text }] };
     });
-    server.registerTool("read_skill", { description: "Load a skill's full SKILL.md instructions by id (from search_skills) or name.", inputSchema: { id: z.string(), hint_id: z.string().optional().describe("Copy the hint_id from the prompt hint when loading its suggested skill") } }, async ({ id, hint_id }) => {
+    server.registerTool("read_skill", {
+        description: "Load a skill's full SKILL.md instructions by id (from search_skills) or name.",
+        inputSchema: { id: z.string(), hint_id: z.string().optional().describe("Copy the hint_id from the prompt hint when loading its suggested skill") },
+        annotations: READ_ONLY_ANNOTATIONS,
+    }, async ({ id, hint_id }) => {
         let matches;
         let retired;
         try {

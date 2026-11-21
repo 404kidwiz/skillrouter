@@ -6,6 +6,13 @@ import { z } from "zod";
 import { findSkill, logUsage, readSkill, findSkillForRead } from "./search.js";
 import { routeSearch, formatSearch } from "./routing.js";
 
+const READ_ONLY_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
 /** Two tools, ~500 tokens of schema: the whole library behind one door. */
 export async function serveMcp(): Promise<void> {
   const server = new McpServer({ name: "skillrouter", version: JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version });
@@ -21,6 +28,7 @@ export async function serveMcp(): Promise<void> {
     {
       description: "Find skills for a task. Call this before non-trivial work when no preloaded skill clearly fits. Query = the task intent as one short phrase.",
       inputSchema: { query: z.string(), top_k: z.number().int().min(1).max(20).default(5), exploratory: z.boolean().default(false).describe("Include every weaker candidate, labeled; by default strong matches are returned, or a few labeled weak ones when there is no strong match") },
+      annotations: READ_ONLY_ANNOTATIONS,
     },
     async ({ query, top_k, exploratory }) => {
       let result: Awaited<ReturnType<typeof routeSearch>>;
@@ -37,7 +45,11 @@ export async function serveMcp(): Promise<void> {
 
   server.registerTool(
     "read_skill",
-    { description: "Load a skill's full SKILL.md instructions by id (from search_skills) or name.", inputSchema: { id: z.string(), hint_id: z.string().optional().describe("Copy the hint_id from the prompt hint when loading its suggested skill") } },
+    {
+      description: "Load a skill's full SKILL.md instructions by id (from search_skills) or name.",
+      inputSchema: { id: z.string(), hint_id: z.string().optional().describe("Copy the hint_id from the prompt hint when loading its suggested skill") },
+      annotations: READ_ONLY_ANNOTATIONS,
+    },
     async ({ id, hint_id }) => {
       let matches: ReturnType<typeof findSkill>;
       let retired: string | undefined;
