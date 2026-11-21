@@ -60,7 +60,8 @@ export function hostHooks(target: "hermes" | "antigravity", home = HOME): string
   if (target === "antigravity") {
     const group = json(file(".gemini", "config", "hooks.json")).data?.skillrouter;
     if (!group || typeof group !== "object") return "not installed (experimental: `skillrouter install antigravity --hooks`)";
-    return group.enabled === false ? "installed but switched off (\"enabled\": false)" : "configured: prompt check + search gate (experimental; activation unverified)";
+    const hasStop = Array.isArray(group.Stop) && group.Stop.some((h: any) => typeof h?.command === "string" && /antigravity\s+decision\b/.test(h.command));
+    return group.enabled === false ? "installed but switched off (\"enabled\": false)" : `configured: prompt check + search gate${hasStop ? " + verdict record" : ""} (experimental; activation unverified)`;
   }
   let text: string;
   try { text = fs.readFileSync(file(".hermes", "config.yaml"), "utf8"); } catch { return "missing"; }
@@ -164,7 +165,7 @@ export function health(home = HOME): string[] {
       `    triggers shown: ${count("trigger", "shown")}; turns decided: ${count("decision", "decided")}; nudged: ${count("decision", "nudged")}`);
   }
   for (const target of ["openclaude", "antigravity", "hermes"] as const) {
-    const own = rows.filter((r) => r.agent === target);
+    const own = rows.filter((r) => r.agent === target || (target === "antigravity" && /^antigravity[-_]/i.test(r.agent ?? "")));
     const last = own.filter((r) => r.tool === "search_skills" || r.tool === "read_skill").sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))[0]?.ts;
     if (target === "openclaude") { out.push(`  ${target}: no hooks on this host; MCP ${mcpOnlyConfiguration(target, home)}`, `    last MCP activity: ${last ?? "not observed"}`); continue; }
     const hooks = rows.filter((r) => r.client === `hook/${target}` && r.tool === "hint").sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));

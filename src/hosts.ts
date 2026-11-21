@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import type { HookAgent } from "./paths.js";
 import { hostTurn } from "./state.js";
 
@@ -15,9 +16,10 @@ import { hostTurn } from "./state.js";
  *   tools  terminal{command} write_file{path} patch{path} read_file{path} skill_view{name} mcp_<server>_<tool>
  *
  * Antigravity (hooks.json, docs: antigravity.google/docs/hooks):
- *   stdin  { conversationId, workspacePaths, lastUserInput, … } plus toolCall{ name, args } on PreToolUse
- *   events PreInvocation (before every model call, so several per user turn; answer { injectSteps }) and
- *          PreToolUse (answer { decision: "allow" | "deny", reason }; a decision is required)
+ *   stdin  { conversationId, workspacePaths, transcriptPath, lastUserInput, … } plus toolCall{ name, args } on PreToolUse
+ *   events PreInvocation (before every model call, so several per user turn; answer { injectSteps }),
+ *          PreToolUse (answer { decision: "allow" | "deny", reason }; a decision is required),
+ *          and Stop (reads the turn's PLANNER_RESPONSE text from transcriptPath for verdict recording; always answers {})
  *   tools  run_command{CommandLine} write_file|write_to_file{Path|TargetFile} edit_file|replace_file_content{Path|TargetFile}
  *          read_file|view_file{Path|AbsolutePath} call_mcp_tool{ServerName,ToolName,Arguments}
  *   There is no turn id: a turn is a change of lastUserInput within the conversation (hostTurn keeps the last one).
@@ -43,9 +45,21 @@ export function fromHost(agent: HookAgent, input: string, mode: HostMode): strin
     return JSON.stringify({ ...base, tool_use_id: str(extra.tool_call_id), ...tool });
   }
   if (typeof p.conversationId !== "string") return input;
-  if (mode === "decision") return null; // Antigravity has no end-of-turn hook wired here
   const session = sha(p.conversationId), prompt = typeof p.lastUserInput === "string" ? p.lastUserInput : "";
-  const base = { session_id: p.conversationId, cwd: Array.isArray(p.workspacePaths) ? str(p.workspacePaths[0]) : undefined };
+  if (mode === "decision") {
+    // Stop hook: read the turn's PLANNER_RESPONSE text from the transcript for verdict recording only (never blocks Stop).
+    const turn = hostTurn(session, sha(prompt), false);
+    const text = antigravityReplyText(str(p.transcriptPath) ?? str(p.transcript_path) ?? "");
+    if (!turn || !text) return null;
+    return JSON.stringify({ session_id: p.conversationId, prompt_id: turn.turn, text });
+  }
+  const subagent = str(p.agentId) ?? str(p.agent_id) ?? str(p.subagentId) ?? str(p.subagent_id) ??
+    (str(p.parentConversationId) || str(p.parent_conversation_id) || p.isSubagent === true || p.is_subagent === true ? p.conversationId : undefined);
+  const base = {
+    session_id: p.conversationId,
+    cwd: Array.isArray(p.workspacePaths) ? str(p.workspacePaths[0]) : undefined,
+    ...(subagent ? { agent_id: subagent } : {}),
+  };
   if (!gate) {
     const turn = hostTurn(session, sha(prompt), true);
     if (!turn || !turn.fresh) return null; // a later model call of the turn already checked
@@ -61,6 +75,39 @@ export function fromHost(agent: HookAgent, input: string, mode: HostMode): strin
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+
+/** Read the bounded tail of an Antigravity JSONL transcript and return PLANNER_RESPONSE text(s) after the last USER_INPUT. */
+function antigravityReplyText(transcriptPath: string, maxBytes = 2 * 1024 * 1024): string {
+  if (!transcriptPath) return "";
+  let fd: number | undefined;
+  let lines: string[] = [];
+  try {
+    fd = fs.openSync(transcriptPath, "r");
+    const size = fs.fstatSync(fd).size;
+    if (size <= 0) return "";
+    const start = Math.max(0, size - maxBytes);
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    lines = buf.toString("utf8").split("\n");
+    if (start > 0) lines.shift(); // first line may be cut mid-record
+  } catch { return ""; } finally { if (fd !== undefined) fs.closeSync(fd); }
+  const records: any[] = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try { records.push(JSON.parse(line)); } catch { /* skip malformed line */ }
+  }
+  if (!records.length) return "";
+  let lastUser = -1;
+  for (let i = records.length - 1; i >= 0; i--) {
+    if (records[i]?.type === "USER_INPUT") { lastUser = i; break; }
+  }
+  const slice = lastUser >= 0 ? records.slice(lastUser + 1) : records;
+  const texts: string[] = [];
+  for (const r of slice) {
+    if (r?.type === "PLANNER_RESPONSE" && typeof r.content === "string" && r.content.trim()) texts.push(r.content.trim());
+  }
+  return texts.join("\n");
+}
 
 /** A user message as text: a string, or the text parts of a multimodal message. */
 function textOf(message: unknown): string {
@@ -102,18 +149,20 @@ function antigravityTool(name: string, raw: unknown): { tool_name: string; tool_
   const router = routerTool(name, a);
   if (router) return router;
   if (name === "call_mcp_tool") {
-    const server = str(a.ServerName) ?? str(a.serverName) ?? str(a.server) ?? "";
-    const toolName = str(a.ToolName) ?? str(a.toolName) ?? str(a.tool) ?? "";
+    const server = str(a.ServerName) ?? str(a.serverName) ?? str(a.server_name) ?? str(a.server) ?? "";
+    const toolName = str(a.ToolName) ?? str(a.toolName) ?? str(a.tool_name) ?? str(a.tool) ?? "";
     if (/^skill_?router$/i.test(server) && toolName) {
-      const wrapped = routerTool(`skillrouter_${toolName}`, a.Arguments ?? a.arguments);
+      let wrappedArgs: unknown = a.Arguments ?? a.arguments ?? a.args;
+      if (typeof wrappedArgs === "string") { try { wrappedArgs = JSON.parse(wrappedArgs); } catch { /* keep raw */ } }
+      const wrapped = routerTool(`skillrouter_${toolName}`, wrappedArgs);
       if (wrapped) return wrapped;
     }
   }
   switch (name) {
-    case "run_command": return { tool_name: "Bash", tool_input: { command: a.CommandLine } };
-    case "write_to_file": case "write_file": return { tool_name: "Write", tool_input: { file_path: a.Path ?? a.TargetFile } };
-    case "replace_file_content": case "multi_replace_file_content": case "edit_file": return { tool_name: "Edit", tool_input: { file_path: a.Path ?? a.TargetFile } };
-    case "view_file": case "read_file": return { tool_name: "Read", tool_input: { file_path: a.Path ?? a.AbsolutePath } };
+    case "run_command": return { tool_name: "Bash", tool_input: { command: a.CommandLine ?? a.command_line ?? a.command } };
+    case "write_to_file": case "write_file": return { tool_name: "Write", tool_input: { file_path: a.Path ?? a.TargetFile ?? a.path ?? a.target_file } };
+    case "replace_file_content": case "multi_replace_file_content": case "edit_file": return { tool_name: "Edit", tool_input: { file_path: a.Path ?? a.TargetFile ?? a.path ?? a.target_file } };
+    case "view_file": case "read_file": return { tool_name: "Read", tool_input: { file_path: a.Path ?? a.AbsolutePath ?? a.path ?? a.absolute_path } };
     default: return { tool_name: name, tool_input: a };
   }
 }

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { search, getIndex, duplicateKind, findSkill } from "./search.js";
-import { isConversational, isSlashCommand, isSystemText, minRawFor, selectHints } from "./hint.js";
+import { hintQuery, isConversational, isSlashCommand, isSystemText, minRawFor, selectHints } from "./hint.js";
 import { coreIds } from "./core.js";
 import { bareSkill } from "./state.js";
 import { loadVectors } from "./embed.js";
@@ -55,9 +55,10 @@ export async function evaluate(cases, options = {}) {
         return expected.some(e => resolveExpected(e).some(a => a.id === id || (!!b && duplicateKind(a, b, null) === "copy")));
     };
     for (const c of cases) {
-        const hits = await search(c.prompt.slice(0, 1000), 12, { lexicalOnly, prefer });
+        const query = hintQuery(c.prompt);
+        const hits = await search(query || c.prompt.slice(0, 1000), 12, { lexicalOnly, prefer });
         // The prompt check skips commands, system turns and very short prompts before searching; so does the eval.
-        const skipped = isSlashCommand(c.prompt.trim()) || isSystemText(c.prompt) || c.prompt.trim().length < 20;
+        const skipped = isSlashCommand(c.prompt.trim()) || isSystemText(c.prompt) || query.length < 20;
         const shown = skipped ? [] : selectHints(hits, minRaw, k, { conversational: isConversational(c.prompt) });
         const ok = (id) => equivalent(c.expect, id);
         let copies = 0;

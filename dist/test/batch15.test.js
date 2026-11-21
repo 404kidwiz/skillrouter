@@ -11,7 +11,7 @@ process.env.HOME = home;
 process.env.USERPROFILE = home;
 process.env.SKILLROUTER_HOME = path.join(home, ".skillrouter");
 const { BM25, tokenize, SPECIFIC_DF } = await import("../src/bm25.js");
-const { isConversational, isSystemText, selectHints } = await import("../src/hint.js");
+const { hintQuery, isConversational, isSystemText, selectHints } = await import("../src/hint.js");
 const { packageEntry } = await import("../src/embed.js");
 const { semanticLine } = await import("../src/health.js");
 const { report } = await import("../src/report.js");
@@ -37,11 +37,23 @@ test("BM25 counts the matched words that are rare in the library, not the ones e
 test("conversational prompts point at the conversation, not at work", () => {
     for (const p of ["What's next? Any suggestions?", "ok, continue", "Let's move forward with all of your recommendations 1 through 5, verify with a QA agent", "Do suggestions 1 and 3: don't re-suggest skills already shown",
         "Yes, build Windows stage 2 the same way", "Fix both: stop the trigger firing on merges and change the wording", "go ahead and implement step 2", "sounds good, do it",
-        "What is next? Do you have any suggestions for improvements before moving forward?", "Are there any suggestions for enhancements before closing out?", "what are next steps", "proceeding with option B"])
+        "What is next? Do you have any suggestions for improvements before moving forward?", "Are there any suggestions for enhancements before closing out?", "what are next steps", "proceeding with option B",
+        "Spawn a Subagent again.", "lets knock these out and give TJ a walkthrough"])
         assert.equal(isConversational(p), true, p);
     for (const p of ["write pytest tests for the api client and fix the failing fixtures", "why is my docker build slow on M1", "add a GitHub Actions workflow that runs the tests on push", "merge two pdf files and extract the tables", "How do I rebase my branch onto main and keep my hooks?"])
         assert.equal(isConversational(p), false, p);
     assert.equal(isSystemText("# Files mentioned by the user:\n## shot.png: /tmp/shot.png"), true, "a host's attachment preamble is not the user's task");
+    for (const sys of [
+        "Reviewer 682 passed Worker Home source ba882f40 and docs 6025b10b.",
+        "FINAL Codex-only source patch ready: /tmp/foo.patch SHA256 deadbeef",
+        "Answer in exactly 4 short lines, no tools: (1) How many skills?",
+        "Turn on Auto-fix for PR #10 so CI failures get fixed automatically.",
+    ])
+        assert.equal(isSystemText(sys), true, sys);
+    // Codex Desktop Automation metadata header is stripped so search sees the actual task, not 4x "Automation".
+    const auto = "Automation: Site Guard\nAutomation ID: site-guard\nAutomation memory: $CODEX_HOME/automations/site-guard/memory.md\nLast run: 2026-10-24T06:20:16Z\n\nProtect https://example.com as a read-only surface.";
+    assert.equal(hintQuery(auto), "Protect https://example.com as a read-only surface.");
+    assert.equal(hintQuery("Automation: build a GitHub Actions CI workflow for tests"), "Automation: build a GitHub Actions CI workflow for tests", "ordinary prompt without Automation ID is untouched");
 });
 test("the gate: meaning alone, meaning plus specific words, nothing on a conversational prompt without unmistakable meaning", () => {
     const h = (id, raw, matched, specific, cos) => ({ skill: { id, name: id, description: "Use when doing a specific kind of work", path: "/p", root: "/r", tokens: [] }, score: 1, raw, matched, specific, cos });

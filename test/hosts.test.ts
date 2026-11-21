@@ -110,6 +110,29 @@ test("Antigravity payloads: one check per user input, a decision on every tool c
   await hint("antigravity", base("a1d", PROMPT, { invocationNum: 0 }));
   assert.deepEqual(tool("a1d", PROMPT, "call_mcp_tool", { ServerName: "skillrouter", ToolName: "read_skill", Arguments: { id: "python-testing" } }, 1), { decision: "allow" });
   assert.deepEqual(tool("a1d", PROMPT, "edit_file", { Path: "/w/d.py" }, 2), { decision: "allow" });
+  // snake_case call_mcp_tool keys (server_name, tool_name, arguments) and JSON-stringified arguments work too.
+  await hint("antigravity", base("a1s", PROMPT, { invocationNum: 0 }));
+  assert.deepEqual(tool("a1s", PROMPT, "call_mcp_tool", { server_name: "skillrouter", tool_name: "search_skills", arguments: JSON.stringify({ query: "pytest" }) }, 1), { decision: "allow" });
+  assert.deepEqual(tool("a1s", PROMPT, "write_file", { path: "/w/s.py" }, 2), { decision: "allow" });
+  await hint("antigravity", base("a1s2", PROMPT, { invocationNum: 0 }));
+  assert.deepEqual(tool("a1s2", PROMPT, "call_mcp_tool", { server_name: "skillrouter", tool_name: "read_skill", arguments: JSON.stringify({ id: "python-testing" }) }, 1), { decision: "allow" });
+  assert.deepEqual(tool("a1s2", PROMPT, "edit_file", { path: "/w/s2.py" }, 2), { decision: "allow" });
+  // Subagent / worker payloads pass agent_id through so subagent work is never falsely gated like a main turn.
+  for (const [conv, subFields] of [
+    ["a-sub-1", { parentConversationId: "parent-1" }],
+    ["a-sub-2", { isSubagent: true }],
+    ["a-sub-3", { agentId: "worker-2" }],
+  ] as [string, object][]) {
+    await hint("antigravity", base(conv, PROMPT, { invocationNum: 0, ...subFields }));
+    assert.deepEqual(JSON.parse(gateEvent("antigravity", base(conv, PROMPT, { stepIdx: 1, ...subFields, toolCall: { name: "run_command", args: { CommandLine: "npm install left-pad" } } }))), { decision: "allow" }, conv);
+  }
+  // Empty prompts (e.g. subagent wakeup) and bare short acks do not arm the gate on a fresh session; real short tasks still do.
+  for (const [conv, shortPrompt] of [["a-empty", ""], ["a-ok", "ok"], ["a-yes", "yes"], ["a-thanks", "thanks!"], ["a-cont", "continue"]]) {
+    await hint("antigravity", base(conv, shortPrompt, { invocationNum: 0 }));
+    assert.deepEqual(tool(conv, shortPrompt, "run_command", { CommandLine: "npm install left-pad" }, 1), { decision: "allow" }, `trivial prompt ${JSON.stringify(shortPrompt)} does not arm gate`);
+  }
+  await hint("antigravity", base("a-short-task", "fix the login bug", { invocationNum: 0 }));
+  assert.equal(tool("a-short-task", "fix the login bug", "run_command", { CommandLine: "npm install left-pad" }, 1).decision, "deny", "a real short task on a fresh session is still gated");
   await hint("antigravity", base("a1e", PROMPT, { invocationNum: 0 }));
   assert.deepEqual(tool("a1e", PROMPT, "read_file", { Path: "/home/u/.agents/skills/python-testing/SKILL.md" }, 1), { decision: "allow" });
   assert.deepEqual(tool("a1e", PROMPT, "edit_file", { Path: "/w/e.py" }, 2), { decision: "allow" });
@@ -326,11 +349,15 @@ test("Antigravity hooks are installed only when asked for, beside the user's own
   assert.equal(d.skillrouter.PreInvocation.length, 1);
   assert.equal(d.skillrouter.PreToolUse[0].matcher, "");
   assert.match(d.skillrouter.PreToolUse[0].hooks[0].command, /skillrouter-hint.* antigravity gate$/);
+  assert.equal(d.skillrouter.Stop.length, 1);
+  assert.match(d.skillrouter.Stop[0].command, /skillrouter-hint.* antigravity decision$/);
+  assert.equal(d.skillrouter.Stop[0].timeout, 5);
   assert.match(hostHooks("antigravity", h), /switched off/);
   d.skillrouter.enabled = true; fs.writeFileSync(file, JSON.stringify(d));
-  assert.match(hostHooks("antigravity", h), /^configured/);
+  assert.match(hostHooks("antigravity", h), /^configured: prompt check \+ search gate \+ verdict record/);
   install("antigravity", h, undefined, { hooks: true });
   assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).skillrouter.PreToolUse.length, 1, "repeatable");
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).skillrouter.Stop.length, 1, "Stop hook repeatable");
 });
 
 test("the launcher's fallback takes only a Node that is new enough", () => {
@@ -415,13 +442,76 @@ test("Hermes's end of turn records what was decided about the skill check", asyn
   const verdicts = readLog(1).filter((r: any) => r.tool === "verdict" && r.agent === "hermes");
   assert.equal(verdicts.length, before + 1);
   assert.deepEqual((verdicts.at(-1) as any).accepted, ["python-testing"]);
-  // A reply without the line, an unknown turn, and Antigravity (no end-of-turn hook) record nothing and never throw.
+  // A reply without the line, an unknown turn, and Antigravity without a transcript record nothing and never throw.
   await hint("hermes", hermes("pre_llm_call", "v2", { turn_id: "t1", user_message: PROMPT }));
   decisionEvent("hermes", hermes("post_llm_call", "v2", { turn_id: "t1", assistant_response: "All done." }));
   decisionEvent("hermes", hermes("post_llm_call", "v3", { turn_id: "zz", assistant_response: "Skills: python-testing" }));
   decisionEvent("antigravity", JSON.stringify({ conversationId: "x", lastUserInput: "y" }));
   decisionEvent("hermes", "not json");
   assert.equal(readLog(1).filter((r: any) => r.tool === "verdict" && r.agent === "hermes").length, before + 1);
+});
+
+test("Antigravity Stop hook reads PLANNER_RESPONSE from transcriptPath, records accepted/declined verdicts, and returns {}", async () => {
+  const { decisionEvent } = await import("../src/events.js");
+  const { fileURLToPath } = await import("node:url");
+  const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
+  fixture("pytest-fixtures", "Python pytest fixtures and regression tests for parser edge cases and mocks.");
+  saveIndex(buildIndexFrom([root])); resetIndexCache();
+  const transcript = path.join(home, "ag-transcript.jsonl");
+  const agPrompt = (conv: string, input: string, more: object = {}) =>
+    JSON.stringify({ conversationId: conv, workspacePaths: ["/w"], transcriptPath: transcript, modelName: "gemini-4", lastUserInput: input, ...more });
+
+  // Turn 1: show python-testing + pytest-fixtures; transcript has an earlier turn whose Skills: line must be ignored.
+  const shown1 = JSON.parse(await hint("antigravity", agPrompt("ag-v1", PROMPT, { invocationNum: 0 })));
+  assert.match(shown1.injectSteps[0].systemMessage.systemMessage, /python-testing/);
+  assert.match(shown1.injectSteps[0].systemMessage.systemMessage, /pytest-fixtures/);
+  const lines = [
+    JSON.stringify({ step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>\nearlier turn\n</USER_REQUEST>" }),
+    JSON.stringify({ step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "Old reply.\n\nSkills: pytest-fixtures" }),
+    JSON.stringify({ step_index: 2, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", content: `<USER_REQUEST>\n${PROMPT}\n</USER_REQUEST>` }),
+    JSON.stringify({ step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", tool_calls: [{ name: "read_file", args: {} }] }),
+    JSON.stringify({ step_index: 4, source: "MODEL", type: "GENERIC", status: "DONE", content: "file contents" }),
+    JSON.stringify({ step_index: 5, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "Working on tests..." }),
+    JSON.stringify({ step_index: 6, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "Added regression tests.\n\nSkills: python-testing" }),
+  ];
+  fs.writeFileSync(transcript, lines.join("\n") + "\n");
+  const before = readLog(1).filter((r: any) => r.tool === "verdict" && r.agent === "antigravity").length;
+  assert.equal(decisionEvent("antigravity", agPrompt("ag-v1", PROMPT, { hookEventName: "Stop", terminationReason: "NO_TOOL_CALL", fullyIdle: true })), "");
+  const verdicts = readLog(1).filter((r: any) => r.tool === "verdict" && r.agent === "antigravity");
+  assert.equal(verdicts.length, before + 1);
+  assert.deepEqual((verdicts.at(-1) as any).accepted, ["python-testing"]);
+  assert.deepEqual((verdicts.at(-1) as any).declined, ["pytest-fixtures"]);
+  // Repeat Stop for the same turn does not double-count.
+  decisionEvent("antigravity", agPrompt("ag-v1", PROMPT, { hookEventName: "Stop", terminationReason: "NO_TOOL_CALL" }));
+  assert.equal(readLog(1).filter((r: any) => r.tool === "verdict" && r.agent === "antigravity").length, before + 1);
+
+  // Turn 2 via CLI: proves `cli hint antigravity decision` returns strictly "{}" (never blocks Stop) and records declines.
+  const t2 = path.join(home, "ag-transcript-2.jsonl");
+  await hint("antigravity", JSON.stringify({ conversationId: "ag-v2", workspacePaths: ["/w"], transcriptPath: t2, lastUserInput: PROMPT, invocationNum: 0 }));
+  fs.writeFileSync(t2, [
+    JSON.stringify({ step_index: 0, type: "USER_INPUT", content: `<USER_REQUEST>\n${PROMPT}\n</USER_REQUEST>` }),
+    JSON.stringify({ step_index: 1, type: "PLANNER_RESPONSE", content: "Done without skills.\n\nSkills: none (simple fix)" }),
+  ].join("\n") + "\n");
+  const run = spawnSync(process.execPath, [cli, "hint", "antigravity", "decision"], {
+    input: JSON.stringify({ conversationId: "ag-v2", transcriptPath: t2, lastUserInput: PROMPT, hookEventName: "Stop", terminationReason: "NO_TOOL_CALL" }),
+    encoding: "utf8", env: { ...process.env, SKILLROUTER_SERVICE: "0" },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout.trim(), "{}", "Stop hook output is strictly {} and never blocks Stop");
+  const v2 = readLog(1).filter((r: any) => r.tool === "verdict" && r.agent === "antigravity").at(-1) as any;
+  assert.deepEqual(v2.accepted, []);
+  assert.deepEqual(v2.declined.sort(), ["pytest-fixtures", "python-testing"]);
+
+  // Unreadable/missing transcript or empty turn after last USER_INPUT records nothing and returns {}.
+  const emptyT = path.join(home, "ag-empty.jsonl");
+  fs.writeFileSync(emptyT, JSON.stringify({ step_index: 0, type: "USER_INPUT", content: PROMPT }) + "\n");
+  const bad = spawnSync(process.execPath, [cli, "hint", "antigravity", "decision"], {
+    input: JSON.stringify({ conversationId: "ag-v2", transcriptPath: emptyT, lastUserInput: PROMPT, hookEventName: "Stop" }),
+    encoding: "utf8", env: { ...process.env, SKILLROUTER_SERVICE: "0" },
+  });
+  assert.equal(bad.status, 0);
+  assert.equal(bad.stdout.trim(), "{}");
+  assert.equal(fromHost("antigravity", JSON.stringify({ conversationId: "ag-v2", transcriptPath: "/nonexistent/transcript.jsonl", lastUserInput: PROMPT }), "decision"), null);
 });
 
 test("a recurring request is told at once which skills it used before, and loading one opens the gate without a search", async () => {

@@ -72,9 +72,8 @@ async function main(argv: string[]): Promise<void> {
       const { readHintInput, runHint, formatHint, hint } = await import("./hint.js");
       const { silent } = await import("./hosts.js");
       const worker = cmd === "hint-worker";
-      // Hermes and Antigravity have the prompt check and the gate; any other mode there has nothing to do.
-      // Hermes and Antigravity have the prompt check and the gate, Hermes also the end-of-turn record; any other mode there has nothing to do.
-      if ((agent === "hermes" || agent === "antigravity") && mode && mode !== "gate" && !(agent === "hermes" && mode === "decision")) return finish(silent(agent, false), worker);
+      // Hermes and Antigravity have the prompt check, the gate, and the end-of-turn verdict record; any other mode there has nothing to do.
+      if ((agent === "hermes" || agent === "antigravity") && mode && mode !== "gate" && mode !== "decision") return finish(silent(agent, false), worker);
       // Hermes's end-of-turn payload carries the whole conversation, and pre_llm_call can carry large context in extra.
       const input = await readHintInput(agent, 1500, agent === "hermes" && mode === "decision" ? 64 * 1024 * 1024 : mode || agent === "hermes" ? 8 * 1024 * 1024 : 256 * 1024);
       if (input === null) return finish(mode ? silent(agent, mode === "gate") : formatHint(agent, ""), worker);
@@ -91,7 +90,7 @@ async function main(argv: string[]): Promise<void> {
         }
       }
       if (mode === "gate") { const { gateEvent } = await import("./gate.js"); return finish(gateEvent(agent, input), worker); }
-      if (agent === "hermes" && mode === "decision") { const { decisionEvent } = await import("./events.js"); decisionEvent(agent, input); return finish("{}", worker); }
+      if ((agent === "hermes" || agent === "antigravity") && mode === "decision") { const { decisionEvent } = await import("./events.js"); decisionEvent(agent, input); return finish("{}", worker); }
       if (agent === "hermes" || agent === "antigravity") {
         // The prompt check, in this process: these hosts allow seconds, and the killable-worker path below is not needed for them.
         return finish(await hint(agent, input), worker);

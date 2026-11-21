@@ -476,11 +476,16 @@ svc("big payloads and another state dir bypass the service; the launcher answers
     const bigClaudePrompt = sh(["claude"], { input: JSON.stringify({ session_id: "bp-c1", prompt: "write python pytest regression tests " + "y".repeat(400_000) }) });
     assert.equal(bigClaudePrompt.status, 0);
     assert.equal((await status()).requests, afterHermes, "400 KB non-Hermes prompt still bypasses the warm service");
+    const agStop = sh(["antigravity", "decision"], { input: JSON.stringify({ conversationId: "bp-ag1", lastUserInput: "x", transcriptPath: "/nonexistent", hookEventName: "Stop" }) });
+    assert.equal(agStop.status, 0);
+    assert.equal(agStop.stdout.trim(), "{}", "Antigravity Stop decision answers {} through the warm service");
+    const afterAg = (await status()).requests;
+    assert.equal(afterAg, afterHermes + 1, "Antigravity decision goes through the warm service");
     const other = path.join(home, "other-state");
     fs.mkdirSync(other, { recursive: true });
     const r = sh(["claude"], { input: promptBody("bp-2"), env: { SKILLROUTER_HOME: other } });
     assert.equal(r.status, 0);
-    assert.equal((await status()).requests, afterHermes, "SKILLROUTER_HOME pointing elsewhere: the hook runs on its own, in that dir");
+    assert.equal((await status()).requests, afterAg, "SKILLROUTER_HOME pointing elsewhere: the hook runs on its own, in that dir");
     assert.ok(fs.existsSync(path.join(other, "usage.jsonl")), "and logged there, not in the service's dir");
     await down();
 });

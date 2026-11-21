@@ -395,8 +395,10 @@ function installAntigravityHooks(home: string, bin: string): string {
       PreInvocation: [{ type: "command", command: `${bin} antigravity`, timeout: 5 }],
       // Every tool, so a search through the router's MCP tools is seen whatever name the app gives them.
       PreToolUse: [{ matcher: "", hooks: [{ type: "command", command: `${bin} antigravity gate`, timeout: 5 }] }],
+      // End-of-turn verdict recording only (reads transcriptPath for `Skills:`; never blocks Stop).
+      Stop: [{ type: "command", command: `${bin} antigravity decision`, timeout: 5 }],
     };
-    return "skillrouter hooks set (PreInvocation prompt check, PreToolUse search gate); experimental, turn off with \"enabled\": false or SKILLROUTER_GATE=0";
+    return "skillrouter hooks set (PreInvocation prompt check, PreToolUse search gate, Stop verdict record); experimental, turn off with \"enabled\": false or SKILLROUTER_GATE=0";
   });
 }
 

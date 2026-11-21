@@ -33,10 +33,24 @@ export const sessionOf = (p: any): unknown => p?.session_id ?? p?.conversation_i
 /** The user turn a hook belongs to, where the host names one: Claude prompt_id, Codex turn_id, Cursor generation_id. */
 export const turnOf = (p: any): unknown => p?.prompt_id ?? p?.turn_id ?? p?.generation_id;
 
+/** Strip harness-injected wrapper headers (e.g. Codex Desktop Automation metadata) so search sees the task, not the wrapper. */
+export function hintQuery(prompt: string): string {
+  const trimmed = prompt.trim();
+  const stripped = trimmed.replace(/^Automation:[^\n]*\nAutomation ID:[^\n]*\n(?:Automation memory:[^\n]*\n)?(?:Last run:[^\n]*\n)?\s*/i, "");
+  return stripped.slice(0, 1000);
+}
+
+/** Empty prompts (e.g. subagent wakeups with empty lastUserInput) and bare short acknowledgments are never task turns. */
+export function isTrivialPrompt(prompt: string): boolean {
+  const t = prompt.trim();
+  if (!t) return true;
+  return t.length < 20 && /^(?:ok(?:ay)?|k|yes|yeah|yep|yup|no|nope|sure|thanks?(?:\s+you)?|thank\s+you|ty|thx|continue|go\s+ahead|proceed|carry\s+on|lgtm|sounds?\s+good|looks?\s+good|got\s+it|great|nice|cool|awesome|perfect|done|do\s+it|ship\s+it)[.!?\s]*$/i.test(t);
+}
+
 /** Host- and harness-generated turns (notifications, subagent hand-backs, command echoes, probe/handoff frames) are not the user's task. */
 export function isSystemText(prompt: string): boolean {
   // The decision nudge itself comes back as a prompt (Cursor's follow-up, Gemini's retry, Codex's continuation).
-  return /^(?:<task-notification>|<system-reminder>|\[SYSTEM NOTIFICATION|<local-command-|<command-name>|<agent-message|Another Claude session sent a message|Caveat: The messages below|# Files mentioned by the user|skillrouter: this turn did real work|advisor-lead@kernel OpenRig session identity:|(?:Release )?[Cc]oordination update(?:\s+from|\s*:)|(?:response|message) from (?:TJ|Yana)\b|Reviewer \d+ independently|Fresh READ-ONLY preflight:|auto-fix on,\s*###|Reply with only the word OK\b|Use the Bash tool exactly (?:once|twice), nothing else:|Human steps after merge, in order|Enhancement suggestions \(ranked, not built\)|Recommendation: batch \d)/.test(prompt.trim());
+  return /^(?:<task-notification>|<system-reminder>|\[SYSTEM NOTIFICATION|<local-command-|<command-name>|<agent-message|Another Claude session sent a message|Caveat: The messages below|# Files mentioned by the user|skillrouter: this turn did real work|advisor-lead@kernel OpenRig session identity:|(?:Release )?[Cc]oordination update(?:\s+from|\s*:)|(?:response|message) from (?:TJ|Yana)\b|Reviewer \d+ (?:independently|passed|failed|approved|blocked)\b|FINAL\s+[\w -]+patch ready:|Fresh READ-ONLY preflight:|auto-fix on,\s*###|Turn on Auto-fix for PR\b|Reply with only the word OK\b|Answer in exactly \d+ (?:short )?lines?,\s*no tools:|Use the Bash tool exactly (?:once|twice), nothing else:|Human steps after merge, in order|Enhancement suggestions \(ranked, not built\)|Recommendation: batch \d)/.test(prompt.trim());
 }
 
 /** A slash command (`/commit`, `/caveman lite`): its first word has no further slash, so a pasted path is a prompt. */
@@ -51,7 +65,7 @@ export function isSlashCommand(prompt: string): boolean {
  * 20 were of this kind, and the hints they got were accepted once.
  */
 export function isConversational(prompt: string): boolean {
-  return /(?:^|\b)(what(?:'?s| is| are) next|next steps?|continue|carry on|go ahead|mov(?:e|ing) forward|going forward|proceed(?:ing)?|before (?:we |i |you )?(?:move|moving|proceed|continue|close|closing|wrap)|your (recommendations?|suggestions?|plan|proposal|review|findings)|(suggestion|item|step|option|recommendation|point|phase|stage)s? \d|the (first|second|third|last) one|as (discussed|planned|above|before|suggested)|do (it|that|this|all|both|them)|yes[,.]? (build|do|go|fix|implement|proceed|start)|fix (both|these|those|it|that|them)|sounds? good|looks? good|that works|give me a short (?:imessage|whatsapp|slack|message|reply)|do you want to give me a prompt|give me the prompt that i can give|send \w+ (?:and \w+ )?the decision|(?:release )?coordination update|response from \w+|message from \w+|status update|where are we at|what phase are we on|prepare a concise review packet|reviewer \d+ independently|fresh read-only preflight|pasting the approval sql|then let me stop there|do not try to implement|temporarily unavailable\.? please try again|don't worry about the [\w-]+ right now|enhancement suggestions \(ranked, not built\)|pick the db path: connect a|reply with only the word|use the bash tool exactly (?:once|twice)|openrig session identity|human steps after merge|recommendation: batch \d|auto-fix on,\s*###|works independently of slack|outside of the stripe issues|what skills are you using|use the skill router from now on|installed some skills last night|no automatic skill lookup|fix the effectiveness of which skill|work inside of my other coding agents|bigger context window|how do i access the models|turn on auto-fix for pr|make him a [\w ]+ engineer|make sure that we have some ai references|which one is the best based on my ram)(?:\b|$)/i.test(prompt);
+  return /(?:^|\b)(what(?:'?s| is| are) next|next steps?|continue|carry on|go ahead|mov(?:e|ing) forward|going forward|proceed(?:ing)?|before (?:we |i |you )?(?:move|moving|proceed|continue|close|closing|wrap)|your (recommendations?|suggestions?|plan|proposal|review|findings)|(suggestion|item|step|option|recommendation|point|phase|stage)s? \d|the (first|second|third|last) one|as (discussed|planned|above|before|suggested)|do (it|that|this|all|both|them)|let'?s knock (?:these|those|this|them|it) out|spawn a subagent(?: again)?|yes[,.]? (build|do|go|fix|implement|proceed|start)|fix (both|these|those|it|that|them)|sounds? good|looks? good|that works|give me a short (?:imessage|whatsapp|slack|message|reply)|do you want to give me a prompt|give me the prompt that i can give|send \w+ (?:and \w+ )?the decision|(?:release )?coordination update|response from \w+|message from \w+|status update|where are we at|what phase are we on|prepare a concise review packet|reviewer \d+ independently|fresh read-only preflight|pasting the approval sql|then let me stop there|do not try to implement|temporarily unavailable\.? please try again|don't worry about the [\w-]+ right now|enhancement suggestions \(ranked, not built\)|pick the db path: connect a|reply with only the word|use the bash tool exactly (?:once|twice)|openrig session identity|human steps after merge|recommendation: batch \d|auto-fix on,\s*###|works independently of slack|outside of the stripe issues|what skills are you using|use the skill router from now on|installed some skills last night|no automatic skill lookup|fix the effectiveness of which skill|work inside of my other coding agents|bigger context window|how do i access the models|turn on auto-fix for pr|make him a [\w ]+ engineer|make sure that we have some ai references|which one is the best based on my ram)(?:\b|$)/i.test(prompt);
 }
 
 /**
@@ -94,10 +108,12 @@ export async function hint(agent: HookAgent, rawInput: string, minRaw?: number, 
   if (isSlashCommand(prompt)) { record("skipped_command"); return formatHint(agent, ""); }
   if (isSystemText(prompt)) { record("skipped_system"); return formatHint(agent, ""); }
   // A prompt that describes work is a task turn: the search gate (gate.ts) holds its first work call until the agent has searched.
-  // A short or conversational one ("fix the login bug", "go ahead and implement it") carries on earlier work, so it is a task
-  // turn only while the session has not searched at all.
-  if ((prompt.length >= 20 && !isConversational(prompt)) || !sessionSearched(session)) addGateTask(session, sessionHash(turnOf(payload)));
-  if (prompt.length < 20) { record("skipped_short_prompt"); return formatHint(agent, ""); }
+  // Empty prompts (e.g. subagent wakeups with no user input) and bare short acknowledgments ("ok", "yes", "thanks", "continue")
+  // are never task turns; other short or conversational prompts ("fix the login bug", "go ahead and implement it") carry on
+  // earlier work, so they arm the gate only while the session has not searched at all.
+  const query = hintQuery(prompt);
+  if (!isTrivialPrompt(prompt) && query.length > 0 && ((prompt.length >= 20 && !isConversational(prompt)) || !sessionSearched(session))) addGateTask(session, sessionHash(turnOf(payload)));
+  if (query.length < 20) { record("skipped_short_prompt"); return formatHint(agent, ""); }
   // The same request as an earlier run (a scheduled job): the skills that run loaded are named first.
   // (Not for a prompt that points back at the conversation: "go ahead with your plan" recurs everywhere and names no task.)
   const recalled = isConversational(prompt) ? { key: "", skills: [] as string[], runs: 0 } : recallRequest(session, sessionHash(turnOf(payload)), prompt);
@@ -105,7 +121,6 @@ export async function hint(agent: HookAgent, rawInput: string, minRaw?: number, 
   let hits: Hit[] = [];
   let core = new Set<string>();
   try {
-    const query = prompt.slice(0, 1000);
     const { index } = getIndex();
     minRaw ??= minRawFor(index.skills.length);
     const sem = await semanticScores(query, 800, index.builtAt);

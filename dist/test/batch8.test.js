@@ -65,6 +65,7 @@ test("report groups by agent, including older rows that only name the MCP client
     assert.equal(agentOf({ ts: "", tool: "read_skill", client: "codex-mcp-client/0.163.0" }), "codex");
     assert.equal(agentOf({ ts: "", tool: "read_skill", client: "claude-code/2.1.308" }), "claude");
     assert.equal(agentOf({ ts: "", tool: "read_skill", client: "x", agent: "cursor" }), "cursor");
+    assert.equal(agentOf({ ts: "", tool: "read_skill", client: "x", agent: "antigravity-worker" }), "antigravity");
     assert.equal(agentOf({ ts: "", tool: "read_skill", client: "mystery/1" }), "mystery", "one row per client, not per version");
     const now = new Date().toISOString();
     const text = report(7, [
