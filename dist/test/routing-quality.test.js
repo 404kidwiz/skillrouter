@@ -98,6 +98,12 @@ test('MCP search abstention, exploratory labels and canonical loading work over 
     const transport = new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('../src/cli.js', import.meta.url)), 'mcp'], env });
     try {
         await client.connect(transport);
+        const { tools } = await client.listTools();
+        for (const name of ['search_skills', 'read_skill']) {
+            const tool = tools.find((t) => t.name === name);
+            assert.ok(tool, `${name} listed`);
+            assert.deepEqual(tool.annotations, { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+        }
         const text = (r) => r.content.map((c) => c.text ?? '').join('\n');
         assert.match(text(await client.callTool({ name: 'search_skills', arguments: { query: 'library' } })), /No matching skills/);
         assert.match(text(await client.callTool({ name: 'search_skills', arguments: { query: 'library', exploratory: true } })), /weak\/exploratory/);
