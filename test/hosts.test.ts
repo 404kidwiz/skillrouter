@@ -83,19 +83,36 @@ test("Hermes payloads are read in Hermes's shape and answered in Hermes's shape"
 test("Antigravity payloads: one check per user input, a decision on every tool call", async () => {
   const base = (conversationId: string, lastUserInput: string, more: object = {}) => JSON.stringify({ conversationId, workspacePaths: ["/w"], transcriptPath: "/t", modelName: "m", lastUserInput, ...more });
   const first = JSON.parse(await hint("antigravity", base("a1", PROMPT, { invocationNum: 0, initialNumSteps: 1 })));
-  assert.match(first.injectSteps[0].ephemeralMessage, /^Skill check \(skillrouter\)/);
-  assert.match(first.injectSteps[0].ephemeralMessage, /read_skill\("python-testing"/);
+  assert.match(first.injectSteps[0].systemMessage.systemMessage, /^Skill check \(skillrouter\)/);
+  assert.match(first.injectSteps[0].systemMessage.systemMessage, /read_skill\("python-testing"/);
   // The hook runs before every model call: later calls of the same turn add nothing, a new input is a new turn.
   assert.equal(await hint("antigravity", base("a1", PROMPT, { invocationNum: 1 })), "{}");
   assert.equal(await hint("antigravity", base("a1", PROMPT, { invocationNum: 2 })), "{}");
   const tool = (conv: string, input: string, name: string, args: object, step: number) => JSON.parse(gateEvent("antigravity", base(conv, input, { stepIdx: step, toolCall: { name, args } })));
   assert.deepEqual(tool("a1", PROMPT, "view_file", { AbsolutePath: "/w/a.py" }, 1), { decision: "allow" });
+  assert.deepEqual(tool("a1", PROMPT, "read_file", { Path: "/w/a.py" }, 1), { decision: "allow" });
   assert.deepEqual(tool("a1", PROMPT, "run_command", { CommandLine: "git status", Cwd: "/w" }, 2), { decision: "allow" });
   const denied = tool("a1", PROMPT, "run_command", { CommandLine: "npm install left-pad", Cwd: "/w" }, 3);
   assert.equal(denied.decision, "deny");
   assert.match(denied.reason, /search the skill library/);
   assert.equal(tool("a1", PROMPT, "write_to_file", { TargetFile: "/w/a.py", CodeContent: "x" }, 4).decision, "deny");
   assert.deepEqual(tool("a1", PROMPT, "replace_file_content", { TargetFile: "/w/a.py" }, 5), { decision: "allow" }, "after two refusals the gate steps aside");
+  // Antigravity 2.0 native file tools (write_file, edit_file) are gated too.
+  await hint("antigravity", base("a1b", PROMPT, { invocationNum: 0 }));
+  assert.equal(tool("a1b", PROMPT, "write_file", { Path: "/w/b.py", Content: "x" }, 1).decision, "deny");
+  assert.equal(tool("a1b", PROMPT, "edit_file", { Path: "/w/b.py", Target: "a", Replacement: "b" }, 2).decision, "deny");
+  // Lazy MCP wrapper call_mcp_tool: skillrouter search_skills and read_skill open the gate; other servers do not.
+  await hint("antigravity", base("a1c", PROMPT, { invocationNum: 0 }));
+  assert.deepEqual(tool("a1c", PROMPT, "call_mcp_tool", { ServerName: "other", ToolName: "search_skills", Arguments: { query: "pytest" } }, 1), { decision: "allow" });
+  assert.equal(tool("a1c", PROMPT, "write_file", { Path: "/w/c.py" }, 2).decision, "deny");
+  assert.deepEqual(tool("a1c", PROMPT, "call_mcp_tool", { ServerName: "skillrouter", ToolName: "search_skills", Arguments: { query: "pytest" } }, 3), { decision: "allow" });
+  assert.deepEqual(tool("a1c", PROMPT, "write_file", { Path: "/w/c.py" }, 4), { decision: "allow" });
+  await hint("antigravity", base("a1d", PROMPT, { invocationNum: 0 }));
+  assert.deepEqual(tool("a1d", PROMPT, "call_mcp_tool", { ServerName: "skillrouter", ToolName: "read_skill", Arguments: { id: "python-testing" } }, 1), { decision: "allow" });
+  assert.deepEqual(tool("a1d", PROMPT, "edit_file", { Path: "/w/d.py" }, 2), { decision: "allow" });
+  await hint("antigravity", base("a1e", PROMPT, { invocationNum: 0 }));
+  assert.deepEqual(tool("a1e", PROMPT, "read_file", { Path: "/home/u/.agents/skills/python-testing/SKILL.md" }, 1), { decision: "allow" });
+  assert.deepEqual(tool("a1e", PROMPT, "edit_file", { Path: "/w/e.py" }, 2), { decision: "allow" });
   // A search under whatever name the app gives the router's MCP tool opens the gate.
   for (const [conv, name] of [["a2", "mcp_skillrouter_search_skills"], ["a3", "skillrouter/search_skills"], ["a4", "mcp__skillrouter__search_skills"], ["a5", "search_skills"], ["a51", "mcp0_search_skills"], ["a52", "mcp_SkillRouter_search_skills"], ["a53", "skillrouterSearchSkills"]]) {
     await hint("antigravity", base(conv, PROMPT, { invocationNum: 0 }));
@@ -121,7 +138,7 @@ test("Antigravity payloads: one check per user input, a decision on every tool c
 test("each host gets its own wire shapes", () => {
   assert.deepEqual(JSON.parse(formatHint("hermes", "x")), { context: "x" });
   assert.equal(formatHint("hermes", ""), "{}");
-  assert.deepEqual(JSON.parse(formatHint("antigravity", "x")), { injectSteps: [{ ephemeralMessage: "x" }] });
+  assert.deepEqual(JSON.parse(formatHint("antigravity", "x")), { injectSteps: [{ systemMessage: { systemMessage: "x" } }] });
   assert.equal(formatHint("antigravity", ""), "{}");
   assert.deepEqual(JSON.parse(formatGate("hermes", "r")), { decision: "block", reason: "r" });
   assert.deepEqual(JSON.parse(formatGate("antigravity", "r")), { decision: "deny", reason: "r" });
@@ -133,8 +150,8 @@ test("each host gets its own wire shapes", () => {
   assert.equal(formatHint("codex", ""), "");
   assert.match(formatGate("claude", "r"), /permissionDecision/);
   const m = new RegExp(HERMES_GATE_MATCHER);
-  for (const t of ["terminal", "write_file", "patch", "execute_code", "skill_view", "mcp_skillrouter_search_skills", "mcp_skillrouter_read_skill"]) assert.ok(m.test(t), t);
-  for (const t of ["read_file", "web_search", "terminal_x", "xterminal", "mcp_other_search_skills"]) assert.ok(!m.test(t), t);
+  for (const t of ["terminal", "write_file", "patch", "execute_code", "skill_view", "mcp_skillrouter_search_skills", "mcp_skillrouter_read_skill", "mcp__skillrouter__search_skills", "mcp__skillrouter__read_skill"]) assert.ok(m.test(t), t);
+  for (const t of ["read_file", "web_search", "terminal_x", "xterminal", "mcp_other_search_skills", "mcp__other__search_skills"]) assert.ok(!m.test(t), t);
 });
 
 // A stand-in for Hermes's Python package: load_config/save_config over the file in HERMES_HOME, kept as JSON

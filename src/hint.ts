@@ -18,7 +18,7 @@ const TOOL_EVENT: Partial<Record<AgentId, string>> = { gemini: "AfterTool" }; //
 export function formatHint(agent: HookAgent, text: string, tool = false): string {
   // Hermes appends `context` to the turn's user message; Antigravity injects a step before the model call.
   if (agent === "hermes") return JSON.stringify(text && !tool ? { context: text } : {});
-  if (agent === "antigravity") return JSON.stringify(text && !tool ? { injectSteps: [{ ephemeralMessage: text }] } : {});
+  if (agent === "antigravity") return JSON.stringify(text && !tool ? { injectSteps: [{ systemMessage: { systemMessage: text } }] } : {});
   if (agent === "cursor") return JSON.stringify(text ? { ...(tool ? {} : { continue: true }), additional_context: text } : tool ? {} : { continue: true });
   if (!text) return "";
   const hookEventName = tool ? TOOL_EVENT[agent] ?? "PostToolUse" : EVENT[agent] ?? "UserPromptSubmit";

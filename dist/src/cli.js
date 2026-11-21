@@ -85,8 +85,8 @@ async function main(argv) {
             // Hermes and Antigravity have the prompt check and the gate, Hermes also the end-of-turn record; any other mode there has nothing to do.
             if ((agent === "hermes" || agent === "antigravity") && mode && mode !== "gate" && !(agent === "hermes" && mode === "decision"))
                 return finish(silent(agent, false), worker);
-            // Hermes's end-of-turn payload carries the whole conversation: only its last reply is read, but all of it has to be taken in.
-            const input = await readHintInput(agent, 1500, agent === "hermes" && mode === "decision" ? 64 * 1024 * 1024 : mode ? 8 * 1024 * 1024 : 256 * 1024);
+            // Hermes's end-of-turn payload carries the whole conversation, and pre_llm_call can carry large context in extra.
+            const input = await readHintInput(agent, 1500, agent === "hermes" && mode === "decision" ? 64 * 1024 * 1024 : mode || agent === "hermes" ? 8 * 1024 * 1024 : 256 * 1024);
             if (input === null)
                 return finish(mode ? silent(agent, mode === "gate") : formatHint(agent, ""), worker);
             // SKILLROUTER_GATE=0 is the hook's own environment: the warm service has its own and must not be asked.

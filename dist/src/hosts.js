@@ -87,12 +87,24 @@ function antigravityTool(name, raw) {
     const router = routerTool(name, a);
     if (router)
         return router;
+    if (name === "call_mcp_tool") {
+        const server = str(a.ServerName) ?? str(a.serverName) ?? str(a.server) ?? "";
+        const toolName = str(a.ToolName) ?? str(a.toolName) ?? str(a.tool) ?? "";
+        if (/^skill_?router$/i.test(server) && toolName) {
+            const wrapped = routerTool(`skillrouter_${toolName}`, a.Arguments ?? a.arguments);
+            if (wrapped)
+                return wrapped;
+        }
+    }
     switch (name) {
         case "run_command": return { tool_name: "Bash", tool_input: { command: a.CommandLine } };
-        case "write_to_file": return { tool_name: "Write", tool_input: { file_path: a.TargetFile } };
+        case "write_to_file":
+        case "write_file": return { tool_name: "Write", tool_input: { file_path: a.Path ?? a.TargetFile } };
         case "replace_file_content":
-        case "multi_replace_file_content": return { tool_name: "Edit", tool_input: { file_path: a.TargetFile } };
-        case "view_file": return { tool_name: "Read", tool_input: { file_path: a.AbsolutePath } };
+        case "multi_replace_file_content":
+        case "edit_file": return { tool_name: "Edit", tool_input: { file_path: a.Path ?? a.TargetFile } };
+        case "view_file":
+        case "read_file": return { tool_name: "Read", tool_input: { file_path: a.Path ?? a.AbsolutePath } };
         default: return { tool_name: name, tool_input: a };
     }
 }

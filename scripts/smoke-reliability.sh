@@ -73,7 +73,7 @@ o=$(hg mcp_skillrouter_search_skills '{"query":"pytest"}' c2 | SKILLROUTER_SERVI
 o=$(hg write_file '{"path":"/w/a.py","content":"x"}' c3 | SKILLROUTER_SERVICE=0 $L hermes gate); [ "$o" = "{}" ]; ok $? "hermes: work passes after the search"
 AP='{"conversationId":"ag1","workspacePaths":["/w"],"lastUserInput":"write python pytest regression tests for the parser module","invocationNum":0}'
 ag(){ printf '{"conversationId":"ag1","workspacePaths":["/w"],"lastUserInput":"write python pytest regression tests for the parser module","stepIdx":%s,"toolCall":{"name":"%s","args":%s}}' "$3" "$1" "$2"; }
-o=$(echo "$AP" | SKILLROUTER_SERVICE=0 $L antigravity); has "$o" '^\{"injectSteps":\[\{"ephemeralMessage":"Skill check \(skillrouter\)'; ok $? "antigravity PreInvocation -> {injectSteps}"
+o=$(echo "$AP" | SKILLROUTER_SERVICE=0 $L antigravity); has "$o" '^\{"injectSteps":\[\{"systemMessage":\{"systemMessage":"Skill check \(skillrouter\)'; ok $? "antigravity PreInvocation -> {injectSteps}"
 o=$(echo "$AP" | SKILLROUTER_SERVICE=0 $L antigravity); [ "$o" = "{}" ]; ok $? "antigravity: later model calls of the turn add nothing"
 o=$(ag view_file '{"AbsolutePath":"/w/a"}' 1 | SKILLROUTER_SERVICE=0 $L antigravity gate); [ "$o" = '{"decision":"allow"}' ]; ok $? "antigravity: a read is allowed, with an explicit decision"
 o=$(ag run_command '{"CommandLine":"npm install left-pad"}' 2 | SKILLROUTER_SERVICE=0 $L antigravity gate); has "$o" '^\{"decision":"deny","reason":"skillrouter:'; ok $? "antigravity PreToolUse -> deny until a search"
