@@ -265,7 +265,7 @@ export async function serve(): Promise<void> {
   const run = async (host: HookAgent, mode: string, body: string, pending: { spawn?: string; cancelled?: boolean }): Promise<string | null> => {
     // A query's vector for a process without the model (an MCP server's search_skills): only while vectors exist.
     if (mode === "embed") return loadVectors() ? JSON.stringify((await embed([body.slice(0, 4000)]))[0]) : null;
-    if (mode === "-") return body.length > MAX_PROMPT_BYTES ? null : hint(host, body);
+    if (mode === "-") return body.length > (host === "hermes" ? MAX_EVENT_BYTES : MAX_PROMPT_BYTES) ? null : hint(host, body);
     if (mode === "gate") return gateEvent(host, body, true); // the hook checked its own SKILLROUTER_GATE before asking
     if (mode === "decision" && host === "hermes") { decisionEvent(host, body); return "{}"; } // Hermes's post_llm_call: the verdict is recorded, nothing is answered
     if (host === "hermes" || host === "antigravity") return null; // otherwise these hosts have the prompt check and the gate only
@@ -366,7 +366,7 @@ export async function serve(): Promise<void> {
         if (nl < 0) { if (head.length > 128) c.destroy(); return; }
         const m = HEADER.exec(head.subarray(0, nl).toString("latin1"));
         const len = m ? Number(m[3]) : -1;
-        const limit = m && m[2] === "-" ? MAX_PROMPT_BYTES : MAX_EVENT_BYTES;
+        const limit = m && m[2] === "-" && m[1] !== "hermes" ? MAX_PROMPT_BYTES : MAX_EVENT_BYTES;
         if (!m || len > limit || (m[2] === "hang" && process.env.SKILLROUTER_SERVICE_FAULT !== "hang")) { started = true; clearTimeout(timer); reply(c, "FALLBACK\n"); return; }
         header = { agent: m[1], mode: m[2], len };
         const rest = head.subarray(nl + 1);
