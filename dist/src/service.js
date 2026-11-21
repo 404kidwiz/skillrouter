@@ -398,7 +398,7 @@ export async function serve() {
         if (mode === "embed")
             return loadVectors() ? JSON.stringify((await embed([body.slice(0, 4000)]))[0]) : null;
         if (mode === "-")
-            return body.length > MAX_PROMPT_BYTES ? null : hint(host, body);
+            return body.length > (host === "hermes" ? MAX_EVENT_BYTES : MAX_PROMPT_BYTES) ? null : hint(host, body);
         if (mode === "gate")
             return gateEvent(host, body, true); // the hook checked its own SKILLROUTER_GATE before asking
         if (mode === "decision" && host === "hermes") {
@@ -550,7 +550,7 @@ export async function serve() {
                 }
                 const m = HEADER.exec(head.subarray(0, nl).toString("latin1"));
                 const len = m ? Number(m[3]) : -1;
-                const limit = m && m[2] === "-" ? MAX_PROMPT_BYTES : MAX_EVENT_BYTES;
+                const limit = m && m[2] === "-" && m[1] !== "hermes" ? MAX_PROMPT_BYTES : MAX_EVENT_BYTES;
                 if (!m || len > limit || (m[2] === "hang" && process.env.SKILLROUTER_SERVICE_FAULT !== "hang")) {
                     started = true;
                     clearTimeout(timer);

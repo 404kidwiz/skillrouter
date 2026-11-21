@@ -180,7 +180,8 @@ export const MAX_SERVICE_BYTES = 1_000_000;
 export function ask(agent, mode, body, timeoutMs = 700, sock = socketPath()) {
     const bytes = Buffer.byteLength(body);
     const m = mode || "-";
-    if (!/^(?:-|tool|stop|decision|gate|embed)$/.test(m) || bytes > MAX_SERVICE_BYTES || (m === "-" && bytes > MAX_PROMPT_BYTES))
+    // Hermes pre_llm_call can carry >256 KB of conversation context in extra; keep serving it warm up to MAX_SERVICE_BYTES.
+    if (!/^(?:-|tool|stop|decision|gate|embed)$/.test(m) || bytes > MAX_SERVICE_BYTES || (m === "-" && agent !== "hermes" && bytes > MAX_PROMPT_BYTES))
         return Promise.resolve({ kind: "declined" });
     return exchange(`${PROTOCOL} ${agent} ${m} ${bytes}\n`, body, timeoutMs, sock);
 }
@@ -426,7 +427,7 @@ eval {
   my $want = (defined $ENV{SKILLROUTER_HOME} && length $ENV{SKILLROUTER_HOME}) ? $ENV{SKILLROUTER_HOME}
            : (defined $ENV{HOME} && length $ENV{HOME}) ? "$ENV{HOME}/.skillrouter" : $dir;
   my $same = $want eq $dir;
-  my $small = length($body) <= 1_000_000 && ($mode ne "-" || length($body) <= 262144);
+  my $small = length($body) <= 1_000_000 && ($mode ne "-" || (defined $hook[0] && $hook[0] eq "hermes") || length($body) <= 262144);
   my $known = $mode =~ /\A(?:-|tool|stop|decision|gate)\z/ && defined $hook[0] && $hook[0] =~ /\A[a-z]+\z/;
   if ($same && $small && $known) {
     if (-S $sock) {
